@@ -34,7 +34,11 @@ class SearchAgent(BaseAgent):
         
         # 初始化MCP助手
         try:
-            self.mcp_helper = get_mcp_helper()
+            import os
+            from config.env import MCP_CONFIG_FILE
+            # 获取绝对路径
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), MCP_CONFIG_FILE)
+            self.mcp_helper = get_mcp_helper(config_file=config_path)
             logger.info(f"搜索智能体 {name} MCP助手初始化成功")
         except Exception as e:
             logger.warning(f"MCP助手初始化失败: {str(e)}")
@@ -48,7 +52,7 @@ class SearchAgent(BaseAgent):
             logger.info(f"搜索意图分析: {search_intent}")
             
             # 提取关键词
-            keywords = self._extract_keywords(message, search_intent)
+            keywords = await self._extract_keywords(message, search_intent)
             logger.info(f"提取关键词: {keywords}")
             
             # 执行搜索
@@ -82,7 +86,7 @@ class SearchAgent(BaseAgent):
             search_intent = await self._analyze_search_intent(message)
             
             # 提取关键词
-            keywords = self._extract_keywords(message, search_intent)
+            keywords = await self._extract_keywords(message, search_intent)
             
             # 执行搜索
             search_results = await self._perform_search(keywords, search_intent)
@@ -122,9 +126,11 @@ class SearchAgent(BaseAgent):
     "confidence": 0.9
 }}"""
                 
-                response = self.llm_helper.call(prompt)
+                response = await self.llm_helper.call(prompt)
+                # 过滤掉思考内容
+                filtered_response = self._filter_think_content(response)
                 try:
-                    return json.loads(response)
+                    return json.loads(filtered_response)
                 except:
                     pass
             
@@ -165,7 +171,16 @@ class SearchAgent(BaseAgent):
                 "confidence": 0.5
             }
     
-    def _extract_keywords(self, message: str, search_intent: Dict[str, Any]) -> List[str]:
+    def _filter_think_content(self, text: str) -> str:
+        """过滤掉<think>标签内的思考内容"""
+        import re
+        # 移除<think>...</think>标签及其内容
+        filtered_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # 移除多余的空白字符
+        filtered_text = re.sub(r'\s+', ' ', filtered_text).strip()
+        return filtered_text
+
+    async def _extract_keywords(self, message: str, search_intent: Dict[str, Any]) -> List[str]:
         """提取搜索关键词"""
         try:
             if self.llm_helper:
@@ -176,8 +191,10 @@ class SearchAgent(BaseAgent):
 
 请返回关键词列表，用逗号分隔："""
                 
-                response = self.llm_helper.call(prompt)
-                keywords = [kw.strip() for kw in response.split(',') if kw.strip()]
+                response = await self.llm_helper.call(prompt)
+                # 过滤掉思考内容
+                filtered_response = self._filter_think_content(response)
+                keywords = [kw.strip() for kw in filtered_response.split(',') if kw.strip()]
                 if keywords:
                     return keywords
             
@@ -220,22 +237,89 @@ class SearchAgent(BaseAgent):
                         'keywords': keywords
                     })
             
-            # 尝试使用MCP工具
+            # 优先使用MCP工具
             if self.mcp_helper:
                 try:
+                    logger.info("尝试使用MCP搜索工具...")
+                    # 获取MCP工具列表
                     mcp_tools = await self.mcp_helper.get_tools()
+                    logger.info(f"找到MCP工具: {len(mcp_tools)} 个")
+                    
+                    # 查找搜索工具
+                    search_tool = None
                     for tool in mcp_tools:
-                        if 'search' in tool.get('name', '').lower():
-                            # 使用MCP搜索工具
-                            mcp_result = await self.mcp_helper.call_tool(
-                                server_name=tool.get('server_name', ''),
-                                tool_name=tool.get('name', ''),
-                                query=' '.join(keywords)
-                            )
-                            results['mcp_search'] = mcp_result
+                        if hasattr(tool, 'name') and tool.name == 'search':
+                            search_tool = tool
                             break
+                        elif isinstance(tool, dict) and tool.get('name') == 'search':
+                            search_tool = tool
+                            break
+                    
+                    if search_tool:
+                        search_query = ' '.join(keywords)
+                        # 直接调用工具
+                        try:
+                            if hasattr(search_tool, 'invoke'):
+                                mcp_result = await search_tool.ainvoke({'query': search_query})
+                            elif hasattr(search_tool, 'run'):
+                                mcp_result = await search_tool.arun({'query': search_query})
+                            elif hasattr(search_tool, '_arun'):
+                                mcp_result = await search_tool._arun(search_query)
+                            elif hasattr(search_tool, '_run'):
+                                mcp_result = search_tool._run(search_query)
+                            else:
+                                mcp_result = await search_tool(query=search_query)
+                            
+                            results['mcp_search'] = mcp_result
+                            logger.info(f"MCP搜索成功，查询: {search_query}")
+                            logger.info(f"MCP搜索结果: {mcp_result}")
+                        except Exception as tool_error:
+                            logger.warning(f"MCP工具调用失败: {str(tool_error)}")
+                            # 如果MCP工具调用失败，继续使用备用搜索
+                    else:
+                        logger.warning("未找到MCP搜索工具")
+                        
                 except Exception as e:
                     logger.warning(f"MCP搜索失败: {str(e)}")
+            
+            # 备用网络搜索
+            if 'mcp_search' not in results:
+                try:
+                    logger.info("执行备用网络搜索...")
+                    search_query = ' '.join(keywords)
+                    
+                    # 使用DuckDuckGo API进行搜索
+                    import requests
+                    url = "https://api.duckduckgo.com/"
+                    params = {
+                        'q': search_query,
+                        'format': 'json',
+                        'no_html': '1',
+                        'skip_disambig': '1'
+                    }
+                    
+                    response = requests.get(url, params=params, timeout=10)
+                    data = response.json()
+                    
+                    # 提取搜索结果
+                    search_results = []
+                    if 'Abstract' in data and data['Abstract']:
+                        search_results.append(f"摘要: {data['Abstract']}")
+                    
+                    if 'RelatedTopics' in data:
+                        for topic in data['RelatedTopics'][:3]:
+                            if 'Text' in topic:
+                                search_results.append(f"- {topic['Text']}")
+                    
+                    if search_results:
+                        results['web_search'] = "\n".join(search_results)
+                        logger.info("网络搜索成功")
+                    else:
+                        results['web_search'] = f"搜索'{search_query}'没有找到相关结果。"
+                        
+                except Exception as e:
+                    logger.warning(f"网络搜索失败: {str(e)}")
+                    results['web_search'] = f"搜索失败: {str(e)}"
             
             return results
             
@@ -262,11 +346,15 @@ class SearchAgent(BaseAgent):
 
 回答："""
                 
-                response = self.llm_helper.call(prompt)
-                return response.strip()
+                response = await self.llm_helper.call(prompt)
+                # 过滤掉思考内容
+                filtered_response = self._filter_think_content(response)
+                return filtered_response.strip()
             
             # 备用响应生成
-            return self._generate_fallback_search_response(message, search_results, search_intent)
+            response = self._generate_fallback_search_response(message, search_results, search_intent)
+            logger.info(f"生成的搜索响应: {response}")
+            return response
             
         except Exception as e:
             logger.error(f"搜索响应生成失败: {str(e)}")

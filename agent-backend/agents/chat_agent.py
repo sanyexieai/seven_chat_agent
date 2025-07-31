@@ -128,6 +128,15 @@ class ChatAgent(BaseAgent):
             logger.error(f"生成响应失败: {str(e)}")
             raise
     
+    def _filter_think_content(self, text: str) -> str:
+        """过滤掉<think>标签内的思考内容"""
+        import re
+        # 移除<think>...</think>标签及其内容
+        filtered_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # 移除多余的空白字符
+        filtered_text = re.sub(r'\s+', ' ', filtered_text).strip()
+        return filtered_text
+
     async def _generate_llm_response(self, message: str, history: list, context: Dict[str, Any] = None) -> str:
         """使用LLM生成响应"""
         try:
@@ -138,8 +147,9 @@ class ChatAgent(BaseAgent):
             # 调用LLM
             response = await self.llm_helper.call(messages)
             
-            # 清理响应
-            response = response.strip()
+            # 过滤掉思考内容并清理响应
+            filtered_response = self._filter_think_content(response)
+            response = filtered_response.strip()
             if not response:
                 return "我理解您的问题，让我为您提供一些相关信息..."
             

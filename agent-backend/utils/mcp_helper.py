@@ -138,15 +138,22 @@ class MCPHelper:
                 raise RuntimeError(f"未找到工具 {server_name}.{tool_name}")
             
             # 使用LangChain的工具调用机制
-            if hasattr(target_tool, 'invoke'):
-                result = await target_tool.ainvoke(kwargs)
-            elif hasattr(target_tool, 'run'):
-                result = await target_tool.arun(kwargs)
-            else:
-                # 尝试直接调用
-                result = await target_tool(**kwargs)
-            
-            return result
+            try:
+                if hasattr(target_tool, 'invoke'):
+                    result = await target_tool.ainvoke(kwargs)
+                elif hasattr(target_tool, 'run'):
+                    result = await target_tool.arun(kwargs)
+                else:
+                    # 尝试直接调用
+                    result = await target_tool(**kwargs)
+                
+                return result
+            except AttributeError as e:
+                if "TimeoutError" in str(e):
+                    # 处理httpx.TimeoutError问题
+                    raise RuntimeError("搜索超时，请稍后重试")
+                else:
+                    raise e
             
         except Exception as e:
             raise RuntimeError(f"调用工具 {server_name}.{tool_name} 失败: {e}")
@@ -168,5 +175,8 @@ if __name__ == "__main__":
         print(mcp_helper.get_all_services())
         print(await mcp_helper.get_tools())
         print(await mcp_helper.get_tool_info("ddg_search"))
+        #使用ddg_search工具
+        result = await mcp_helper.call_tool("ddg", "search", query="python")
+        print(result)
 
     asyncio.run(main())

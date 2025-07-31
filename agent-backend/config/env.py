@@ -30,7 +30,7 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 
 # 数据库配置
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/agent_system.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///agent_system.db")
 
 # Redis配置
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")

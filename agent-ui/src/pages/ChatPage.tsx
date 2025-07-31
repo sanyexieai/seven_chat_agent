@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layout, Input, Button, Avatar, Typography, Space, Card } from 'antd';
+import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined } from '@ant-design/icons';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
 import './ChatPage.css';
 
@@ -16,26 +17,70 @@ interface Message {
   agentName?: string;
 }
 
+interface Session {
+  id: number;
+  session_id: string;
+  title: string;
+  agent: {
+    id: number;
+    name: string;
+    display_name: string;
+    description?: string;
+  };
+  created_at: string;
+}
+
 const ChatPage: React.FC = () => {
+  const { sessionId } = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
   const [inputValue, setInputValue] = useState('');
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      content: '你好！我是AI助手，有什么可以帮助你的吗？',
-      type: 'agent',
-      timestamp: new Date(),
-      agentName: 'AI助手'
-    }
-  ]);
-  const [selectedAgent, setSelectedAgent] = useState('chat_agent');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [currentSession, setCurrentSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
 
-  const agents = [
-    { id: 'chat_agent', name: 'AI助手', description: '通用聊天助手' },
-    { id: 'search_agent', name: '搜索助手', description: '信息搜索专家' },
-    { id: 'report_agent', name: '报告助手', description: '数据分析专家' }
-  ];
+  // 加载会话信息
+  useEffect(() => {
+    if (sessionId) {
+      loadSession();
+      loadMessages();
+    }
+  }, [sessionId]);
+
+  const loadSession = async () => {
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}`);
+      if (response.ok) {
+        const session = await response.json();
+        setCurrentSession(session);
+      }
+    } catch (error) {
+      console.error('加载会话失败:', error);
+    }
+  };
+
+  const loadMessages = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(`/api/sessions/${sessionId}/messages`);
+      if (response.ok) {
+        const data = await response.json();
+        const formattedMessages: Message[] = data.map((msg: any) => ({
+          id: msg.message_id,
+          content: msg.content,
+          type: msg.type as 'user' | 'agent',
+          timestamp: new Date(msg.created_at),
+          agentName: msg.agent_name
+        }));
+        setMessages(formattedMessages);
+      }
+    } catch (error) {
+      console.error('加载消息失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -46,7 +91,7 @@ const ChatPage: React.FC = () => {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() || !sessionId) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -59,14 +104,44 @@ const ChatPage: React.FC = () => {
     setInputValue('');
 
     try {
-      const response = await sendMessage(inputValue, selectedAgent);
+      // 保存用户消息到数据库
+      await fetch(`/api/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: parseInt(sessionId),
+          type: 'user',
+          content: inputValue,
+        }),
+      });
+
+      // 发送消息给智能体
+      const response = await sendMessage(inputValue, currentSession?.agent.name || 'chat_agent');
+      
       const agentMessage: Message = {
         id: (Date.now() + 1).toString(),
         content: response.message,
         type: 'agent',
         timestamp: new Date(),
-        agentName: agents.find(a => a.id === selectedAgent)?.name
+        agentName: currentSession?.agent.display_name
       };
+
+      // 保存智能体消息到数据库
+      await fetch(`/api/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: parseInt(sessionId),
+          type: 'agent',
+          content: response.message,
+          agent_name: currentSession?.agent.name,
+        }),
+      });
+
       setMessages(prev => [...prev, agentMessage]);
     } catch (error) {
       console.error('发送消息失败:', error);
@@ -95,34 +170,21 @@ const ChatPage: React.FC = () => {
     });
   };
 
+  if (!sessionId) {
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100vh' 
+      }}>
+        <Empty description="请选择一个会话开始聊天" />
+      </div>
+    );
+  }
+
   return (
     <div className="chat-layout">
-      {/* 左侧智能体列表 */}
-      <div className="sidebar">
-        <div className="sidebar-header">
-          <Title level={4} className="sidebar-title">
-            <RobotOutlined /> AI智能体
-          </Title>
-        </div>
-        <div className="agent-list">
-          {agents.map(agent => (
-            <div
-              key={agent.id}
-              className={`agent-item ${selectedAgent === agent.id ? 'selected' : ''}`}
-              onClick={() => setSelectedAgent(agent.id)}
-            >
-              <Avatar icon={<RobotOutlined />} size="small" />
-              <div className="agent-info">
-                <Text strong>{agent.name}</Text>
-                <Text type="secondary" className="agent-description">
-                  {agent.description}
-                </Text>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* 主聊天区域 */}
       <div className="chat-main">
         {/* 聊天头部 */}
@@ -130,7 +192,7 @@ const ChatPage: React.FC = () => {
           <div className="header-left">
             <Avatar icon={<RobotOutlined />} />
             <div className="header-info">
-              <Text strong>{agents.find(a => a.id === selectedAgent)?.name}</Text>
+              <Text strong>{currentSession?.agent.display_name || 'AI助手'}</Text>
               <Text type="secondary" className="status-text">
                 {isConnected ? '在线' : '离线'}
               </Text>
@@ -141,34 +203,56 @@ const ChatPage: React.FC = () => {
 
         {/* 消息列表 */}
         <div className="messages-container">
-          <div className="messages-list">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`message-wrapper ${message.type === 'user' ? 'user' : 'agent'}`}
-              >
-                <div className="message-content">
-                  <Avatar 
-                    icon={message.type === 'user' ? <UserOutlined /> : <RobotOutlined />}
-                    size="small"
-                    className="message-avatar"
-                  />
-                  <div className="message-bubble">
-                    <div className="message-header">
-                      <Text className="message-name">
-                        {message.agentName || (message.type === 'user' ? '我' : 'AI助手')}
-                      </Text>
-                    </div>
-                    <div className="message-text">{message.content}</div>
-                    <div className="message-time">
-                      {formatTime(message.timestamp)}
+          {loading ? (
+            <div style={{ 
+              display: 'flex', 
+              justifyContent: 'center', 
+              alignItems: 'center', 
+              height: '200px' 
+            }}>
+              <Spin size="large" />
+            </div>
+          ) : (
+            <div className="messages-list">
+              {messages.length === 0 ? (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'center', 
+                  alignItems: 'center', 
+                  height: '200px' 
+                }}>
+                  <Empty description="暂无消息，开始聊天吧！" />
+                </div>
+              ) : (
+                messages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`message-wrapper ${message.type === 'user' ? 'user' : 'agent'}`}
+                  >
+                    <div className="message-content">
+                      <Avatar 
+                        icon={message.type === 'user' ? <UserOutlined /> : <RobotOutlined />}
+                        size="small"
+                        className="message-avatar"
+                      />
+                      <div className="message-bubble">
+                        <div className="message-header">
+                          <Text className="message-name">
+                            {message.agentName || (message.type === 'user' ? '我' : 'AI助手')}
+                          </Text>
+                        </div>
+                        <div className="message-text">{message.content}</div>
+                        <div className="message-time">
+                          {formatTime(message.timestamp)}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
+                ))
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
         </div>
 
         {/* 输入区域 */}

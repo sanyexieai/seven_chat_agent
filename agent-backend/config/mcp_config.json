@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "ddg": {
+      "command": "uvx",
+      "args": [
+        "duckduckgo-mcp-server"
+      ],
+      "env": {}
+    },
+    "google": {
+      "command": "python",
+      "args": [
+        "D:/code/ai/sevenminds/examples/mcp_servers/google_news_search.py",
+        "--transport", "stdio"
+      ],
+      "env": {
+        "PYTHONPATH": "mcp_servers"
+      }
+    }
+  }
+}

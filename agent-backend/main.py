@@ -11,6 +11,9 @@ from agents.agent_manager import AgentManager
 from tools.tool_manager import ToolManager
 from models.chat_models import ChatRequest, ChatResponse, AgentMessage
 from utils.log_helper import get_logger
+from database.database import init_db
+from api.agents import router as agents_router
+from api.sessions import router as sessions_router
 
 # 获取logger实例
 logger = get_logger("main")
@@ -24,6 +27,11 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时初始化
     logger.info("AI Agent System starting up...")
+    
+    # 初始化数据库
+    init_db()
+    logger.info("Database initialized")
+    
     await agent_manager.initialize()
     await tool_manager.initialize()
     logger.info("AI Agent System started successfully")
@@ -43,6 +51,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 注册路由
+app.include_router(agents_router)
+app.include_router(sessions_router)
 
 @app.get("/")
 async def root():
@@ -109,11 +121,7 @@ async def websocket_chat(websocket: WebSocket, user_id: str):
             "message": f"处理消息时出错: {str(e)}"
         }))
 
-@app.get("/api/agents")
-async def get_agents():
-    """获取可用智能体列表"""
-    agents = agent_manager.get_available_agents()
-    return {"agents": agents}
+
 
 @app.get("/api/tools")
 async def get_tools():
@@ -121,17 +129,7 @@ async def get_tools():
     tools = tool_manager.get_available_tools()
     return {"tools": tools}
 
-@app.post("/api/agents/{agent_name}/execute")
-async def execute_agent(agent_name: str, request: dict):
-    """执行特定智能体"""
-    try:
-        result = await agent_manager.execute_agent(
-            agent_name=agent_name,
-            params=request
-        )
-        return {"success": True, "result": result}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000) 

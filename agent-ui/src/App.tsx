@@ -4,6 +4,7 @@ import { Layout } from 'antd';
 import './App.css';
 
 import ChatPage from './pages/ChatPage';
+import MCPPage from './pages/MCPPage';
 import Sidebar from './components/Sidebar';
 
 const { Content } = Layout;
@@ -18,6 +19,7 @@ function App() {
             <Route path="/" element={<ChatPage />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/chat/:sessionId" element={<ChatPage />} />
+            <Route path="/mcp" element={<MCPPage />} />
           </Routes>
         </Content>
       </Layout>

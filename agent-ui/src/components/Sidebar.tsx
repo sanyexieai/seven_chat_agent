@@ -121,49 +121,68 @@ const Sidebar: React.FC = () => {
         <h2 style={{ color: 'white', margin: 0 }}>AI Agent</h2>
       </div>
 
-      {/* 智能体列表 */}
-      <div style={{ padding: '0 16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-          <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
-            智能体
-          </Text>
-        </div>
-        <List
-          size="small"
-          dataSource={agents}
-          renderItem={(agent) => (
-            <List.Item
-              style={{
-                padding: '8px 12px',
-                cursor: 'pointer',
-                backgroundColor: selectedAgent === agent.id ? '#1890ff' : 'transparent',
-                borderRadius: '4px',
-                marginBottom: '4px',
-              }}
-              onClick={() => handleAgentSelect(agent.id)}
-            >
-              <List.Item.Meta
-                avatar={<Avatar icon={<RobotOutlined />} size="small" />}
-                title={
-                  <Text style={{ color: 'white', fontSize: '12px' }}>
-                    {agent.display_name}
-                  </Text>
-                }
-                description={
-                  <Text style={{ color: '#ccc', fontSize: '10px' }}>
-                    {agent.description}
-                  </Text>
-                }
-              />
-            </List.Item>
-          )}
-        />
-      </div>
+      {/* 导航菜单 */}
+      <Menu
+        mode="inline"
+        style={{ background: '#001529', border: 'none' }}
+        selectedKeys={[location.pathname]}
+        onClick={({ key }) => navigate(key)}
+      >
+        <Menu.Item key="/" icon={<MessageOutlined />}>
+          <Text style={{ color: 'white' }}>聊天</Text>
+        </Menu.Item>
+        <Menu.Item key="/mcp" icon={<RobotOutlined />}>
+          <Text style={{ color: 'white' }}>MCP配置</Text>
+        </Menu.Item>
+      </Menu>
 
       <Divider style={{ margin: '16px', borderColor: '#303030' }} />
 
-      {/* 会话列表 */}
-      {selectedAgent && (
+      {/* 智能体列表 - 只在聊天页面显示 */}
+      {location.pathname === '/' || location.pathname.startsWith('/chat') && (
+        <div style={{ padding: '0 16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
+              智能体
+            </Text>
+          </div>
+          <List
+            size="small"
+            dataSource={agents}
+            renderItem={(agent) => (
+              <List.Item
+                style={{
+                  padding: '8px 12px',
+                  cursor: 'pointer',
+                  backgroundColor: selectedAgent === agent.id ? '#1890ff' : 'transparent',
+                  borderRadius: '4px',
+                  marginBottom: '4px',
+                }}
+                onClick={() => handleAgentSelect(agent.id)}
+              >
+                <List.Item.Meta
+                  avatar={<Avatar icon={<RobotOutlined />} size="small" />}
+                  title={
+                    <Text style={{ color: 'white', fontSize: '12px' }}>
+                      {agent.display_name}
+                    </Text>
+                  }
+                  description={
+                    <Text style={{ color: '#ccc', fontSize: '10px' }}>
+                      {agent.description}
+                    </Text>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+        </div>
+      )}
+
+      <Divider style={{ margin: '16px', borderColor: '#303030' }} />
+
+      {/* 会话列表 - 只在聊天页面显示 */}
+      {selectedAgent && (location.pathname === '/' || location.pathname.startsWith('/chat')) && (
         <div style={{ padding: '0 16px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>

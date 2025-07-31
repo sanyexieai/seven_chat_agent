@@ -34,7 +34,7 @@ def init_db():
     os.makedirs(data_dir, exist_ok=True)
     
     # 导入所有模型以确保表被创建
-    from models.database_models import Agent, UserSession, Message
+    from models.database_models import Agent, UserSession, Message, MCPServer, MCPTool
     
     # 创建所有表
     Base.metadata.create_all(bind=engine)

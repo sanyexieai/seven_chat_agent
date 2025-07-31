@@ -6,12 +6,14 @@ from agents.report_agent import ReportAgent
 from models.chat_models import AgentMessage, StreamChunk, AgentContext
 from utils.log_helper import get_logger
 from database.database import SessionLocal
-from models.database_models import Agent as DBAgent
+from models.database_models import Agent as DBAgent, MCPServer, MCPTool as DBMCPTool
+from utils.mcp_helper import get_mcp_helper
 
 # 获取logger实例
 logger = get_logger("agent_manager")
 import asyncio
 import uuid
+import json
 
 class AgentManager:
     """智能体管理器"""
@@ -20,15 +22,226 @@ class AgentManager:
         self.agents: Dict[str, BaseAgent] = {}
         self.user_sessions: Dict[str, str] = {}  # user_id -> session_id
         self.session_contexts: Dict[str, AgentContext] = {}  # session_id -> context
+        self.mcp_configs: Dict[str, Dict] = {}  # MCP配置缓存
+        self.mcp_helper = None  # MCP助手实例
         
     async def initialize(self):
         """初始化智能体管理器"""
         logger.info("初始化智能体管理器...")
         
+        # 检查数据库表
+        await self._check_database_tables()
+        
+        # 加载MCP配置
+        await self._load_mcp_configs()
+        
         # 创建默认智能体
         await self._create_default_agents()
         
-        logger.info(f"智能体管理器初始化完成，共 {len(self.agents)} 个智能体")
+        logger.info(f"智能体管理器初始化完成，共 {len(self.agents)} 个智能体，{len(self.mcp_configs)} 个MCP配置")
+        logger.info(f"初始化完成后的MCP配置: {list(self.mcp_configs.keys())}")
+        logger.info(f"初始化完成后的MCP配置详情: {self.mcp_configs}")
+    
+    async def _load_mcp_configs(self):
+        """从数据库加载MCP配置"""
+        db = SessionLocal()
+        try:
+            logger.info("开始从数据库加载MCP配置...")
+            # 从数据库获取所有激活的MCP服务器
+            db_mcp_servers = db.query(MCPServer).filter(MCPServer.is_active == True).all()
+            logger.info(f"从数据库查询到 {len(db_mcp_servers)} 个MCP服务器")
+            
+            for db_server in db_mcp_servers:
+                # 构建服务器配置
+                server_config = {
+                    'transport': db_server.transport
+                }
+                
+                if db_server.command:
+                    server_config['command'] = db_server.command
+                if db_server.args:
+                    server_config['args'] = db_server.args
+                if db_server.env:
+                    server_config['env'] = db_server.env
+                if db_server.url:
+                    server_config['url'] = db_server.url
+                
+                self.mcp_configs[db_server.name] = {
+                    'id': db_server.id,
+                    'name': db_server.name,
+                    'display_name': db_server.display_name,
+                    'description': db_server.description,
+                    'server_config': server_config,
+                    'is_active': db_server.is_active,
+                    'tools': []
+                }
+                logger.info(f"加载服务器配置: {db_server.name} -> {server_config}")
+                
+                # 加载该服务器的工具
+                tools = db.query(DBMCPTool).filter(
+                    DBMCPTool.server_id == db_server.id,
+                    DBMCPTool.is_active == True
+                ).all()
+                
+                for tool in tools:
+                    self.mcp_configs[db_server.name]['tools'].append({
+                        'id': tool.id,
+                        'name': tool.name,
+                        'display_name': tool.display_name,
+                        'description': tool.description,
+                        'tool_type': tool.tool_type,
+                        'input_schema': tool.input_schema,
+                        'output_schema': tool.output_schema,
+                        'examples': tool.examples
+                    })
+                
+                logger.info(f"加载MCP服务器: {db_server.name} ({db_server.display_name}) - {len(tools)} 个工具")
+            
+            # 初始化MCP助手
+            if self.mcp_configs:
+                logger.info(f"开始初始化MCP助手，配置数量: {len(self.mcp_configs)}")
+                await self._initialize_mcp_helper()
+            else:
+                logger.warning("没有MCP配置，跳过MCP助手初始化")
+            
+            logger.info(f"从数据库加载了 {len(self.mcp_configs)} 个MCP服务器")
+            logger.info(f"当前MCP配置: {list(self.mcp_configs.keys())}")
+            logger.info(f"MCP配置详情: {self.mcp_configs}")
+            
+            # 如果没有加载到任何配置，创建默认配置
+            if not self.mcp_configs:
+                logger.info("数据库中没有MCP配置，创建默认配置...")
+                await self._create_fallback_mcp_configs()
+            
+        except Exception as e:
+            logger.error(f"从数据库加载MCP配置失败: {str(e)}")
+            # 如果数据库加载失败，使用默认配置
+            await self._create_fallback_mcp_configs()
+        finally:
+            db.close()
+    
+    async def _create_fallback_mcp_configs(self):
+        """创建默认MCP配置（备用方案）"""
+        try:
+            # 读取默认配置文件
+            import os
+            from config.env import MCP_CONFIG_FILE
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), MCP_CONFIG_FILE)
+            
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    default_config = json.load(f)
+                
+                # 将默认配置添加到数据库
+                await self._save_default_mcp_configs(default_config)
+                
+                # 重新从数据库加载配置到内存
+                await self._load_mcp_configs()
+                
+                logger.info("创建默认MCP配置完成")
+            else:
+                logger.warning("未找到默认MCP配置文件")
+                
+        except Exception as e:
+            logger.error(f"创建默认MCP配置失败: {str(e)}")
+    
+    async def _check_database_tables(self):
+        """检查数据库表是否存在"""
+        db = SessionLocal()
+        try:
+            logger.info("检查数据库表...")
+            
+            # 检查MCPServer表
+            try:
+                server_count = db.query(MCPServer).count()
+                logger.info(f"MCPServer表存在，有 {server_count} 条记录")
+            except Exception as e:
+                logger.error(f"MCPServer表不存在或查询失败: {str(e)}")
+            
+            # 检查MCPTool表
+            try:
+                tool_count = db.query(DBMCPTool).count()
+                logger.info(f"MCPTool表存在，有 {tool_count} 条记录")
+            except Exception as e:
+                logger.error(f"MCPTool表不存在或查询失败: {str(e)}")
+            
+            # 检查Agent表
+            try:
+                agent_count = db.query(DBAgent).count()
+                logger.info(f"Agent表存在，有 {agent_count} 条记录")
+            except Exception as e:
+                logger.error(f"Agent表不存在或查询失败: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"检查数据库表失败: {str(e)}")
+        finally:
+            db.close()
+    
+    async def _save_default_mcp_configs(self, config: Dict):
+        """保存默认MCP配置到数据库"""
+        db = SessionLocal()
+        try:
+            for name, server_config in config.get('mcpServers', {}).items():
+                # 检查是否已存在
+                existing = db.query(MCPServer).filter(MCPServer.name == name).first()
+                if not existing:
+                    # 创建新的MCP服务器
+                    mcp_server = MCPServer(
+                        name=name,
+                        display_name=f"{name.upper()} MCP服务器",
+                        description=f"默认{name} MCP服务器配置",
+                        transport=server_config.get('transport', 'stdio'),
+                        command=server_config.get('command'),
+                        args=server_config.get('args'),
+                        env=server_config.get('env'),
+                        url=server_config.get('url'),
+                        is_active=True
+                    )
+                    db.add(mcp_server)
+                    db.flush()  # 获取ID
+                    
+                    # 这里可以添加默认工具，但需要实际连接到MCP服务器获取工具列表
+                    # 暂时跳过工具创建，等MCP助手初始化后再同步工具信息
+            
+            db.commit()
+            logger.info("默认MCP服务器配置已保存到数据库")
+            
+        except Exception as e:
+            logger.error(f"保存默认MCP配置失败: {str(e)}")
+            db.rollback()
+        finally:
+            db.close()
+    
+    async def _initialize_mcp_helper(self):
+        """初始化MCP助手"""
+        try:
+            if self.mcp_configs:
+                # 构建MCP配置
+                mcp_config = {
+                    "mcpServers": {
+                        name: config['server_config'] 
+                        for name, config in self.mcp_configs.items()
+                    }
+                }
+                
+                logger.info(f"初始化MCP助手，配置: {list(mcp_config['mcpServers'].keys())}")
+                
+                # 初始化MCP助手
+                self.mcp_helper = get_mcp_helper(config=mcp_config)
+                logger.info("MCP助手初始化成功")
+            else:
+                logger.warning("没有可用的MCP配置")
+                # 即使没有配置，也尝试初始化一个空的MCP助手
+                try:
+                    self.mcp_helper = get_mcp_helper(config={"mcpServers": {}})
+                    logger.info("初始化空的MCP助手")
+                except Exception as e:
+                    logger.warning(f"初始化空MCP助手失败: {str(e)}")
+                    self.mcp_helper = None
+                
+        except Exception as e:
+            logger.error(f"MCP助手初始化失败: {str(e)}")
+            self.mcp_helper = None
     
     async def _create_default_agents(self):
         """从数据库加载智能体"""
@@ -53,6 +266,10 @@ class AgentManager:
                 if db_agent.config:
                     agent.config = db_agent.config
                 
+                # 设置MCP助手
+                if self.mcp_helper:
+                    agent.mcp_helper = self.mcp_helper
+                
                 self.agents[db_agent.name] = agent
                 logger.info(f"加载智能体: {db_agent.name} ({db_agent.display_name})")
             
@@ -69,14 +286,20 @@ class AgentManager:
         """创建默认智能体（备用方案）"""
         # 聊天智能体
         chat_agent = ChatAgent("chat_agent", "通用聊天智能体")
+        if self.mcp_helper:
+            chat_agent.mcp_helper = self.mcp_helper
         self.agents["chat_agent"] = chat_agent
         
         # 搜索智能体
         search_agent = SearchAgent("search_agent", "搜索和信息检索智能体")
+        if self.mcp_helper:
+            search_agent.mcp_helper = self.mcp_helper
         self.agents["search_agent"] = search_agent
         
         # 报告智能体
         report_agent = ReportAgent("report_agent", "报告生成智能体")
+        if self.mcp_helper:
+            report_agent.mcp_helper = self.mcp_helper
         self.agents["report_agent"] = report_agent
         
         logger.info("创建默认智能体完成")
@@ -171,4 +394,235 @@ class AgentManager:
         else:
             return self.agents["chat_agent"]
     
- 
+    # MCP配置管理方法
+    async def get_mcp_configs(self) -> Dict[str, Any]:
+        """获取所有MCP配置"""
+        return self.mcp_configs
+    
+    async def update_mcp_server(self, name: str, config: Dict[str, Any]) -> bool:
+        """更新MCP服务器配置"""
+        try:
+            db = SessionLocal()
+            db_server = db.query(MCPServer).filter(MCPServer.name == name).first()
+            
+            if db_server:
+                # 更新现有配置
+                for key, value in config.items():
+                    if hasattr(db_server, key):
+                        setattr(db_server, key, value)
+                
+                db.commit()
+                
+                # 重新加载配置
+                await self._load_mcp_configs()
+                
+                logger.info(f"MCP服务器 {name} 更新成功")
+                return True
+            else:
+                logger.error(f"MCP服务器 {name} 不存在")
+                return False
+                
+        except Exception as e:
+            logger.error(f"更新MCP服务器失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+    
+    async def create_mcp_server(self, config: Dict[str, Any]) -> bool:
+        """创建新的MCP服务器"""
+        try:
+            db = SessionLocal()
+            
+            # 检查是否已存在
+            existing = db.query(MCPServer).filter(MCPServer.name == config['name']).first()
+            if existing:
+                logger.error(f"MCP服务器 {config['name']} 已存在")
+                return False
+            
+            # 创建新服务器
+            mcp_server = MCPServer(
+                name=config['name'],
+                display_name=config['display_name'],
+                description=config.get('description'),
+                transport=config['transport'],
+                command=config.get('command'),
+                args=config.get('args'),
+                env=config.get('env'),
+                url=config.get('url'),
+                is_active=config.get('is_active', True)
+            )
+            
+            db.add(mcp_server)
+            db.commit()
+            
+            # 重新加载配置
+            await self._load_mcp_configs()
+            
+            logger.info(f"MCP服务器 {config['name']} 创建成功")
+            return True
+            
+        except Exception as e:
+            logger.error(f"创建MCP服务器失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+    
+    async def sync_mcp_tools(self, server_name: str) -> bool:
+        """同步MCP服务器工具信息"""
+        db = None
+        try:
+            logger.info(f"开始同步MCP工具，服务器: {server_name}")
+            logger.info(f"当前MCP配置: {list(self.mcp_configs.keys())}")
+            logger.info(f"MCP配置详情: {self.mcp_configs}")
+            logger.info(f"MCP助手状态: {self.mcp_helper is not None}")
+            
+            # 检查服务器是否在配置中
+            if server_name not in self.mcp_configs:
+                logger.error(f"服务器 {server_name} 不在MCP配置中")
+                logger.error(f"当前可用的服务器: {list(self.mcp_configs.keys())}")
+                return False
+            
+            # 如果MCP助手未初始化，重新初始化
+            if not self.mcp_helper:
+                logger.info("MCP助手未初始化，重新初始化...")
+                await self._initialize_mcp_helper()
+                if not self.mcp_helper:
+                    logger.error("MCP助手初始化失败")
+                    return False
+                else:
+                    logger.info("MCP助手重新初始化成功")
+            else:
+                logger.info("MCP助手已初始化")
+            
+            # 获取服务器工具
+            logger.info(f"尝试获取服务器 {server_name} 的工具...")
+            try:
+                tools = await self.mcp_helper.get_tools(server_name=server_name)
+                logger.info(f"成功获取到 {len(tools)} 个工具")
+            except Exception as e:
+                logger.error(f"获取工具失败: {str(e)}")
+                # 如果获取工具失败，返回空列表而不是失败
+                tools = []
+                logger.info("使用空工具列表继续执行")
+            
+            db = SessionLocal()
+            db_server = db.query(MCPServer).filter(MCPServer.name == server_name).first()
+            
+            if not db_server:
+                logger.error(f"MCP服务器 {server_name} 不存在")
+                return False
+            
+            # 清除现有工具
+            db.query(DBMCPTool).filter(DBMCPTool.server_id == db_server.id).delete()
+            
+            # 添加新工具
+            for tool in tools:
+                # 处理不同类型的工具对象
+                tool_name = ''
+                tool_display_name = ''
+                tool_description = ''
+                tool_type = 'tool'
+                input_schema = {}
+                output_schema = {}
+                examples = []
+                
+                # 如果是字典类型
+                if isinstance(tool, dict):
+                    tool_name = tool.get('name', '')
+                    tool_display_name = tool.get('displayName', '')
+                    tool_description = tool.get('description', '')
+                    tool_type = tool.get('type', 'tool')
+                    input_schema = tool.get('inputSchema', {})
+                    output_schema = tool.get('outputSchema', {})
+                    examples = tool.get('examples', [])
+                # 如果是StructuredTool对象
+                elif hasattr(tool, 'name'):
+                    tool_name = getattr(tool, 'name', '')
+                    tool_display_name = getattr(tool, 'display_name', '')
+                    tool_description = getattr(tool, 'description', '')
+                    tool_type = getattr(tool, 'type', 'tool')
+                    
+                    # 处理input_schema和output_schema，确保它们是可序列化的
+                    input_schema_raw = getattr(tool, 'input_schema', {})
+                    output_schema_raw = getattr(tool, 'output_schema', {})
+                    
+                    # 如果是类对象，尝试获取其schema
+                    if hasattr(input_schema_raw, 'schema'):
+                        try:
+                            input_schema = input_schema_raw.schema()
+                        except:
+                            input_schema = {}
+                    else:
+                        input_schema = input_schema_raw
+                    
+                    if hasattr(output_schema_raw, 'schema'):
+                        try:
+                            output_schema = output_schema_raw.schema()
+                        except:
+                            output_schema = {}
+                    else:
+                        output_schema = output_schema_raw
+                    
+                    examples = getattr(tool, 'examples', [])
+                # 如果是其他对象，尝试获取属性
+                else:
+                    try:
+                        tool_name = str(getattr(tool, 'name', ''))
+                        tool_display_name = str(getattr(tool, 'display_name', ''))
+                        tool_description = str(getattr(tool, 'description', ''))
+                        tool_type = str(getattr(tool, 'type', 'tool'))
+                        
+                        # 处理input_schema和output_schema
+                        input_schema_raw = getattr(tool, 'input_schema', {})
+                        output_schema_raw = getattr(tool, 'output_schema', {})
+                        
+                        # 如果是类对象，尝试获取其schema
+                        if hasattr(input_schema_raw, 'schema'):
+                            try:
+                                input_schema = input_schema_raw.schema()
+                            except:
+                                input_schema = {}
+                        else:
+                            input_schema = input_schema_raw
+                        
+                        if hasattr(output_schema_raw, 'schema'):
+                            try:
+                                output_schema = output_schema_raw.schema()
+                            except:
+                                output_schema = {}
+                        else:
+                            output_schema = output_schema_raw
+                        
+                        examples = getattr(tool, 'examples', [])
+                    except Exception as e:
+                        logger.warning(f"无法解析工具对象: {str(e)}")
+                        continue
+                
+                # 跳过没有名称的工具
+                if not tool_name:
+                    logger.warning(f"跳过没有名称的工具: {tool}")
+                    continue
+                
+                mcp_tool = DBMCPTool(
+                    server_id=db_server.id,
+                    name=tool_name,
+                    display_name=tool_display_name,
+                    description=tool_description,
+                    tool_type=tool_type,
+                    input_schema=input_schema,
+                    output_schema=output_schema,
+                    examples=examples,
+                    is_active=True
+                )
+                db.add(mcp_tool)
+            
+            db.commit()
+            logger.info(f"同步MCP服务器 {server_name} 工具成功，共 {len(tools)} 个工具")
+            return True
+            
+        except Exception as e:
+            logger.error(f"同步MCP工具失败: {str(e)}")
+            return False
+        finally:
+            if db:
+                db.close()

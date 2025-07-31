@@ -381,6 +381,15 @@ class LLMHelper:
         """获取当前模型配置"""
         return self._config.copy()
 
+    def filter_think_content(self, text: str) -> str:
+        """过滤掉<think>标签内的思考内容"""
+        import re
+        # 移除<think>...</think>标签及其内容
+        filtered_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # 移除多余的空白字符
+        filtered_text = re.sub(r'\s+', ' ', filtered_text).strip()
+        return filtered_text
+
 # 获取单例
 def get_llm_helper():
     llm_helper = LLMHelper()

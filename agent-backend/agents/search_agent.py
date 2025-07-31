@@ -128,7 +128,7 @@ class SearchAgent(BaseAgent):
                 
                 response = await self.llm_helper.call(prompt)
                 # 过滤掉思考内容
-                filtered_response = self._filter_think_content(response)
+                filtered_response = self.llm_helper.filter_think_content(response)
                 try:
                     return json.loads(filtered_response)
                 except:
@@ -171,14 +171,7 @@ class SearchAgent(BaseAgent):
                 "confidence": 0.5
             }
     
-    def _filter_think_content(self, text: str) -> str:
-        """过滤掉<think>标签内的思考内容"""
-        import re
-        # 移除<think>...</think>标签及其内容
-        filtered_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        # 移除多余的空白字符
-        filtered_text = re.sub(r'\s+', ' ', filtered_text).strip()
-        return filtered_text
+
 
     async def _extract_keywords(self, message: str, search_intent: Dict[str, Any]) -> List[str]:
         """提取搜索关键词"""
@@ -193,7 +186,7 @@ class SearchAgent(BaseAgent):
                 
                 response = await self.llm_helper.call(prompt)
                 # 过滤掉思考内容
-                filtered_response = self._filter_think_content(response)
+                filtered_response = self.llm_helper.filter_think_content(response)
                 keywords = [kw.strip() for kw in filtered_response.split(',') if kw.strip()]
                 if keywords:
                     return keywords
@@ -348,7 +341,7 @@ class SearchAgent(BaseAgent):
                 
                 response = await self.llm_helper.call(prompt)
                 # 过滤掉思考内容
-                filtered_response = self._filter_think_content(response)
+                filtered_response = self.llm_helper.filter_think_content(response)
                 return filtered_response.strip()
             
             # 备用响应生成
@@ -375,13 +368,13 @@ class SearchAgent(BaseAgent):
         for search_type, result in search_results.items():
             if search_type == 'web_search':
                 response_parts.append("网络搜索结果：")
-                response_parts.append(result[:200] + "..." if len(result) > 200 else result)
+                response_parts.append(str(result))
             elif search_type == 'document_search':
                 response_parts.append("文档搜索结果：")
-                response_parts.append(result[:200] + "..." if len(result) > 200 else result)
+                response_parts.append(str(result))
             elif search_type == 'mcp_search':
                 response_parts.append("其他搜索结果：")
-                response_parts.append(str(result)[:200] + "..." if len(str(result)) > 200 else str(result))
+                response_parts.append(str(result))
         
         return "\n\n".join(response_parts)
     

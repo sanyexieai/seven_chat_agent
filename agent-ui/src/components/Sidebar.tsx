@@ -45,10 +45,8 @@ const Sidebar: React.FC = () => {
 
   // 获取用户会话
   useEffect(() => {
-    if (selectedAgent) {
-      fetchSessions(selectedAgent);
-    }
-  }, [selectedAgent]);
+    fetchSessions();
+  }, []);
 
   const fetchAgents = async () => {
     try {
@@ -62,9 +60,12 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  const fetchSessions = async (agentId: number) => {
+  const fetchSessions = async (agentId?: number) => {
     try {
-      const response = await fetch(`/api/sessions?user_id=default&agent_id=${agentId}`);
+      const url = agentId 
+        ? `/api/sessions?user_id=default&agent_id=${agentId}`
+        : '/api/sessions?user_id=default';
+      const response = await fetch(url);
       const data = await response.json();
       // 确保data是数组
       setSessions(Array.isArray(data) ? data : []);
@@ -87,6 +88,12 @@ const Sidebar: React.FC = () => {
 
   const handleCreateSession = async (values: any) => {
     try {
+      const agentId = selectedAgent || (agents.length > 0 ? agents[0].id : null);
+      if (!agentId) {
+        console.error('没有可用的智能体');
+        return;
+      }
+      
       const response = await fetch('/api/sessions', {
         method: 'POST',
         headers: {
@@ -94,7 +101,7 @@ const Sidebar: React.FC = () => {
         },
         body: JSON.stringify({
           user_id: 'default',
-          agent_id: selectedAgent,
+          agent_id: agentId,
           title: values.title,
         }),
       });
@@ -102,7 +109,7 @@ const Sidebar: React.FC = () => {
       if (response.ok) {
         setIsCreateSessionModalVisible(false);
         createSessionForm.resetFields();
-        fetchSessions(selectedAgent!);
+        fetchSessions();
       }
     } catch (error) {
       console.error('创建会话失败:', error);
@@ -139,7 +146,7 @@ const Sidebar: React.FC = () => {
       <Divider style={{ margin: '16px', borderColor: '#303030' }} />
 
       {/* 智能体列表 - 只在聊天页面显示 */}
-      {location.pathname === '/' || location.pathname.startsWith('/chat') && (
+      {(location.pathname === '/' || location.pathname.startsWith('/chat')) && (
         <div style={{ padding: '0 16px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
@@ -182,7 +189,7 @@ const Sidebar: React.FC = () => {
       <Divider style={{ margin: '16px', borderColor: '#303030' }} />
 
       {/* 会话列表 - 只在聊天页面显示 */}
-      {selectedAgent && (location.pathname === '/' || location.pathname.startsWith('/chat')) && (
+      {(location.pathname === '/' || location.pathname.startsWith('/chat')) && (
         <div style={{ padding: '0 16px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>

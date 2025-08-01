@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin } from 'antd';
+import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined } from '@ant-design/icons';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
 import './ChatPage.css';
 
@@ -18,8 +18,8 @@ interface Message {
 }
 
 interface Session {
-  id: number;
-  session_id: string;
+  id?: number;
+  session_id?: string;
   title: string;
   agent: {
     id: number;
@@ -27,59 +27,83 @@ interface Session {
     display_name: string;
     description?: string;
   };
-  created_at: string;
+  created_at?: string;
 }
 
 const ChatPage: React.FC = () => {
-  const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sessionCreated, setSessionCreated] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
 
-  // 加载会话信息
+  // 初始化默认会话
   useEffect(() => {
-    if (sessionId) {
-      loadSession();
-      loadMessages();
-    }
-  }, [sessionId]);
-
-  const loadSession = async () => {
-    try {
-      const response = await fetch(`/api/sessions/${sessionId}`);
-      if (response.ok) {
-        const session = await response.json();
-        setCurrentSession(session);
+    // 设置默认会话
+    setCurrentSession({
+      title: '新对话',
+      agent: {
+        id: 1,
+        name: 'chat_agent',
+        display_name: 'AI助手',
+        description: '通用聊天智能体'
       }
-    } catch (error) {
-      console.error('加载会话失败:', error);
+    });
+  }, []);
+
+  // 从消息内容提取关键词作为会话标题
+  const extractTitleFromMessage = (content: string): string => {
+    // 移除特殊字符，保留中文、英文、数字
+    const cleanContent = content.replace(/[^\u4e00-\u9fa5a-zA-Z0-9\s]/g, '');
+    
+    // 按空格分割，过滤空字符串
+    const words = cleanContent.split(/\s+/).filter(word => word.length > 0);
+    
+    // 如果内容太短，直接返回
+    if (words.length <= 3) {
+      return words.join(' ') || '新对话';
     }
+    
+    // 取前3-5个词作为标题
+    const titleWords = words.slice(0, Math.min(5, words.length));
+    const title = titleWords.join(' ');
+    
+    // 如果标题太长，截断
+    return title.length > 20 ? title.substring(0, 20) + '...' : title || '新对话';
   };
 
-  const loadMessages = async () => {
+  const createSession = async (title: string) => {
     try {
-      setLoading(true);
-      const response = await fetch(`/api/sessions/${sessionId}/messages`);
+      const response = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: title,
+          agent_name: currentSession?.agent.name || 'chat_agent'
+        }),
+      });
+
       if (response.ok) {
-        const data = await response.json();
-        const formattedMessages: Message[] = data.map((msg: any) => ({
-          id: msg.message_id,
-          content: msg.content,
-          type: msg.type as 'user' | 'agent',
-          timestamp: new Date(msg.created_at),
-          agentName: msg.agent_name
-        }));
-        setMessages(formattedMessages);
+        const session = await response.json();
+        setCurrentSession(prev => prev ? {
+          ...prev,
+          id: session.id,
+          session_id: session.session_id,
+          created_at: session.created_at
+        } : null);
+        setSessionCreated(true);
+        return session;
       }
     } catch (error) {
-      console.error('加载消息失败:', error);
-    } finally {
-      setLoading(false);
+      console.error('创建会话失败:', error);
+      message.error('创建会话失败');
     }
+    return null;
   };
 
   const scrollToBottom = () => {
@@ -91,7 +115,7 @@ const ChatPage: React.FC = () => {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!inputValue.trim() || !sessionId) return;
+    if (!inputValue.trim()) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -104,18 +128,28 @@ const ChatPage: React.FC = () => {
     setInputValue('');
 
     try {
+      // 如果是第一次发送消息，创建会话
+      let sessionId = currentSession?.session_id;
+      if (!sessionCreated) {
+        const title = extractTitleFromMessage(inputValue);
+        const session = await createSession(title);
+        sessionId = session?.session_id;
+      }
+
       // 保存用户消息到数据库
-      await fetch(`/api/sessions/${sessionId}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          session_id: parseInt(sessionId),
-          type: 'user',
-          content: inputValue,
-        }),
-      });
+      if (sessionId) {
+        await fetch(`/api/sessions/${sessionId}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            session_id: parseInt(sessionId),
+            type: 'user',
+            content: inputValue,
+          }),
+        });
+      }
 
       // 发送消息给智能体
       const response = await sendMessage(inputValue, currentSession?.agent.name || 'chat_agent');
@@ -129,18 +163,20 @@ const ChatPage: React.FC = () => {
       };
 
       // 保存智能体消息到数据库
-      await fetch(`/api/sessions/${sessionId}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          session_id: parseInt(sessionId),
-          type: 'agent',
-          content: response.message,
-          agent_name: currentSession?.agent.name,
-        }),
-      });
+      if (sessionId) {
+        await fetch(`/api/sessions/${sessionId}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            session_id: parseInt(sessionId),
+            type: 'agent',
+            content: response.message,
+            agent_name: currentSession?.agent.name,
+          }),
+        });
+      }
 
       setMessages(prev => [...prev, agentMessage]);
     } catch (error) {
@@ -170,18 +206,7 @@ const ChatPage: React.FC = () => {
     });
   };
 
-  if (!sessionId) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh' 
-      }}>
-        <Empty description="请选择一个会话开始聊天" />
-      </div>
-    );
-  }
+  // 移除sessionId检查，现在可以直接聊天
 
   return (
     <div className="chat-layout">
@@ -194,7 +219,7 @@ const ChatPage: React.FC = () => {
             <div className="header-info">
               <Text strong>{currentSession?.agent.display_name || 'AI助手'}</Text>
               <Text type="secondary" className="status-text">
-                {isConnected ? '在线' : '离线'}
+                {currentSession?.title || '新对话'} • {isConnected ? '在线' : '离线'}
               </Text>
             </div>
           </div>
@@ -219,9 +244,12 @@ const ChatPage: React.FC = () => {
                   display: 'flex', 
                   justifyContent: 'center', 
                   alignItems: 'center', 
-                  height: '200px' 
+                  height: '200px',
+                  flexDirection: 'column'
                 }}>
-                  <Empty description="暂无消息，开始聊天吧！" />
+                  <RobotOutlined style={{ fontSize: 48, color: '#d9d9d9', marginBottom: 16 }} />
+                  <Text type="secondary" style={{ marginBottom: 8 }}>欢迎使用AI助手！</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>直接输入消息开始聊天，系统会自动创建会话</Text>
                 </div>
               ) : (
                 messages.map((message) => (

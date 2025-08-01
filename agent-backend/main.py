@@ -83,12 +83,26 @@ async def chat(request: ChatRequest):
         )
     
     try:
-        # 处理用户消息
-        response = await agent_manager.process_message(
-            user_id=request.user_id,
-            message=request.message,
-            context=request.context
-        )
+        logger.info(f"聊天请求 - 用户ID: {request.user_id}, 消息: {request.message}")
+        logger.info(f"指定智能体名称: {request.agent_name}")
+        
+        # 如果指定了智能体名称，直接使用该智能体
+        if request.agent_name and request.agent_name in agent_manager.agents:
+            logger.info(f"使用指定智能体: {request.agent_name}")
+            agent = agent_manager.agents[request.agent_name]
+            response = await agent.process_message(
+                user_id=request.user_id,
+                message=request.message,
+                context=request.context
+            )
+        else:
+            # 否则使用智能体选择逻辑
+            logger.info("使用智能体选择逻辑")
+            response = await agent_manager.process_message(
+                user_id=request.user_id,
+                message=request.message,
+                context=request.context
+            )
         
         logger.info(f"API响应处理 - 智能体: {response.agent_name}")
         logger.info(f"API响应内容: {response.content}")
@@ -146,6 +160,46 @@ async def websocket_chat(websocket: WebSocket, user_id: str):
             "type": "error",
             "message": f"处理消息时出错: {str(e)}"
         }))
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """流式聊天接口"""
+    if agent_manager is None:
+        return StreamingResponse(
+            iter([json.dumps({"type": "error", "content": "系统正在初始化，请稍后再试"})]),
+            media_type="text/plain"
+        )
+    
+    async def generate():
+        try:
+            logger.info(f"流式聊天请求 - 用户ID: {request.user_id}, 消息: {request.message}")
+            logger.info(f"指定智能体名称: {request.agent_name}")
+            
+            # 如果指定了智能体名称，直接使用该智能体
+            if request.agent_name and request.agent_name in agent_manager.agents:
+                logger.info(f"使用指定智能体: {request.agent_name}")
+                agent = agent_manager.agents[request.agent_name]
+                async for chunk in agent.process_message_stream(
+                    user_id=request.user_id,
+                    message=request.message,
+                    context=request.context
+                ):
+                    yield f"data: {json.dumps(chunk)}\n\n"
+            else:
+                # 否则使用智能体选择逻辑
+                logger.info("使用智能体选择逻辑")
+                async for chunk in agent_manager.process_message_stream(
+                    user_id=request.user_id,
+                    message=request.message,
+                    context=request.context
+                ):
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    
+        except Exception as e:
+            logger.error(f"流式聊天处理失败: {str(e)}")
+            yield f"data: {json.dumps({'type': 'error', 'content': f'处理消息时出错: {str(e)}'})}\n\n"
+    
+    return StreamingResponse(generate(), media_type="text/plain")
 
 
 

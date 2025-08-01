@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., description="用户消息")
     context: Optional[Dict[str, Any]] = Field(default={}, description="上下文信息")
     agent_type: Optional[AgentType] = Field(default=AgentType.CHAT, description="智能体类型")
+    agent_name: Optional[str] = Field(default=None, description="指定智能体名称")
     stream: bool = Field(default=False, description="是否流式响应")
 
 class ChatResponse(BaseModel):

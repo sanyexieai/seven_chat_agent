@@ -59,10 +59,16 @@ class MCPHelper:
                 config = json.load(f)
         if not config:
             raise ValueError("必须传入 config 或 config_file")
+        
+        print(f"MCPHelper setup - 原始配置: {config}")
         config = self.auto_infer_transport(config)
+        print(f"MCPHelper setup - 处理后配置: {config}")
+        
         self._config = config
         self._client = MultiServerMCPClient(config["mcpServers"])
         self._tools_cache.clear()
+        
+        print(f"MCPHelper setup - 最终配置: {self._config}")
         return self
 
     def get_all_services(self) -> List[str]:
@@ -72,6 +78,32 @@ class MCPHelper:
         if not self._client:
             raise RuntimeError("MCPHelper 未初始化，请先 setup")
         return list(self._config["mcpServers"].keys())
+    
+    async def get_available_services(self) -> List[str]:
+        """
+        查询实际可用的服务名（通过测试连接）
+        """
+        if not self._client:
+            raise RuntimeError("MCPHelper 未初始化，请先 setup")
+        
+        print(f"配置中的所有服务: {list(self._config['mcpServers'].keys())}")
+        
+        available_services = []
+        for service_name in self._config["mcpServers"].keys():
+            try:
+                # 尝试获取工具来测试连接
+                tools = await self._client.get_tools(server_name=service_name)
+                available_services.append(service_name)
+                print(f"服务 {service_name} 连接成功，获取到 {len(tools)} 个工具")
+            except Exception as e:
+                # 连接失败，记录错误
+                print(f"服务 {service_name} 连接失败: {type(e).__name__}: {e}")
+                print(f"服务 {service_name} 错误详情: {str(e)}")
+                import traceback
+                print(f"服务 {service_name} 错误堆栈: {traceback.format_exc()}")
+                continue
+        
+        return available_services
 
     async def get_tools(self, server_name: str = None) -> List[Dict]:
         """

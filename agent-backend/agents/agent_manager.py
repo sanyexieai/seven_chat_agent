@@ -54,6 +54,8 @@ class AgentManager:
             logger.info(f"从数据库查询到 {len(db_mcp_servers)} 个MCP服务器")
             
             for db_server in db_mcp_servers:
+                logger.info(f"处理服务器: {db_server.name} - 激活状态: {db_server.is_active}")
+                
                 # 构建服务器配置
                 server_config = {
                     'transport': db_server.transport
@@ -67,6 +69,8 @@ class AgentManager:
                     server_config['env'] = db_server.env
                 if db_server.url:
                     server_config['url'] = db_server.url
+                
+                logger.info(f"服务器 {db_server.name} 配置: {server_config}")
                 
                 self.mcp_configs[db_server.name] = {
                     'id': db_server.id,
@@ -105,10 +109,21 @@ class AgentManager:
                 await self._initialize_mcp_helper()
             else:
                 logger.warning("没有MCP配置，跳过MCP助手初始化")
-            
-            logger.info(f"从数据库加载了 {len(self.mcp_configs)} 个MCP服务器")
-            logger.info(f"当前MCP配置: {list(self.mcp_configs.keys())}")
-            logger.info(f"MCP配置详情: {self.mcp_configs}")
+                logger.info(f"从数据库加载了 {len(self.mcp_configs)} 个MCP服务器")
+                logger.info(f"当前MCP配置: {list(self.mcp_configs.keys())}")
+                logger.info(f"MCP配置详情: {self.mcp_configs}")
+                
+                # 检查每个服务器的配置
+                for name, config in self.mcp_configs.items():
+                    logger.info(f"服务器 {name} 配置: {config['server_config']}")
+                
+                # 检查是否所有服务器都被正确加载
+                expected_servers = ['ddg', 'google', 'browser']
+                missing_servers = [s for s in expected_servers if s not in self.mcp_configs]
+                if missing_servers:
+                    logger.error(f"缺少的服务器: {missing_servers}")
+                else:
+                    logger.info("所有服务器都已正确加载")
             
             # 如果没有加载到任何配置，创建默认配置
             if not self.mcp_configs:
@@ -218,6 +233,8 @@ class AgentManager:
         """初始化MCP助手"""
         try:
             if self.mcp_configs:
+                logger.info(f"MCP配置详情: {self.mcp_configs}")
+                
                 # 构建MCP配置
                 mcp_config = {
                     "mcpServers": {
@@ -227,10 +244,20 @@ class AgentManager:
                 }
                 
                 logger.info(f"初始化MCP助手，配置: {list(mcp_config['mcpServers'].keys())}")
+                logger.info(f"MCP配置内容: {mcp_config}")
+                
+                # 检查每个服务器的配置
+                for name, server_config in mcp_config['mcpServers'].items():
+                    logger.info(f"服务器 {name} 配置: {server_config}")
                 
                 # 初始化MCP助手
                 self.mcp_helper = get_mcp_helper(config=mcp_config)
                 logger.info("MCP助手初始化成功")
+                
+                # 检查可用的服务
+                available_services = self.mcp_helper.get_all_services()
+                logger.info(f"MCP助手初始化后，可用服务: {available_services}")
+                
             else:
                 logger.warning("没有可用的MCP配置")
                 # 即使没有配置，也尝试初始化一个空的MCP助手
@@ -243,6 +270,7 @@ class AgentManager:
                 
         except Exception as e:
             logger.error(f"MCP助手初始化失败: {str(e)}")
+            logger.error(f"错误详情: {type(e).__name__}: {e}")
             self.mcp_helper = None
     
     async def _create_default_agents(self):
@@ -274,6 +302,7 @@ class AgentManager:
                 elif db_agent.agent_type == "tool_driven":
                     # 纯工具驱动智能体
                     bound_tools = db_agent.bound_tools or []
+                    logger.info(f"创建工具驱动智能体 {db_agent.name}，绑定工具: {bound_tools}")
                     agent = ToolDrivenAgent(db_agent.name, db_agent.display_name, bound_tools)
                 elif db_agent.agent_type == "flow_driven":
                     # 流程图驱动智能体（暂时使用提示词驱动作为占位符）

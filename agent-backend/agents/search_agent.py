@@ -32,17 +32,9 @@ class SearchAgent(BaseAgent):
             logger.warning(f"LLM初始化失败，将使用备用响应模式: {str(e)}")
             self.llm_helper = None
         
-        # 初始化MCP助手
-        try:
-            import os
-            from config.env import MCP_CONFIG_FILE
-            # 获取绝对路径
-            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), MCP_CONFIG_FILE)
-            self.mcp_helper = get_mcp_helper(config_file=config_path)
-            logger.info(f"搜索智能体 {name} MCP助手初始化成功")
-        except Exception as e:
-            logger.warning(f"MCP助手初始化失败: {str(e)}")
-            self.mcp_helper = None
+        # 初始化MCP助手（暂时不初始化，等待外部设置）
+        self.mcp_helper = None
+        logger.info(f"搜索智能体 {name} 初始化完成，等待MCP助手设置")
     
     async def process_message(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AgentMessage:
         """处理用户消息"""

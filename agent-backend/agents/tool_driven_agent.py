@@ -22,6 +22,7 @@ class ToolDrivenAgent(BaseAgent):
         
         # 绑定的工具列表（工具名称）
         self.bound_tools = bound_tools or []
+        logger.info(f"工具驱动智能体 {name} 初始化，绑定工具: {self.bound_tools}")
         
         # 工具信息缓存
         self.tool_info = {}
@@ -34,13 +35,9 @@ class ToolDrivenAgent(BaseAgent):
             logger.error(f"LLM初始化失败: {str(e)}")
             raise
         
-        # 初始化MCP助手
-        try:
-            self.mcp_helper = get_mcp_helper()
-            logger.info(f"工具驱动智能体 {name} MCP助手初始化成功")
-        except Exception as e:
-            logger.warning(f"MCP助手初始化失败: {str(e)}")
-            self.mcp_helper = None
+        # 初始化MCP助手（暂时不初始化，等待外部设置）
+        self.mcp_helper = None
+        logger.info(f"工具驱动智能体 {name} 初始化完成，等待MCP助手设置")
     
     def set_bound_tools(self, tools: List[str]):
         """设置绑定的工具列表"""
@@ -59,29 +56,51 @@ class ToolDrivenAgent(BaseAgent):
         
         try:
             self.tool_info = {}
+            logger.info(f"开始加载绑定工具信息，绑定工具列表: {self.bound_tools}")
             
             # 从所有MCP服务器获取工具信息
-            for server_name in self.mcp_helper.get_server_names():
+            available_services = await self.mcp_helper.get_available_services()
+            logger.info(f"实际可用的MCP服务: {available_services}")
+            
+            for server_name in available_services:
                 try:
+                    logger.info(f"尝试从服务器 {server_name} 获取工具...")
                     tools = await self.mcp_helper.get_tools(server_name=server_name)
+                    logger.info(f"从服务器 {server_name} 获取到 {len(tools)} 个工具")
+                    
                     for tool in tools:
-                        tool_name = getattr(tool, 'name', '') or tool.get('name', '')
+                        # 更详细地获取工具名称
+                        tool_name = None
+                        if hasattr(tool, 'name'):
+                            tool_name = getattr(tool, 'name', '')
+                        elif isinstance(tool, dict):
+                            tool_name = tool.get('name', '')
+                        else:
+                            tool_name = str(tool)
+                        
+                        logger.info(f"检查工具: {tool_name} (类型: {type(tool)})")
+                        logger.info(f"工具对象: {tool}")
+                        
                         if tool_name in self.bound_tools:
                             # 提取工具信息
                             tool_info = {
                                 'name': tool_name,
-                                'display_name': getattr(tool, 'display_name', '') or tool.get('displayName', ''),
-                                'description': getattr(tool, 'description', '') or tool.get('description', ''),
-                                'input_schema': getattr(tool, 'input_schema', {}) or tool.get('inputSchema', {}),
-                                'output_schema': getattr(tool, 'output_schema', {}) or tool.get('outputSchema', {}),
-                                'examples': getattr(tool, 'examples', []) or tool.get('examples', [])
+                                'display_name': getattr(tool, 'display_name', ''),
+                                'description': getattr(tool, 'description', ''),
+                                'input_schema': getattr(tool, 'input_schema', {}),
+                                'output_schema': getattr(tool, 'output_schema', {}),
+                                'examples': getattr(tool, 'examples', [])
                             }
                             self.tool_info[tool_name] = tool_info
-                            logger.info(f"加载工具信息: {tool_name}")
+                            logger.info(f"成功加载绑定工具信息: {tool_name}")
+                        else:
+                            logger.info(f"工具 {tool_name} 不在绑定列表中，跳过")
                 except Exception as e:
-                    logger.warning(f"从服务器 {server_name} 加载工具失败: {str(e)}")
+                    logger.error(f"从服务器 {server_name} 加载工具失败: {str(e)}")
+                    logger.error(f"错误详情: {type(e).__name__}: {e}")
             
-            logger.info(f"工具驱动智能体 {self.name} 加载了 {len(self.tool_info)} 个工具信息")
+            logger.info(f"工具驱动智能体 {self.name} 最终加载了 {len(self.tool_info)} 个绑定工具信息")
+            logger.info(f"加载的工具: {list(self.tool_info.keys())}")
             
         except Exception as e:
             logger.error(f"加载工具信息失败: {str(e)}")
@@ -128,11 +147,49 @@ class ToolDrivenAgent(BaseAgent):
             prompt_parts.append("")  # 空行分隔
         
         prompt_parts.append("""
-请根据用户的需求，选择合适的工具来完成任务。在回复中，请：
+请根据用户的需求，选择合适的工具来完成任务。
+
+**重要：当需要使用工具时，请使用以下JSON格式调用工具：**
+
+```json
+{
+  "tool": "工具名称",
+  "参数名1": "参数值1",
+  "参数名2": "参数值2"
+}
+```
+
+**使用步骤：**
 1. 分析用户的需求
 2. 选择合适的工具
-3. 说明如何使用工具
-4. 提供清晰的解释和建议
+3. 使用JSON格式调用工具
+4. 等待工具执行结果
+5. 根据结果生成最终回复
+
+**示例：**
+如果用户要求打开百度搜索"商汤科技"，你应该这样调用工具：
+
+```json
+{
+  "tool": "browser_navigate",
+  "url": "https://www.baidu.com"
+}
+```
+
+```json
+{
+  "tool": "browser_form_input_fill",
+  "selector": "input#kw",
+  "value": "商汤科技"
+}
+```
+
+```json
+{
+  "tool": "browser_press_key",
+  "key": "Enter"
+}
+```
 
 如果用户的需求无法通过现有工具完成，请说明原因并建议替代方案。
 """)
@@ -179,9 +236,80 @@ class ToolDrivenAgent(BaseAgent):
                 ] + conversation_history
             )
             
+            # 解析响应中的工具调用
+            tools_used = []
+            final_response = response_content
+            
+            # 检查是否包含工具调用
+            if "```json" in response_content:
+                # 提取JSON格式的工具调用
+                import re
+                json_blocks = re.findall(r'```json\s*(\{.*?\})\s*```', response_content, re.DOTALL)
+                
+                for json_block in json_blocks:
+                    try:
+                        import json
+                        tool_call = json.loads(json_block)
+                        
+                        if "tool" in tool_call:
+                            tool_name = tool_call["tool"]
+                            parameters = {k: v for k, v in tool_call.items() if k != "tool"}
+                            
+                            logger.info(f"执行工具调用: {tool_name} 参数: {parameters}")
+                            
+                            # 执行工具
+                            if self.mcp_helper:
+                                # 检查工具是否在绑定列表中
+                                if tool_name in self.bound_tools:
+                                    # 尝试从所有可用服务器中调用工具
+                                    result = None
+                                    for server_name in await self.mcp_helper.get_available_services():
+                                        try:
+                                            result = await self.mcp_helper.call_tool(server_name, tool_name, **parameters)
+                                            logger.info(f"工具 {tool_name} 在服务器 {server_name} 执行成功")
+                                            break
+                                        except Exception as e:
+                                            logger.debug(f"工具 {tool_name} 在服务器 {server_name} 执行失败: {str(e)}")
+                                            continue
+                                    
+                                    if result is not None:
+                                        tools_used.append({
+                                            "tool": tool_name,
+                                            "parameters": parameters,
+                                            "result": result
+                                        })
+                                        logger.info(f"工具 {tool_name} 执行结果: {result}")
+                                    else:
+                                        logger.error(f"工具 {tool_name} 在所有服务器上执行失败")
+                                else:
+                                    logger.error(f"工具 {tool_name} 不在绑定列表中")
+                            else:
+                                logger.error("MCP助手未初始化")
+                            
+                    except Exception as e:
+                        logger.error(f"解析工具调用失败: {str(e)}")
+                        logger.error(f"JSON块: {json_block}")
+            
+            # 如果有工具调用，生成最终响应
+            if tools_used:
+                # 重新调用LLM生成包含工具执行结果的响应
+                tool_results = "\n".join([
+                    f"工具 {tool['tool']} 执行结果: {tool['result']}"
+                    for tool in tools_used
+                ])
+                
+                final_response = await self.llm_helper.call(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": response_content},
+                        {"role": "user", "content": f"工具执行结果:\n{tool_results}\n\n请根据工具执行结果生成最终回复。"}
+                    ]
+                )
+            
             # 创建响应消息
             response = self.create_message(
-                content=response_content,
+                content=final_response,
                 message_type=MessageType.AGENT,
                 agent_name=self.name
             )
@@ -275,8 +403,17 @@ class ToolDrivenAgent(BaseAgent):
     
     async def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具"""
+        logger.info(f"尝试执行工具: {tool_name}")
+        logger.info(f"当前绑定工具列表: {self.bound_tools}")
+        
         if not self.mcp_helper:
             raise Exception("MCP助手未初始化")
+        
+        # 检查工具是否在绑定列表中
+        if tool_name not in self.bound_tools:
+            logger.error(f"工具 {tool_name} 不在绑定列表中，无法执行")
+            logger.error(f"绑定工具列表: {self.bound_tools}")
+            raise Exception(f"工具 {tool_name} 不在绑定列表中，无法执行")
         
         try:
             result = await self.mcp_helper.execute_tool(tool_name, parameters)

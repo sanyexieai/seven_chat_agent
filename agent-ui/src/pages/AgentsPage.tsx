@@ -300,7 +300,7 @@ const AgentsPage: React.FC = () => {
   );
 
   return (
-    <div>
+    <div style={{ padding: '24px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <div>
           <Title level={2}>智能体管理</Title>
@@ -317,7 +317,7 @@ const AgentsPage: React.FC = () => {
         </Button>
       </div>
 
-      <Row gutter={[16, 16]}>
+      <Row gutter={[24, 24]}>
         {agents.map((agent) => (
           <Col xs={24} sm={12} lg={8} key={agent.id}>
             <Card

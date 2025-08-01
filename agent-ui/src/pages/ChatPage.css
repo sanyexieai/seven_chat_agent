@@ -2,7 +2,8 @@
 .chat-layout {
   display: flex;
   height: 100vh;
-  background: #f5f5f5;
+  background: #f8f9fa;
+  overflow: hidden;
 }
 
 /* 左侧边栏 */
@@ -12,6 +13,7 @@
   border-right: 1px solid #e8e8e8;
   display: flex;
   flex-direction: column;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
 }
 
 .sidebar-header {
@@ -28,6 +30,8 @@
   flex: 1;
   padding: 16px;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
 
 .agent-item {
@@ -98,10 +102,11 @@
 /* 消息容器 */
 .messages-container {
   flex: 1;
-  background: #f0f2f5;
+  background: #f8f9fa;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .messages-list {
@@ -110,6 +115,9 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+  scroll-behavior: smooth;
 }
 
 /* 消息样式 */
@@ -143,11 +151,12 @@
 /* 消息气泡 */
 .message-bubble {
   background: #fff;
-  border-radius: 12px;
-  padding: 12px 16px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  border-radius: 16px;
+  padding: 16px 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   position: relative;
   max-width: 100%;
+  border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .message-wrapper.user .message-bubble {
@@ -169,8 +178,11 @@
 }
 
 .message-text {
-  line-height: 1.5;
+  line-height: 1.6;
   word-wrap: break-word;
+  white-space: pre-wrap;
+  font-size: 14px;
+  color: #333;
 }
 
 .message-time {
@@ -186,9 +198,10 @@
 
 /* 输入区域 */
 .input-container {
-  padding: 16px 20px;
+  padding: 20px;
   border-top: 1px solid #e8e8e8;
   background: #fff;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
 }
 
 .input-wrapper {
@@ -199,26 +212,37 @@
 
 .message-input {
   flex: 1;
-  border-radius: 8px;
+  border-radius: 12px;
   border: 1px solid #d9d9d9;
   resize: none;
   transition: all 0.3s ease;
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .message-input:focus {
   border-color: #1890ff;
-  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+  box-shadow: 0 0 0 3px rgba(24, 144, 255, 0.15);
+  outline: none;
 }
 
 .send-button {
-  height: 40px;
-  border-radius: 8px;
-  padding: 0 16px;
+  height: 44px;
+  border-radius: 12px;
+  padding: 0 20px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+}
+
+.send-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(24, 144, 255, 0.3);
 }
 
 /* 滚动条样式 */
 .messages-list::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
 }
 
 .messages-list::-webkit-scrollbar-track {
@@ -226,16 +250,19 @@
 }
 
 .messages-list::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
 .messages-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.25);
+  background-clip: content-box;
 }
 
 .agent-list::-webkit-scrollbar {
-  width: 4px;
+  width: 6px;
 }
 
 .agent-list::-webkit-scrollbar-track {
@@ -243,12 +270,15 @@
 }
 
 .agent-list::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 3px;
+  border: 1px solid transparent;
+  background-clip: content-box;
 }
 
 .agent-list::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.2);
+  background-clip: content-box;
 }
 
 /* 响应式设计 */
@@ -258,7 +288,7 @@
   }
   
   .message-content {
-    max-width: 85%;
+    max-width: 90%;
   }
   
   .chat-layout {
@@ -268,6 +298,34 @@
   .chat-main {
     height: 100vh;
   }
+  
+  .message-bubble {
+    padding: 12px 16px;
+    border-radius: 12px;
+  }
+  
+  .input-container {
+    padding: 16px;
+  }
+  
+  .message-input {
+    padding: 10px 14px;
+    font-size: 16px; /* 移动端更大的字体 */
+  }
+}
+
+@media (max-width: 480px) {
+  .message-content {
+    max-width: 95%;
+  }
+  
+  .messages-list {
+    padding: 16px;
+  }
+  
+  .message-bubble {
+    padding: 10px 14px;
+  }
 }
 
 /* 动画效果 */
@@ -276,18 +334,38 @@
 }
 
 .message-bubble {
-  animation: messageSlideIn 0.3s ease-out;
+  animation: messageSlideIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @keyframes messageSlideIn {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(20px) scale(0.95);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
+}
+
+/* 消息间距优化 */
+.message-wrapper {
+  margin-bottom: 20px;
+}
+
+.message-wrapper:last-child {
+  margin-bottom: 0;
+}
+
+/* 智能体列表优化 */
+.agent-item {
+  margin-bottom: 12px;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.agent-item:last-child {
+  margin-bottom: 0;
 }
 
 /* 加载状态 */

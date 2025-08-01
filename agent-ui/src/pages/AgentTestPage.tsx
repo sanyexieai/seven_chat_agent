@@ -343,13 +343,13 @@ const AgentTestPage: React.FC = () => {
   );
 
   return (
-    <div>
+    <div style={{ padding: '24px' }}>
       <Title level={2}>智能体测试</Title>
       <Paragraph>
         测试不同类型的智能体，体验它们的功能和特点。
       </Paragraph>
 
-      <Row gutter={[16, 16]}>
+      <Row gutter={[24, 24]}>
         <Col span={8}>
           <Card title="选择智能体" size="small">
             <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
@@ -389,7 +389,7 @@ const AgentTestPage: React.FC = () => {
 
         <Col span={16}>
           {selectedAgent ? (
-            <div>
+            <div style={{ paddingLeft: '16px' }}>
               {renderAgentInfo(selectedAgent)}
               {renderChatInterface()}
             </div>

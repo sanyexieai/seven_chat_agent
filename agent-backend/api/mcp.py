@@ -148,6 +148,22 @@ async def delete_mcp_server(
         logger.error(f"删除MCP服务器失败: {str(e)}")
         raise HTTPException(status_code=500, detail="删除MCP服务器失败")
 
+@router.get("/tools", response_model=List[MCPToolResponse])
+async def get_all_mcp_tools(
+    active_only: bool = True,
+    db: Session = Depends(get_db)
+):
+    """获取所有MCP工具"""
+    try:
+        query = db.query(MCPTool)
+        if active_only:
+            query = query.filter(MCPTool.is_active == True)
+        tools = query.all()
+        return tools
+    except Exception as e:
+        logger.error(f"获取MCP工具失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取MCP工具失败")
+
 @router.get("/servers/{server_id}/tools", response_model=List[MCPToolResponse])
 async def get_mcp_tools(
     server_id: int,

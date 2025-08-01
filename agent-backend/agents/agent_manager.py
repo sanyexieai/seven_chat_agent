@@ -3,6 +3,8 @@ from agents.base_agent import BaseAgent
 from agents.chat_agent import ChatAgent
 from agents.search_agent import SearchAgent
 from agents.report_agent import ReportAgent
+from agents.prompt_driven_agent import PromptDrivenAgent
+from agents.tool_driven_agent import ToolDrivenAgent
 from models.chat_models import AgentMessage, StreamChunk, AgentContext
 from utils.log_helper import get_logger
 from database.database import SessionLocal
@@ -249,6 +251,12 @@ class AgentManager:
         try:
             # 从数据库获取所有激活的智能体
             db_agents = db.query(DBAgent).filter(DBAgent.is_active == True).all()
+            logger.info(f"从数据库查询到 {len(db_agents)} 个激活的智能体")
+            for db_agent in db_agents:
+                logger.info(f"数据库智能体: {db_agent.name} - {db_agent.display_name} - 类型: {db_agent.agent_type} - 激活: {db_agent.is_active}")
+            logger.info(f"从数据库查询到 {len(db_agents)} 个激活的智能体")
+            for db_agent in db_agents:
+                logger.info(f"数据库智能体: {db_agent.name} - {db_agent.display_name} - 类型: {db_agent.agent_type} - 激活: {db_agent.is_active}")
             
             for db_agent in db_agents:
                 # 根据智能体类型创建相应的智能体实例
@@ -258,6 +266,20 @@ class AgentManager:
                     agent = SearchAgent(db_agent.name, db_agent.display_name)
                 elif db_agent.agent_type == "report":
                     agent = ReportAgent(db_agent.name, db_agent.display_name)
+                elif db_agent.agent_type == "prompt_driven":
+                    # 纯提示词驱动智能体
+                    system_prompt = db_agent.system_prompt
+                    logger.info(f"加载提示词驱动智能体 {db_agent.name}，系统提示词: {system_prompt}")
+                    agent = PromptDrivenAgent(db_agent.name, db_agent.display_name, system_prompt)
+                elif db_agent.agent_type == "tool_driven":
+                    # 纯工具驱动智能体
+                    bound_tools = db_agent.bound_tools or []
+                    agent = ToolDrivenAgent(db_agent.name, db_agent.display_name, bound_tools)
+                elif db_agent.agent_type == "flow_driven":
+                    # 流程图驱动智能体（暂时使用提示词驱动作为占位符）
+                    logger.warning(f"流程图驱动智能体 {db_agent.name} 暂未实现，使用提示词驱动作为占位符")
+                    system_prompt = db_agent.system_prompt or "你是一个流程图驱动的智能体，但目前功能还在开发中。"
+                    agent = PromptDrivenAgent(db_agent.name, db_agent.display_name, system_prompt)
                 else:
                     # 默认使用聊天智能体
                     agent = ChatAgent(db_agent.name, db_agent.display_name)
@@ -266,12 +288,22 @@ class AgentManager:
                 if db_agent.config:
                     agent.config = db_agent.config
                 
-                # 设置MCP助手
+                # 设置MCP助手（只对需要MCP的智能体）
                 if self.mcp_helper:
-                    agent.mcp_helper = self.mcp_helper
+                    if db_agent.agent_type == "tool_driven":
+                        # 工具驱动智能体需要MCP助手
+                        agent.mcp_helper = self.mcp_helper
+                        logger.info(f"工具驱动智能体 {db_agent.name} 设置MCP助手")
+                    elif db_agent.agent_type in ["chat", "search", "report"]:
+                        # 传统智能体也需要MCP助手（向后兼容）
+                        agent.mcp_helper = self.mcp_helper
+                        logger.info(f"传统智能体 {db_agent.name} 设置MCP助手")
+                    else:
+                        # 提示词驱动智能体不需要MCP助手
+                        logger.info(f"提示词驱动智能体 {db_agent.name} 不设置MCP助手")
                 
                 self.agents[db_agent.name] = agent
-                logger.info(f"加载智能体: {db_agent.name} ({db_agent.display_name})")
+                logger.info(f"加载智能体: {db_agent.name} ({db_agent.display_name}) - 类型: {db_agent.agent_type}")
             
             logger.info(f"从数据库加载了 {len(self.agents)} 个智能体")
             
@@ -301,6 +333,18 @@ class AgentManager:
         if self.mcp_helper:
             report_agent.mcp_helper = self.mcp_helper
         self.agents["report_agent"] = report_agent
+        
+        # 提示词驱动智能体（不需要MCP助手）
+        prompt_agent = PromptDrivenAgent("prompt_agent", "提示词驱动智能体")
+        self.agents["prompt_agent"] = prompt_agent
+        logger.info("创建提示词驱动智能体，不设置MCP助手")
+        
+        # 工具驱动智能体（需要MCP助手）
+        tool_agent = ToolDrivenAgent("tool_agent", "工具驱动智能体", ["web_search", "file_search"])
+        if self.mcp_helper:
+            tool_agent.mcp_helper = self.mcp_helper
+            logger.info("工具驱动智能体设置MCP助手")
+        self.agents["tool_agent"] = tool_agent
         
         logger.info("创建默认智能体完成")
     
@@ -386,13 +430,55 @@ class AgentManager:
     
     def _select_agent(self, message: str) -> BaseAgent:
         """选择智能体（简化版本）"""
-        # 这里可以实现更智能的智能体选择逻辑
-        if any(keyword in message.lower() for keyword in ["搜索", "查找", "查询", "search", "find"]):
-            return self.agents.get("search_agent", self.agents["chat_agent"])
+        logger.info(f"选择智能体，用户消息: {message}")
+        logger.info(f"当前可用智能体: {list(self.agents.keys())}")
+        
+        # 使用已经加载到内存中的智能体实例
+        available_agents = list(self.agents.keys())
+        
+        # 根据消息内容选择最合适的智能体
+        selected = None
+        
+        # 根据关键词匹配智能体
+        if any(keyword in message.lower() for keyword in ["翻译", "translate"]):
+            for name in available_agents:
+                if "翻译" in name or "translate" in name.lower():
+                    selected = self.agents[name]
+                    break
+        elif any(keyword in message.lower() for keyword in ["代码", "编程", "code", "program"]):
+            for name in available_agents:
+                if "代码" in name or "code" in name.lower():
+                    selected = self.agents[name]
+                    break
+        elif any(keyword in message.lower() for keyword in ["写作", "write", "文章"]):
+            for name in available_agents:
+                if "写作" in name or "write" in name.lower():
+                    selected = self.agents[name]
+                    break
+        elif any(keyword in message.lower() for keyword in ["搜索", "查找", "查询", "search", "find"]):
+            for name in available_agents:
+                if "搜索" in name or "search" in name.lower():
+                    selected = self.agents[name]
+                    break
         elif any(keyword in message.lower() for keyword in ["报告", "总结", "分析", "report", "summary"]):
-            return self.agents.get("report_agent", self.agents["chat_agent"])
-        else:
-            return self.agents["chat_agent"]
+            for name in available_agents:
+                if "报告" in name or "report" in name.lower():
+                    selected = self.agents[name]
+                    break
+        
+        # 如果没有匹配的关键词，优先选择提示词驱动智能体
+        if not selected:
+            for name, agent in self.agents.items():
+                if isinstance(agent, PromptDrivenAgent):
+                    selected = agent
+                    break
+        
+        # 如果还是没有，选择第一个可用的智能体
+        if not selected:
+            selected = list(self.agents.values())[0]
+        
+        logger.info(f"选择智能体: {selected.name}")
+        return selected
     
     # MCP配置管理方法
     async def get_mcp_configs(self) -> Dict[str, Any]:

@@ -5,6 +5,8 @@ import './App.css';
 
 import ChatPage from './pages/ChatPage';
 import MCPPage from './pages/MCPPage';
+import AgentsPage from './pages/AgentsPage';
+import AgentTestPage from './pages/AgentTestPage';
 import Sidebar from './components/Sidebar';
 
 const { Content } = Layout;
@@ -20,6 +22,8 @@ function App() {
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/chat/:sessionId" element={<ChatPage />} />
             <Route path="/mcp" element={<MCPPage />} />
+            <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/agent-test" element={<AgentTestPage />} />
           </Routes>
         </Content>
       </Layout>

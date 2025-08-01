@@ -12,11 +12,17 @@ class MessageType(str, Enum):
 
 class AgentType(str, Enum):
     """智能体类型枚举"""
+    # 原有类型（保留兼容性）
     REACT = "react"
     PLAN_EXECUTE = "plan_execute"
     CHAT = "chat"
     SEARCH = "search"
     REPORT = "report"
+    
+    # 新的智能体类型
+    PROMPT_DRIVEN = "prompt_driven"    # 纯提示词驱动
+    TOOL_DRIVEN = "tool_driven"        # 纯工具驱动
+    FLOW_DRIVEN = "flow_driven"        # 流程图驱动
 
 class ChatRequest(BaseModel):
     """聊天请求模型"""

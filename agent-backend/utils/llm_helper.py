@@ -101,16 +101,25 @@ class LLMHelper:
                         formatted_messages.append({"role": "user", "content": str(msg)})
                 messages = formatted_messages
             
+            # 记录对话内容到日志
+            logger.info(f"LLM调用 - 模型: {self._config.get('model_provider')}/{self._config.get('model')}")
+            logger.info(f"LLM输入消息: {json.dumps(messages, ensure_ascii=False, indent=2)}")
+            
             # 调用对应的LLM
             provider = self._config.get('model_provider')
             if provider == 'openai':
-                return await self._call_openai(messages, **kwargs)
+                response = await self._call_openai(messages, **kwargs)
             elif provider == 'anthropic':
-                return await self._call_anthropic(messages, **kwargs)
+                response = await self._call_anthropic(messages, **kwargs)
             elif provider == 'ollama':
-                return await self._call_ollama(messages, **kwargs)
+                response = await self._call_ollama(messages, **kwargs)
             else:
                 raise Exception(f"不支持的模型提供商: {provider}")
+            
+            # 记录响应到日志
+            logger.info(f"LLM响应: {response}")
+            
+            return response
                 
         except Exception as e:
             logger.error(f"LLM调用失败: {str(e)}")
@@ -238,19 +247,31 @@ class LLMHelper:
                         formatted_messages.append({"role": "user", "content": str(msg)})
                 messages = formatted_messages
             
+            # 记录流式对话内容到日志
+            logger.info(f"LLM流式调用 - 模型: {self._config.get('model_provider')}/{self._config.get('model')}")
+            logger.info(f"LLM流式输入消息: {json.dumps(messages, ensure_ascii=False, indent=2)}")
+            
             # 调用对应的流式LLM
             provider = self._config.get('model_provider')
+            full_response = ""
+            
             if provider == 'openai':
                 async for chunk in self._call_openai_stream(messages, **kwargs):
+                    full_response += chunk
                     yield chunk
             elif provider == 'anthropic':
                 async for chunk in self._call_anthropic_stream(messages, **kwargs):
+                    full_response += chunk
                     yield chunk
             elif provider == 'ollama':
                 async for chunk in self._call_ollama_stream(messages, **kwargs):
+                    full_response += chunk
                     yield chunk
             else:
                 raise Exception(f"不支持的模型提供商: {provider}")
+            
+            # 记录完整响应到日志
+            logger.info(f"LLM流式响应完整内容: {full_response}")
                     
         except Exception as e:
             logger.error(f"LLM流式调用失败: {str(e)}")

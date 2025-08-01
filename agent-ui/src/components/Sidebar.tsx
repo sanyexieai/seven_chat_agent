@@ -6,6 +6,8 @@ import {
   RobotOutlined,
   PlusOutlined,
   UserOutlined,
+  SettingOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -137,6 +139,12 @@ const Sidebar: React.FC = () => {
       >
         <Menu.Item key="/" icon={<MessageOutlined />}>
           <Text style={{ color: 'white' }}>聊天</Text>
+        </Menu.Item>
+        <Menu.Item key="/agents" icon={<SettingOutlined />}>
+          <Text style={{ color: 'white' }}>智能体管理</Text>
+        </Menu.Item>
+        <Menu.Item key="/agent-test" icon={<ExperimentOutlined />}>
+          <Text style={{ color: 'white' }}>智能体测试</Text>
         </Menu.Item>
         <Menu.Item key="/mcp" icon={<RobotOutlined />}>
           <Text style={{ color: 'white' }}>MCP配置</Text>

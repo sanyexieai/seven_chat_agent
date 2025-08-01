@@ -14,9 +14,15 @@ class Agent(Base):
     name = Column(String(100), unique=True, index=True, nullable=False)
     display_name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
-    agent_type = Column(String(50), nullable=False)  # chat, search, report等
+    agent_type = Column(String(50), nullable=False)  # prompt_driven, tool_driven, flow_driven等
     is_active = Column(Boolean, default=True)
     config = Column(JSON, nullable=True)  # 智能体配置
+    
+    # 新增字段用于新智能体类型
+    system_prompt = Column(Text, nullable=True)  # 系统提示词（用于prompt_driven）
+    bound_tools = Column(JSON, nullable=True)    # 绑定的工具列表（用于tool_driven）
+    flow_config = Column(JSON, nullable=True)    # 流程图配置（用于flow_driven）
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -115,6 +121,9 @@ class AgentCreate(BaseModel):
     description: Optional[str] = Field(None, description="描述")
     agent_type: str = Field(..., description="智能体类型")
     config: Optional[Dict[str, Any]] = Field(None, description="配置")
+    system_prompt: Optional[str] = Field(None, description="系统提示词（用于prompt_driven）")
+    bound_tools: Optional[List[str]] = Field(None, description="绑定的工具列表（用于tool_driven）")
+    flow_config: Optional[Dict[str, Any]] = Field(None, description="流程图配置（用于flow_driven）")
 
 class AgentUpdate(BaseModel):
     """更新智能体请求模型"""
@@ -122,6 +131,9 @@ class AgentUpdate(BaseModel):
     description: Optional[str] = Field(None, description="描述")
     is_active: Optional[bool] = Field(None, description="是否激活")
     config: Optional[Dict[str, Any]] = Field(None, description="配置")
+    system_prompt: Optional[str] = Field(None, description="系统提示词（用于prompt_driven）")
+    bound_tools: Optional[List[str]] = Field(None, description="绑定的工具列表（用于tool_driven）")
+    flow_config: Optional[Dict[str, Any]] = Field(None, description="流程图配置（用于flow_driven）")
 
 class AgentResponse(BaseModel):
     """智能体响应模型"""
@@ -132,6 +144,9 @@ class AgentResponse(BaseModel):
     agent_type: str
     is_active: bool
     config: Optional[Dict[str, Any]]
+    system_prompt: Optional[str]
+    bound_tools: Optional[List[str]]
+    flow_config: Optional[Dict[str, Any]]
     created_at: datetime
     updated_at: datetime
     

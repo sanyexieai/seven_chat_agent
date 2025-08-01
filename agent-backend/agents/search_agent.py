@@ -60,6 +60,7 @@ class SearchAgent(BaseAgent):
             
             # 生成响应
             response_content = await self._generate_search_response(message, search_results, search_intent)
+            logger.info(f"生成的响应内容: {response_content}")
             
             # 创建响应消息
             response = self.create_message(
@@ -67,6 +68,8 @@ class SearchAgent(BaseAgent):
                 message_type=MessageType.AGENT,
                 agent_name=self.name
             )
+            logger.info(f"创建的响应消息: {response}")
+            logger.info(f"响应消息内容: {response.content}")
             
             logger.info(f"搜索智能体处理完成，用户: {user_id}")
             return response
@@ -323,6 +326,10 @@ class SearchAgent(BaseAgent):
     async def _generate_search_response(self, message: str, search_results: Dict[str, Any], search_intent: Dict[str, Any]) -> str:
         """生成搜索响应"""
         try:
+            logger.info(f"开始生成搜索响应，用户问题: {message}")
+            logger.info(f"搜索意图: {search_intent}")
+            logger.info(f"搜索结果: {search_results}")
+            
             if self.llm_helper:
                 # 使用LLM生成响应
                 prompt = f"""基于以下搜索结果，为用户生成一个清晰、准确的回答：
@@ -339,14 +346,21 @@ class SearchAgent(BaseAgent):
 
 回答："""
                 
+                logger.info(f"发送给LLM的提示词: {prompt}")
                 response = await self.llm_helper.call(prompt)
+                logger.info(f"LLM原始响应: {response}")
+                
                 # 过滤掉思考内容
                 filtered_response = self.llm_helper.filter_think_content(response)
-                return filtered_response.strip()
+                logger.info(f"过滤后的响应: {filtered_response}")
+                
+                final_response = filtered_response.strip()
+                logger.info(f"最终搜索响应: {final_response}")
+                return final_response
             
             # 备用响应生成
             response = self._generate_fallback_search_response(message, search_results, search_intent)
-            logger.info(f"生成的搜索响应: {response}")
+            logger.info(f"生成的备用搜索响应: {response}")
             return response
             
         except Exception as e:

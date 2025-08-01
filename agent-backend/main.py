@@ -12,6 +12,7 @@ from tools.tool_manager import ToolManager
 from models.chat_models import ChatRequest, ChatResponse, AgentMessage
 from utils.log_helper import get_logger
 from database.database import init_db
+from database.migrations import init_database
 from api.agents import router as agents_router
 from api.sessions import router as sessions_router
 from api.mcp import router as mcp_router
@@ -25,7 +26,9 @@ tool_manager = None
 
 # 直接初始化
 logger.info("AI Agent System starting up...")
-init_db()
+
+# 初始化数据库（包括迁移）
+init_database()
 logger.info("Database initialized")
 
 agent_manager = AgentManager()
@@ -87,12 +90,18 @@ async def chat(request: ChatRequest):
             context=request.context
         )
         
-        return ChatResponse(
+        logger.info(f"API响应处理 - 智能体: {response.agent_name}")
+        logger.info(f"API响应内容: {response.content}")
+        
+        chat_response = ChatResponse(
             success=True,
             message=response.content,
             agent_name=response.agent_name,
             tools_used=[]
         )
+        
+        logger.info(f"API返回的ChatResponse: {chat_response}")
+        return chat_response
     except Exception as e:
         logger.error(f"Chat error: {str(e)}")
         return ChatResponse(

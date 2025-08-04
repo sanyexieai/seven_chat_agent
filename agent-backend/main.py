@@ -16,6 +16,7 @@ from database.migrations import init_database
 from api.agents import router as agents_router
 from api.sessions import router as sessions_router
 from api.mcp import router as mcp_router
+from api.knowledge_base import router as knowledge_base_router
 
 # 获取logger实例
 logger = get_logger("main")
@@ -30,6 +31,12 @@ logger.info("AI Agent System starting up...")
 # 初始化数据库（包括迁移）
 init_database()
 logger.info("Database initialized")
+
+# 确保所有表都被创建
+from models.database_models import Base
+from database.database import engine
+Base.metadata.create_all(bind=engine)
+logger.info("All database tables created")
 
 agent_manager = AgentManager()
 tool_manager = ToolManager()
@@ -60,6 +67,7 @@ app.add_middleware(
 app.include_router(agents_router)
 app.include_router(sessions_router)
 app.include_router(mcp_router)
+app.include_router(knowledge_base_router)
 
 @app.get("/")
 async def root():

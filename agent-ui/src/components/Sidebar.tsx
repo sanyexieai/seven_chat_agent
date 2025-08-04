@@ -8,6 +8,8 @@ import {
   UserOutlined,
   SettingOutlined,
   ExperimentOutlined,
+  BookOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -148,6 +150,12 @@ const Sidebar: React.FC = () => {
         </Menu.Item>
         <Menu.Item key="/mcp" icon={<RobotOutlined />}>
           <Text style={{ color: 'white' }}>MCP配置</Text>
+        </Menu.Item>
+        <Menu.Item key="/knowledge-base" icon={<BookOutlined />}>
+          <Text style={{ color: 'white' }}>知识库管理</Text>
+        </Menu.Item>
+        <Menu.Item key="/knowledge-query" icon={<SearchOutlined />}>
+          <Text style={{ color: 'white' }}>知识库查询</Text>
         </Menu.Item>
       </Menu>
 

@@ -33,8 +33,12 @@ def init_db():
     data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
     os.makedirs(data_dir, exist_ok=True)
     
+    # 确保文档目录存在
+    documents_dir = os.path.join(data_dir, "documents")
+    os.makedirs(documents_dir, exist_ok=True)
+    
     # 导入所有模型以确保表被创建
-    from models.database_models import Agent, UserSession, Message, MCPServer, MCPTool
+    from models.database_models import Agent, UserSession, Message, MCPServer, MCPTool, KnowledgeBase, Document, DocumentChunk, KnowledgeBaseQuery
     
     # 创建所有表
     Base.metadata.create_all(bind=engine)

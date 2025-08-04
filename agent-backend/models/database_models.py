@@ -283,4 +283,176 @@ class MCPToolResponse(BaseModel):
     updated_at: datetime
     
     class Config:
+        from_attributes = True
+
+# 知识库相关模型
+class KnowledgeBase(Base):
+    """知识库表"""
+    __tablename__ = "knowledge_bases"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True, nullable=False)
+    display_name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(String(100), index=True, nullable=False)  # 知识库所有者
+    is_public = Column(Boolean, default=False)  # 是否公开
+    is_active = Column(Boolean, default=True)
+    config = Column(JSON, nullable=True)  # 知识库配置
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # 关联关系
+    documents = relationship("Document", back_populates="knowledge_base", cascade="all, delete-orphan")
+    chunks = relationship("DocumentChunk", back_populates="knowledge_base", cascade="all, delete-orphan")
+
+class Document(Base):
+    """文档表"""
+    __tablename__ = "documents"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    file_path = Column(String(500), nullable=True)  # 文件路径
+    file_type = Column(String(50), nullable=False)  # txt, pdf, docx, md等
+    file_size = Column(Integer, nullable=True)  # 文件大小（字节）
+    content = Column(Text, nullable=True)  # 文档内容
+    doc_metadata = Column(JSON, nullable=True)  # 文档元数据
+    status = Column(String(20), default="pending")  # pending, processing, completed, failed
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # 关联关系
+    knowledge_base = relationship("KnowledgeBase", back_populates="documents")
+    chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+
+class DocumentChunk(Base):
+    """文档分块表"""
+    __tablename__ = "document_chunks"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    chunk_index = Column(Integer, nullable=False)  # 分块索引
+    content = Column(Text, nullable=False)  # 分块内容
+    embedding = Column(Text, nullable=True)  # 向量嵌入（JSON格式）
+    chunk_metadata = Column(JSON, nullable=True)  # 分块元数据
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # 关联关系
+    knowledge_base = relationship("KnowledgeBase", back_populates="chunks")
+    document = relationship("Document", back_populates="chunks")
+
+class KnowledgeBaseQuery(Base):
+    """知识库查询记录表"""
+    __tablename__ = "knowledge_base_queries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)
+    user_id = Column(String(100), index=True, nullable=False)
+    query = Column(Text, nullable=False)  # 查询内容
+    response = Column(Text, nullable=True)  # 响应内容
+    sources = Column(JSON, nullable=True)  # 来源文档
+    query_metadata = Column(JSON, nullable=True)  # 查询元数据
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # 关联关系
+    knowledge_base = relationship("KnowledgeBase")
+
+# 知识库相关的Pydantic模型
+class KnowledgeBaseCreate(BaseModel):
+    """创建知识库请求模型"""
+    name: str = Field(..., description="知识库名称")
+    display_name: str = Field(..., description="显示名称")
+    description: Optional[str] = Field(None, description="描述")
+    owner_id: str = Field(..., description="所有者ID")
+    is_public: bool = Field(False, description="是否公开")
+    config: Optional[Dict[str, Any]] = Field(None, description="配置")
+
+class KnowledgeBaseUpdate(BaseModel):
+    """更新知识库请求模型"""
+    display_name: Optional[str] = Field(None, description="显示名称")
+    description: Optional[str] = Field(None, description="描述")
+    is_public: Optional[bool] = Field(None, description="是否公开")
+    is_active: Optional[bool] = Field(None, description="是否激活")
+    config: Optional[Dict[str, Any]] = Field(None, description="配置")
+
+class KnowledgeBaseResponse(BaseModel):
+    """知识库响应模型"""
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str]
+    owner_id: str
+    is_public: bool
+    is_active: bool
+    config: Optional[Dict[str, Any]]
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class DocumentCreate(BaseModel):
+    """创建文档请求模型"""
+    knowledge_base_id: int = Field(..., description="知识库ID")
+    name: str = Field(..., description="文档名称")
+    file_type: str = Field(..., description="文件类型")
+    content: Optional[str] = Field(None, description="文档内容")
+    doc_metadata: Optional[Dict[str, Any]] = Field(None, description="元数据")
+
+class DocumentUpdate(BaseModel):
+    """更新文档请求模型"""
+    name: Optional[str] = Field(None, description="文档名称")
+    content: Optional[str] = Field(None, description="文档内容")
+    doc_metadata: Optional[Dict[str, Any]] = Field(None, description="元数据")
+    is_active: Optional[bool] = Field(None, description="是否激活")
+
+class DocumentResponse(BaseModel):
+    """文档响应模型"""
+    id: int
+    knowledge_base_id: int
+    name: str
+    file_path: Optional[str]
+    file_type: str
+    file_size: Optional[int]
+    content: Optional[str]
+    doc_metadata: Optional[Dict[str, Any]]
+    status: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class DocumentChunkResponse(BaseModel):
+    """文档分块响应模型"""
+    id: int
+    knowledge_base_id: int
+    document_id: int
+    chunk_index: int
+    content: str
+    chunk_metadata: Optional[Dict[str, Any]]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class QueryRequest(BaseModel):
+    """查询请求模型"""
+    knowledge_base_id: int = Field(..., description="知识库ID")
+    query: str = Field(..., description="查询内容")
+    user_id: str = Field(..., description="用户ID")
+    max_results: Optional[int] = Field(5, description="最大结果数")
+
+class QueryResponse(BaseModel):
+    """查询响应模型"""
+    query: str
+    response: str
+    sources: List[Dict[str, Any]]
+    metadata: Optional[Dict[str, Any]]
+    created_at: datetime
+    
+    class Config:
         from_attributes = True 

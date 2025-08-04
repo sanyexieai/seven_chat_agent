@@ -38,6 +38,9 @@ class AgentManager:
         # 加载MCP配置
         await self._load_mcp_configs()
         
+        # 初始化MCP助手
+        await self._initialize_mcp_helper()
+        
         # 创建默认智能体
         await self._create_default_agents()
         
@@ -239,8 +242,17 @@ class AgentManager:
         """初始化MCP助手"""
         try:
             if self.mcp_configs:
-                self.mcp_helper = get_mcp_helper()
-                await self.mcp_helper.initialize(self.mcp_configs)
+                # 将配置转换为MCP助手需要的格式
+                mcp_config = {
+                    "mcpServers": {}
+                }
+                
+                for server_name, server_config in self.mcp_configs.items():
+                    mcp_config["mcpServers"][server_name] = server_config["server_config"]
+                
+                logger.info(f"MCP配置转换: {mcp_config}")
+                
+                self.mcp_helper = get_mcp_helper(config=mcp_config)
                 logger.info("MCP助手初始化成功")
             else:
                 logger.warning("没有MCP配置，跳过MCP助手初始化")

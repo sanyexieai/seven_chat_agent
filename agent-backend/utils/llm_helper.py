@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
 
 from config.env import MODEL, MODEL_PROVIDER, TEMPERATURE, BASE_URL, API_KEY
+from config.llm_config_manager import llm_config_manager
 from utils.log_helper import get_logger
 
 # 获取logger实例
@@ -37,13 +38,30 @@ class LLMHelper:
         """
         配置并初始化大模型
         """
-        self._config = dict(
-            model=MODEL, 
-            model_provider=MODEL_PROVIDER, 
-            temperature=TEMPERATURE, 
-            base_url=BASE_URL, 
-            api_key=API_KEY
-        )
+        # 从数据库配置管理器获取配置
+        db_config = llm_config_manager.get_default_config()
+        
+        if db_config:
+            # 使用数据库配置
+            self._config = {
+                'model': db_config.model_name,
+                'model_provider': db_config.provider,
+                'temperature': db_config.config.get('temperature', 0.7) if db_config.config else 0.7,
+                'base_url': db_config.api_base,
+                'api_key': db_config.api_key
+            }
+            logger.info(f"使用数据库LLM配置: {db_config.display_name}")
+        else:
+            # 使用环境变量配置作为fallback
+            self._config = dict(
+                model=MODEL, 
+                model_provider=MODEL_PROVIDER, 
+                temperature=TEMPERATURE, 
+                base_url=BASE_URL, 
+                api_key=API_KEY
+            )
+            logger.info("使用环境变量LLM配置")
+        
         self._config.update(kwargs)
         
         # 初始化客户端
@@ -70,6 +88,10 @@ class LLMHelper:
             elif provider == 'ollama':
                 self._ollama_base_url = self._config.get('base_url', 'http://localhost:11434')
                 logger.info(f"Ollama客户端初始化成功，基础URL: {self._ollama_base_url}")
+            elif provider == 'deepseek':
+                self._deepseek_base_url = self._config.get('base_url', 'https://api.deepseek.com')
+                self._deepseek_api_key = self._config.get('api_key', '')
+                logger.info(f"DeepSeek客户端初始化成功，基础URL: {self._deepseek_base_url}")
             else:
                 raise Exception(f"不支持的模型提供商: {provider}")
                 
@@ -113,6 +135,8 @@ class LLMHelper:
                 response = await self._call_anthropic(messages, **kwargs)
             elif provider == 'ollama':
                 response = await self._call_ollama(messages, **kwargs)
+            elif provider == 'deepseek':
+                response = await self._call_deepseek(messages, **kwargs)
             else:
                 raise Exception(f"不支持的模型提供商: {provider}")
             
@@ -267,6 +291,10 @@ class LLMHelper:
                 async for chunk in self._call_ollama_stream(messages, **kwargs):
                     full_response += chunk
                     yield chunk
+            elif provider == 'deepseek':
+                async for chunk in self._call_deepseek_stream(messages, **kwargs):
+                    full_response += chunk
+                    yield chunk
             else:
                 raise Exception(f"不支持的模型提供商: {provider}")
             
@@ -387,6 +415,84 @@ class LLMHelper:
             logger.error(f"Ollama流式调用失败: {str(e)}")
             raise
 
+    async def _call_deepseek(self, messages: List[Dict], **kwargs) -> str:
+        """调用DeepSeek API"""
+        try:
+            if not self._deepseek_base_url or not self._deepseek_api_key:
+                raise Exception("DeepSeek客户端未初始化")
+            
+            # 构建请求数据
+            data = {
+                "model": self._config.get('model', 'deepseek-chat'),
+                "messages": messages,
+                "temperature": self._config.get('temperature', 0.7),
+                "max_tokens": kwargs.get('max_tokens', 1000),
+                **kwargs
+            }
+            
+            # 发送请求
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self._deepseek_base_url}/v1/chat/completions",
+                    json=data,
+                    headers={
+                        "Authorization": f"Bearer {self._deepseek_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    timeout=60
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                return result.get('choices', [{}])[0].get('message', {}).get('content', '')
+                
+        except Exception as e:
+            logger.error(f"DeepSeek调用失败: {str(e)}")
+            raise
+
+    async def _call_deepseek_stream(self, messages: List[Dict], **kwargs) -> AsyncGenerator[str, None]:
+        """流式调用DeepSeek API"""
+        try:
+            if not self._deepseek_base_url or not self._deepseek_api_key:
+                raise Exception("DeepSeek客户端未初始化")
+            
+            # 构建请求数据
+            data = {
+                "model": self._config.get('model', 'deepseek-chat'),
+                "messages": messages,
+                "temperature": self._config.get('temperature', 0.7),
+                "max_tokens": kwargs.get('max_tokens', 1000),
+                "stream": True,
+                **kwargs
+            }
+            
+            # 发送流式请求
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    f"{self._deepseek_base_url}/v1/chat/completions",
+                    json=data,
+                    headers={
+                        "Authorization": f"Bearer {self._deepseek_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    timeout=60
+                ) as response:
+                    response.raise_for_status()
+                    
+                    async for line in response.aiter_lines():
+                        if line.strip() and line.startswith('data: '):
+                            try:
+                                chunk_data = json.loads(line[6:])  # 移除 'data: ' 前缀
+                                if chunk_data.get('choices') and chunk_data['choices'][0].get('delta', {}).get('content'):
+                                    yield chunk_data['choices'][0]['delta']['content']
+                            except json.JSONDecodeError:
+                                continue
+                                
+        except Exception as e:
+            logger.error(f"DeepSeek流式调用失败: {str(e)}")
+            raise
+
     def switch_model(self, model: str, **kwargs):
         """
         动态切换模型
@@ -397,6 +503,31 @@ class LLMHelper:
         self._config = cfg
         self._init_clients()
         return self
+    
+    def switch_config(self, config_name: str):
+        """
+        切换到指定的LLM配置
+        """
+        config = llm_config_manager.get_config(config_name)
+        if config:
+            self._config = {
+                'model': config.model_name,
+                'model_provider': config.provider,
+                'temperature': config.config.get('temperature', 0.7) if config.config else 0.7,
+                'base_url': config.api_base,
+                'api_key': config.api_key
+            }
+            self._init_clients()
+            logger.info(f"切换到LLM配置: {config.display_name}")
+        else:
+            logger.error(f"未找到LLM配置: {config_name}")
+    
+    def refresh_config(self):
+        """
+        刷新配置（从数据库重新加载）
+        """
+        llm_config_manager.refresh_config()
+        self.setup()
 
     def get_config(self) -> dict:
         """获取当前模型配置"""

@@ -11,6 +11,7 @@ import {
   BookOutlined,
   SearchOutlined,
   MenuOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -288,6 +289,9 @@ const Sidebar: React.FC = () => {
           </Menu.Item>
           <Menu.Item key="/mcp" icon={<RobotOutlined />}>
             MCP配置
+          </Menu.Item>
+          <Menu.Item key="/llm-config" icon={<ApiOutlined />}>
+            LLM配置
           </Menu.Item>
           <Menu.Item key="/knowledge-base" icon={<BookOutlined />}>
             知识库管理

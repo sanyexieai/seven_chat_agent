@@ -17,6 +17,8 @@ from api.agents import router as agents_router
 from api.sessions import router as sessions_router
 from api.mcp import router as mcp_router
 from api.knowledge_base import router as knowledge_base_router
+from api.llm_config import router as llm_config_router
+from config.llm_config_manager import llm_config_manager
 
 # 获取logger实例
 logger = get_logger("main")
@@ -45,6 +47,9 @@ tool_manager = ToolManager()
 import asyncio
 asyncio.run(agent_manager.initialize())
 asyncio.run(tool_manager.initialize())
+
+# 初始化LLM配置管理器
+llm_config_manager.initialize()
 logger.info("AI Agent System started successfully")
 
 @asynccontextmanager
@@ -68,6 +73,7 @@ app.include_router(agents_router)
 app.include_router(sessions_router)
 app.include_router(mcp_router)
 app.include_router(knowledge_base_router)
+app.include_router(llm_config_router)
 
 @app.get("/")
 async def root():

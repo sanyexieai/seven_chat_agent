@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
 import './ChatPage.css';
 
@@ -32,6 +32,7 @@ interface Session {
 
 const ChatPage: React.FC = () => {
   const navigate = useNavigate();
+  const { sessionId } = useParams<{ sessionId?: string }>();
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
@@ -40,19 +41,69 @@ const ChatPage: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
 
-  // 初始化默认会话
+  // 处理sessionId变化
   useEffect(() => {
-    // 设置默认会话
-    setCurrentSession({
-      title: '新对话',
-      agent: {
-        id: 1,
-        name: 'chat_agent',
-        display_name: 'AI助手',
-        description: '通用聊天智能体'
+    if (sessionId) {
+      // 加载指定会话
+      loadSession(parseInt(sessionId));
+    } else {
+      // 设置默认会话
+      setCurrentSession({
+        title: '新对话',
+        agent: {
+          id: 1,
+          name: 'chat_agent',
+          display_name: 'AI助手',
+          description: '通用聊天智能体'
+        }
+      });
+      setMessages([]);
+    }
+  }, [sessionId]);
+
+  // 加载会话信息
+  const loadSession = async (sessionId: number) => {
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}`);
+      if (response.ok) {
+        const session = await response.json();
+        setCurrentSession(session);
+        // 加载会话的历史消息
+        loadSessionMessages(sessionId);
+      } else {
+        console.error('加载会话失败');
+        message.error('加载会话失败');
       }
-    });
-  }, []);
+    } catch (error) {
+      console.error('加载会话失败:', error);
+      message.error('加载会话失败');
+    }
+  };
+
+  // 加载会话消息
+  const loadSessionMessages = async (sessionId: number) => {
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/messages`);
+      if (response.ok) {
+        const messages = await response.json();
+        console.log('加载的消息:', messages); // 调试日志
+        const formattedMessages = messages.map((msg: any) => ({
+          id: msg.id,
+          content: msg.content,
+          type: msg.type === 'user' ? 'user' : 'agent',
+          timestamp: new Date(msg.created_at),
+          agentName: msg.agent_name
+        }));
+        setMessages(formattedMessages);
+      } else {
+        console.error('加载会话消息失败');
+        setMessages([]);
+      }
+    } catch (error) {
+      console.error('加载会话消息失败:', error);
+      setMessages([]);
+    }
+  };
 
   // 从消息内容提取关键词作为会话标题
   const extractTitleFromMessage = (content: string): string => {
@@ -83,8 +134,9 @@ const ChatPage: React.FC = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          user_id: 'default',
+          agent_id: currentSession?.agent.id || 1,
           title: title,
-          agent_name: currentSession?.agent.name || 'chat_agent'
         }),
       });
 
@@ -97,6 +149,8 @@ const ChatPage: React.FC = () => {
           created_at: session.created_at
         } : null);
         setSessionCreated(true);
+        // 更新URL以反映新的会话ID
+        navigate(`/chat/${session.id}`);
         return session;
       }
     } catch (error) {
@@ -129,11 +183,11 @@ const ChatPage: React.FC = () => {
 
     try {
       // 如果是第一次发送消息，创建会话
-      let sessionId = currentSession?.session_id;
-      if (!sessionCreated) {
+      let sessionId = currentSession?.id;
+      if (!sessionCreated && !sessionId) {
         const title = extractTitleFromMessage(inputValue);
         const session = await createSession(title);
-        sessionId = session?.session_id;
+        sessionId = session?.id;
       }
 
       // 保存用户消息到数据库
@@ -144,7 +198,7 @@ const ChatPage: React.FC = () => {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            session_id: parseInt(sessionId),
+            session_id: sessionId,
             type: 'user',
             content: inputValue,
           }),
@@ -170,7 +224,7 @@ const ChatPage: React.FC = () => {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            session_id: parseInt(sessionId),
+            session_id: sessionId,
             type: 'agent',
             content: response.message,
             agent_name: currentSession?.agent.name,

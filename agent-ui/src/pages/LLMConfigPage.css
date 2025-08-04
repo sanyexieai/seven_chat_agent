@@ -1,0 +1,87 @@
+.llm-config-layout {
+  min-height: 100vh;
+  background: #f5f5f5;
+}
+
+.llm-config-container {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.llm-config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.llm-config-header h2 {
+  margin: 0;
+  color: #1890ff;
+}
+
+.ant-table-wrapper {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.ant-table-thead > tr > th {
+  background: #fafafa;
+  font-weight: 600;
+}
+
+.ant-table-tbody > tr:hover > td {
+  background: #f0f8ff;
+}
+
+.ant-tag {
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.ant-btn-link {
+  padding: 4px 8px;
+  height: auto;
+}
+
+.ant-modal-content {
+  border-radius: 8px;
+}
+
+.ant-form-item-label > label {
+  font-weight: 500;
+}
+
+.ant-input,
+.ant-select-selector,
+.ant-input-password {
+  border-radius: 6px;
+}
+
+.ant-switch {
+  border-radius: 12px;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .llm-config-container {
+    padding: 16px;
+  }
+  
+  .llm-config-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  
+  .ant-table {
+    font-size: 12px;
+  }
+  
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td {
+    padding: 8px 4px;
+  }
+} 

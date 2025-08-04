@@ -285,6 +285,69 @@ class MCPToolResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# LLM配置相关模型
+class LLMConfig(Base):
+    """LLM配置表"""
+    __tablename__ = "llm_configs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True, nullable=False)
+    display_name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    provider = Column(String(50), nullable=False)  # openai, anthropic, local等
+    model_name = Column(String(100), nullable=False)  # gpt-4, claude-3等
+    api_key = Column(String(500), nullable=True)  # API密钥
+    api_base = Column(String(500), nullable=True)  # API基础URL
+    config = Column(JSON, nullable=True)  # 其他配置参数
+    is_default = Column(Boolean, default=False)  # 是否为默认配置
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+# LLM配置Pydantic模型
+class LLMConfigCreate(BaseModel):
+    """创建LLM配置请求模型"""
+    name: str = Field(..., description="配置名称")
+    display_name: str = Field(..., description="显示名称")
+    description: Optional[str] = Field(None, description="描述")
+    provider: str = Field(..., description="提供商")
+    model_name: str = Field(..., description="模型名称")
+    api_key: Optional[str] = Field(None, description="API密钥")
+    api_base: Optional[str] = Field(None, description="API基础URL")
+    config: Optional[Dict[str, Any]] = Field(None, description="其他配置")
+    is_default: bool = Field(False, description="是否为默认配置")
+
+class LLMConfigUpdate(BaseModel):
+    """更新LLM配置请求模型"""
+    display_name: Optional[str] = Field(None, description="显示名称")
+    description: Optional[str] = Field(None, description="描述")
+    provider: Optional[str] = Field(None, description="提供商")
+    model_name: Optional[str] = Field(None, description="模型名称")
+    api_key: Optional[str] = Field(None, description="API密钥")
+    api_base: Optional[str] = Field(None, description="API基础URL")
+    config: Optional[Dict[str, Any]] = Field(None, description="其他配置")
+    is_default: Optional[bool] = Field(None, description="是否为默认配置")
+    is_active: Optional[bool] = Field(None, description="是否激活")
+
+class LLMConfigResponse(BaseModel):
+    """LLM配置响应模型"""
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str]
+    provider: str
+    model_name: str
+    api_key: Optional[str]
+    api_base: Optional[str]
+    config: Optional[Dict[str, Any]]
+    is_default: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 # 知识库相关模型
 class KnowledgeBase(Base):
     """知识库表"""

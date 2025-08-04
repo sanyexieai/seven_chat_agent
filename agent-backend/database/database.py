@@ -38,13 +38,16 @@ def init_db():
     os.makedirs(documents_dir, exist_ok=True)
     
     # 导入所有模型以确保表被创建
-    from models.database_models import Agent, UserSession, Message, MCPServer, MCPTool, KnowledgeBase, Document, DocumentChunk, KnowledgeBaseQuery
+    from models.database_models import Agent, UserSession, Message, MCPServer, MCPTool, KnowledgeBase, Document, DocumentChunk, KnowledgeBaseQuery, LLMConfig
     
     # 创建所有表
     Base.metadata.create_all(bind=engine)
     
     # 创建默认智能体
     create_default_agents()
+    
+    # 创建默认LLM配置
+    create_default_llm_configs()
 
 def create_default_agents():
     """创建默认智能体"""
@@ -106,5 +109,122 @@ def create_default_agents():
     except Exception as e:
         db.rollback()
         print(f"创建默认智能体失败: {e}")
+    finally:
+        db.close()
+
+def create_default_llm_configs():
+    """创建默认LLM配置"""
+    from services.llm_config_service import LLMConfigService
+    from models.database_models import LLMConfigCreate
+    import os
+    
+    db = SessionLocal()
+    try:
+        # 检查是否已有LLM配置
+        existing_configs = LLMConfigService.get_all_configs(db)
+        if existing_configs:
+            print(f"已存在 {len(existing_configs)} 个LLM配置，跳过初始化")
+            return
+        
+        # 默认LLM配置
+        default_configs = [
+            {
+                "name": "openai_gpt4",
+                "display_name": "OpenAI GPT-4",
+                "description": "OpenAI GPT-4 模型配置",
+                "provider": "openai",
+                "model_name": "gpt-4",
+                "api_key": os.getenv("OPENAI_API_KEY", ""),
+                "api_base": "https://api.openai.com/v1",
+                "config": {
+                    "temperature": 0.7,
+                    "max_tokens": 2048
+                },
+                "is_default": True
+            },
+            {
+                "name": "ollama_qwen",
+                "display_name": "Ollama Qwen 模型",
+                "description": "Ollama Qwen 模型配置",
+                "provider": "ollama",
+                "model_name": "qwen2.5:7b",
+                "api_key": "",
+                "api_base": "http://localhost:11434",
+                "config": {
+                    "temperature": 0.7,
+                    "max_tokens": 2048
+                },
+                "is_default": False
+            },
+            {
+                "name": "ollama_llama",
+                "display_name": "Ollama Llama 模型",
+                "description": "Ollama Llama 模型配置",
+                "provider": "ollama",
+                "model_name": "llama3.2:3b",
+                "api_key": "",
+                "api_base": "http://localhost:11434",
+                "config": {
+                    "temperature": 0.7,
+                    "max_tokens": 2048
+                },
+                "is_default": False
+            },
+            {
+                "name": "ollama_mistral",
+                "display_name": "Ollama Mistral 模型",
+                "description": "Ollama Mistral 模型配置",
+                "provider": "ollama",
+                "model_name": "mistral:7b",
+                "api_key": "",
+                "api_base": "http://localhost:11434",
+                "config": {
+                    "temperature": 0.7,
+                    "max_tokens": 2048
+                },
+                "is_default": False
+            },
+            {
+                "name": "deepseek_chat",
+                "display_name": "DeepSeek Chat",
+                "description": "DeepSeek Chat 模型配置",
+                "provider": "deepseek",
+                "model_name": "deepseek-chat",
+                "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+                "api_base": "https://api.deepseek.com",
+                "config": {
+                    "temperature": 0.7,
+                    "max_tokens": 2048
+                },
+                "is_default": False
+            },
+            {
+                "name": "deepseek_coder",
+                "display_name": "DeepSeek Coder",
+                "description": "DeepSeek Coder 代码生成模型配置",
+                "provider": "deepseek",
+                "model_name": "deepseek-coder",
+                "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+                "api_base": "https://api.deepseek.com",
+                "config": {
+                    "temperature": 0.7,
+                    "max_tokens": 2048
+                },
+                "is_default": False
+            }
+        ]
+        
+        for config_data in default_configs:
+            try:
+                config_create = LLMConfigCreate(**config_data)
+                config = LLMConfigService.create_config(db, config_create)
+                print(f"创建LLM配置: {config.display_name}")
+            except Exception as e:
+                print(f"创建LLM配置失败 {config_data['name']}: {str(e)}")
+        
+        print("默认LLM配置创建完成")
+        
+    except Exception as e:
+        print(f"创建默认LLM配置失败: {str(e)}")
     finally:
         db.close() 

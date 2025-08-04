@@ -127,6 +127,7 @@ npm start
 - **智能体管理**: 创建和管理智能体
 - **智能体测试**: 测试智能体功能
 - **MCP配置**: 配置Model Context Protocol
+- **LLM配置**: 管理大语言模型配置
 - **知识库管理**: 上传和管理文档
 - **知识库查询**: 查询知识库内容
 
@@ -145,6 +146,43 @@ npm start
 3. **在聊天中使用**
    - 创建会话时选择知识库
    - 智能体会基于知识库回答问题
+
+### LLM配置管理
+
+1. **配置管理**
+   - 点击"LLM配置"进入配置管理页面
+   - 支持添加、编辑、删除LLM配置
+   - 支持设置默认配置
+
+2. **支持的提供商**
+   - **OpenAI**: GPT-3.5, GPT-4等模型
+   - **Anthropic**: Claude系列模型
+   - **DeepSeek**: DeepSeek Chat、DeepSeek Coder等模型
+   - **Ollama**: 本地模型（Qwen、Llama、Mistral等）
+   - **本地模型**: 其他本地部署的模型
+
+3. **Ollama使用指南**
+   - 下载并安装Ollama: https://ollama.ai
+   - 启动Ollama服务: `ollama serve`
+   - 下载模型: `ollama pull qwen2.5:7b`
+   - 在前端选择"Ollama"提供商进行配置
+   - 使用"快速Ollama配置"按钮快速创建配置
+
+4. **DeepSeek使用指南**
+   - 注册DeepSeek账号: https://platform.deepseek.com
+   - 获取API密钥
+   - 在前端选择"DeepSeek"提供商进行配置
+   - 使用"快速DeepSeek配置"按钮快速创建配置
+
+3. **自动重新加载**
+   - 添加、编辑、删除配置后自动重新加载
+   - 设置默认配置后自动重新加载
+   - 无需重启系统，配置立即生效
+
+4. **配置参数**
+   - API密钥和基础URL
+   - 模型名称和参数
+   - 温度和最大令牌数等高级参数
 
 ### 文件格式支持
 
@@ -174,6 +212,15 @@ npm start
 - `GET /api/knowledge-base/` - 获取知识库列表
 - `POST /api/knowledge-base/{id}/documents/upload` - 上传文档
 - `POST /api/knowledge-base/{id}/query` - 查询知识库
+
+### LLM配置接口
+- `GET /api/llm-config/` - 获取LLM配置列表
+- `POST /api/llm-config/` - 创建LLM配置
+- `PUT /api/llm-config/{id}` - 更新LLM配置
+- `DELETE /api/llm-config/{id}` - 删除LLM配置
+- `POST /api/llm-config/{id}/set-default` - 设置默认配置
+- `POST /api/llm-config/refresh` - 刷新配置缓存
+- `POST /api/llm-config/reload` - 重新加载配置
 
 ## 配置说明
 

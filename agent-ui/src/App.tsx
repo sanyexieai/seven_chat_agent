@@ -9,6 +9,7 @@ import AgentsPage from './pages/AgentsPage';
 import AgentTestPage from './pages/AgentTestPage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
 import KnowledgeQueryPage from './pages/KnowledgeQueryPage';
+import LLMConfigPage from './pages/LLMConfigPage';
 import Sidebar from './components/Sidebar';
 
 const { Content } = Layout;
@@ -26,6 +27,7 @@ function App() {
             <Route path="/mcp" element={<MCPPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agent-test" element={<AgentTestPage />} />
+            <Route path="/llm-config" element={<LLMConfigPage />} />
             <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
             <Route path="/knowledge-query" element={<KnowledgeQueryPage />} />
           </Routes>

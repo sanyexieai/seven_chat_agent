@@ -13,6 +13,7 @@ from models.database_models import (
 from utils.log_helper import get_logger
 from utils.text_processor import TextProcessor
 from utils.embedding_service import EmbeddingService
+from utils.file_extractor import FileExtractor
 
 logger = get_logger("knowledge_base_service")
 
@@ -22,6 +23,7 @@ class KnowledgeBaseService:
     def __init__(self):
         self.text_processor = TextProcessor()
         self.embedding_service = EmbeddingService()
+        self.file_extractor = FileExtractor()
     
     def create_knowledge_base(self, db: Session, kb_data: KnowledgeBaseCreate) -> KnowledgeBase:
         """创建知识库"""

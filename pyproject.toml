@@ -55,6 +55,10 @@ dependencies = [
     "markdown>=3.5.1",
     "jinja2>=3.1.2",
     "langchain-mcp-adapters>=0.1.0",
+    "PyPDF2>=3.0.0",
+    "PyMuPDF>=1.23.0",
+    "python-docx>=0.8.11",
+    "docx2txt>=0.8",
 ]
 
 [project.optional-dependencies]

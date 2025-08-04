@@ -10,6 +10,7 @@ from models.database_models import (
     QueryRequest, QueryResponse
 )
 from services.knowledge_base_service import KnowledgeBaseService
+from utils.file_extractor import FileExtractor
 from utils.log_helper import get_logger
 
 logger = get_logger("knowledge_base_api")
@@ -164,25 +165,31 @@ async def upload_document(
             "content_type": file.content_type
         })
         
-        # 根据文件类型处理内容
-        content_str = None
+        # 使用文件提取器处理内容
+        file_extractor = FileExtractor()
         file_type = file.filename.split('.')[-1].lower() if file.filename and '.' in file.filename else "txt"
         
-        # 只对文本文件尝试UTF-8解码
-        text_file_types = ['txt', 'md', 'json', 'csv', 'log']
-        if file_type in text_file_types:
-            try:
-                content_str = content.decode('utf-8')
-            except UnicodeDecodeError:
-                try:
-                    content_str = content.decode('gbk')
-                except UnicodeDecodeError:
-                    content_str = content.decode('latin-1')  # 最后的备选方案
-        else:
-            # 对于非文本文件，存储为base64编码
+        try:
+            # 提取文件文本内容
+            content_str, extraction_metadata = file_extractor.extract_text(
+                content, file_type, file.filename
+            )
+            
+            # 合并提取元数据
+            doc_metadata.update(extraction_metadata)
+            
+            logger.info(f"文件内容提取成功: {file.filename}, 方法: {extraction_metadata.get('extraction_method', 'unknown')}")
+            
+        except Exception as e:
+            logger.error(f"文件内容提取失败: {file.filename}, 错误: {str(e)}")
+            # 如果提取失败，使用base64编码作为备选
             import base64
             content_str = base64.b64encode(content).decode('utf-8')
-            doc_metadata["encoding"] = "base64"
+            doc_metadata.update({
+                "encoding": "base64",
+                "extraction_method": "base64_fallback",
+                "extraction_error": str(e)
+            })
         
         doc_data = DocumentCreate(
             knowledge_base_id=kb_id,

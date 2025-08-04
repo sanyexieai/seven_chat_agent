@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, List, Avatar, Typography, Button, Modal, Form, Input, Select, Divider } from 'antd';
+import { Layout, Menu, List, Avatar, Typography, Button, Modal, Form, Input, Select, Divider, Drawer } from 'antd';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   MessageOutlined,
@@ -10,6 +10,7 @@ import {
   ExperimentOutlined,
   BookOutlined,
   SearchOutlined,
+  MenuOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -37,9 +38,9 @@ const Sidebar: React.FC = () => {
   const location = useLocation();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState<number | null>(null);
   const [selectedSession, setSelectedSession] = useState<number | null>(null);
   const [isCreateSessionModalVisible, setIsCreateSessionModalVisible] = useState(false);
+  const [isSettingsDrawerVisible, setIsSettingsDrawerVisible] = useState(false);
   const [createSessionForm] = Form.useForm();
 
   // 获取智能体列表
@@ -79,10 +80,7 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  const handleAgentSelect = (agentId: number) => {
-    setSelectedAgent(agentId);
-    setSelectedSession(null);
-  };
+
 
   const handleSessionSelect = (sessionId: number) => {
     setSelectedSession(sessionId);
@@ -92,7 +90,7 @@ const Sidebar: React.FC = () => {
 
   const handleCreateSession = async (values: any) => {
     try {
-      const agentId = selectedAgent || (agents.length > 0 ? agents[0].id : null);
+      const agentId = values.agent_id || (agents.length > 0 ? agents[0].id : null);
       if (!agentId) {
         console.error('没有可用的智能体');
         return;
@@ -120,93 +118,28 @@ const Sidebar: React.FC = () => {
     }
   };
 
+  const handleSettingsMenuClick = (key: string) => {
+    navigate(key);
+    setIsSettingsDrawerVisible(false);
+  };
+
   return (
-    <Sider
-      width={280}
-      style={{
-        background: '#001529',
-        overflow: 'auto',
-      }}
-    >
-      <div style={{ padding: '16px', textAlign: 'center' }}>
-        <h2 style={{ color: 'white', margin: 0 }}>AI Agent</h2>
-      </div>
-
-      {/* 导航菜单 */}
-      <Menu
-        mode="inline"
-        style={{ background: '#001529', border: 'none' }}
-        selectedKeys={[location.pathname]}
-        onClick={({ key }) => navigate(key)}
+    <>
+      <Sider
+        width={280}
+        style={{
+          background: '#001529',
+          overflow: 'auto',
+        }}
       >
-        <Menu.Item key="/" icon={<MessageOutlined />}>
-          <Text style={{ color: 'white' }}>聊天</Text>
-        </Menu.Item>
-        <Menu.Item key="/agents" icon={<SettingOutlined />}>
-          <Text style={{ color: 'white' }}>智能体管理</Text>
-        </Menu.Item>
-        <Menu.Item key="/agent-test" icon={<ExperimentOutlined />}>
-          <Text style={{ color: 'white' }}>智能体测试</Text>
-        </Menu.Item>
-        <Menu.Item key="/mcp" icon={<RobotOutlined />}>
-          <Text style={{ color: 'white' }}>MCP配置</Text>
-        </Menu.Item>
-        <Menu.Item key="/knowledge-base" icon={<BookOutlined />}>
-          <Text style={{ color: 'white' }}>知识库管理</Text>
-        </Menu.Item>
-        <Menu.Item key="/knowledge-query" icon={<SearchOutlined />}>
-          <Text style={{ color: 'white' }}>知识库查询</Text>
-        </Menu.Item>
-      </Menu>
-
-      <Divider style={{ margin: '16px', borderColor: '#303030' }} />
-
-      {/* 智能体列表 - 只在聊天页面显示 */}
-      {(location.pathname === '/' || location.pathname.startsWith('/chat')) && (
-        <div style={{ padding: '0 16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
-              智能体
-            </Text>
-          </div>
-          <List
-            size="small"
-            dataSource={agents}
-            renderItem={(agent) => (
-              <List.Item
-                style={{
-                  padding: '8px 12px',
-                  cursor: 'pointer',
-                  backgroundColor: selectedAgent === agent.id ? '#1890ff' : 'transparent',
-                  borderRadius: '4px',
-                  marginBottom: '4px',
-                }}
-                onClick={() => handleAgentSelect(agent.id)}
-              >
-                <List.Item.Meta
-                  avatar={<Avatar icon={<RobotOutlined />} size="small" />}
-                  title={
-                    <Text style={{ color: 'white', fontSize: '12px' }}>
-                      {agent.display_name}
-                    </Text>
-                  }
-                  description={
-                    <Text style={{ color: '#ccc', fontSize: '10px' }}>
-                      {agent.description}
-                    </Text>
-                  }
-                />
-              </List.Item>
-            )}
-          />
+        <div style={{ padding: '16px', textAlign: 'center' }}>
+          <h2 style={{ color: 'white', margin: 0 }}>AI Agent</h2>
         </div>
-      )}
 
-      <Divider style={{ margin: '16px', borderColor: '#303030' }} />
+        <Divider style={{ margin: '16px', borderColor: '#303030' }} />
 
-      {/* 会话列表 - 只在聊天页面显示 */}
-      {(location.pathname === '/' || location.pathname.startsWith('/chat')) && (
-        <div style={{ padding: '0 16px' }}>
+        {/* 会话列表 */}
+        <div style={{ padding: '0 16px', marginBottom: '60px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
               会话
@@ -250,35 +183,104 @@ const Sidebar: React.FC = () => {
             )}
           />
         </div>
-      )}
 
-      {/* 创建会话模态框 */}
-      <Modal
-        title="创建新会话"
-        open={isCreateSessionModalVisible}
-        onCancel={() => setIsCreateSessionModalVisible(false)}
-        footer={null}
-      >
-        <Form
-          form={createSessionForm}
-          onFinish={handleCreateSession}
-          layout="vertical"
-        >
-          <Form.Item
-            name="title"
-            label="会话标题"
-            rules={[{ required: true, message: '请输入会话标题' }]}
+        {/* 设置按钮 - 固定在底部 */}
+        <div style={{ 
+          position: 'absolute', 
+          bottom: '16px', 
+          left: '16px', 
+          right: '16px',
+          backgroundColor: '#001529'
+        }}>
+          <Button
+            type="text"
+            icon={<SettingOutlined />}
+            style={{ 
+              color: 'white', 
+              width: '100%',
+              textAlign: 'left',
+              height: '40px',
+              border: '1px solid #303030',
+              borderRadius: '4px'
+            }}
+            onClick={() => setIsSettingsDrawerVisible(true)}
           >
-            <Input placeholder="请输入会话标题" />
-          </Form.Item>
-          <Form.Item>
-            <Button type="primary" htmlType="submit" block>
-              创建会话
-            </Button>
-          </Form.Item>
-        </Form>
-      </Modal>
-    </Sider>
+            设置
+          </Button>
+        </div>
+
+        {/* 创建会话模态框 */}
+        <Modal
+          title="创建新会话"
+          open={isCreateSessionModalVisible}
+          onCancel={() => setIsCreateSessionModalVisible(false)}
+          footer={null}
+        >
+          <Form
+            form={createSessionForm}
+            onFinish={handleCreateSession}
+            layout="vertical"
+          >
+            <Form.Item
+              name="title"
+              label="会话标题"
+              rules={[{ required: true, message: '请输入会话标题' }]}
+            >
+              <Input placeholder="请输入会话标题" />
+            </Form.Item>
+            <Form.Item
+              name="agent_id"
+              label="选择智能体"
+              rules={[{ required: true, message: '请选择智能体' }]}
+            >
+              <Select placeholder="请选择智能体">
+                {agents.map(agent => (
+                  <Select.Option key={agent.id} value={agent.id}>
+                    {agent.display_name}
+                  </Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+            <Form.Item>
+              <Button type="primary" htmlType="submit" block>
+                创建会话
+              </Button>
+            </Form.Item>
+          </Form>
+        </Modal>
+      </Sider>
+
+      {/* 设置抽屉 */}
+      <Drawer
+        title="设置"
+        placement="left"
+        onClose={() => setIsSettingsDrawerVisible(false)}
+        open={isSettingsDrawerVisible}
+        width={300}
+      >
+        <Menu
+          mode="inline"
+          onClick={({ key }) => handleSettingsMenuClick(key)}
+          selectedKeys={[location.pathname]}
+        >
+          <Menu.Item key="/agents" icon={<SettingOutlined />}>
+            智能体管理
+          </Menu.Item>
+          <Menu.Item key="/agent-test" icon={<ExperimentOutlined />}>
+            智能体测试
+          </Menu.Item>
+          <Menu.Item key="/mcp" icon={<RobotOutlined />}>
+            MCP配置
+          </Menu.Item>
+          <Menu.Item key="/knowledge-base" icon={<BookOutlined />}>
+            知识库管理
+          </Menu.Item>
+          <Menu.Item key="/knowledge-query" icon={<SearchOutlined />}>
+            知识库查询
+          </Menu.Item>
+        </Menu>
+      </Drawer>
+    </>
   );
 };
 

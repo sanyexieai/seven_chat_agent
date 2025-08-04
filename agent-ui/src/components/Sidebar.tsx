@@ -129,84 +129,101 @@ const Sidebar: React.FC = () => {
         width={280}
         style={{
           background: '#001529',
-          overflow: 'auto',
+          overflow: 'hidden',
+          height: '100vh',
+          position: 'fixed',
+          left: 0,
+          top: 0,
+          zIndex: 1000,
         }}
       >
-        <div style={{ padding: '16px', textAlign: 'center' }}>
-          <h2 style={{ color: 'white', margin: 0 }}>AI Agent</h2>
-        </div>
+        <div style={{ 
+          height: '100vh', 
+          display: 'flex', 
+          flexDirection: 'column',
+          overflow: 'hidden'
+        }}>
+          <div style={{ padding: '16px', textAlign: 'center' }}>
+            <h2 style={{ color: 'white', margin: 0 }}>AI Agent</h2>
+          </div>
 
-        <Divider style={{ margin: '16px', borderColor: '#303030' }} />
+          <Divider style={{ margin: '16px', borderColor: '#303030' }} />
 
-        {/* 会话列表 */}
-        <div style={{ padding: '0 16px', marginBottom: '60px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
-              会话
-            </Text>
-            <Button
-              type="text"
-              icon={<PlusOutlined />}
+                    {/* 会话列表 */}
+          <div style={{ 
+            padding: '0 16px', 
+            flex: 1, 
+            overflow: 'auto',
+            marginBottom: '60px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
+                会话
+              </Text>
+              <Button
+                type="text"
+                icon={<PlusOutlined />}
+                size="small"
+                style={{ color: 'white' }}
+                onClick={() => setIsCreateSessionModalVisible(true)}
+              />
+            </div>
+            <List
               size="small"
-              style={{ color: 'white' }}
-              onClick={() => setIsCreateSessionModalVisible(true)}
+              dataSource={sessions}
+              renderItem={(session) => (
+                <List.Item
+                  style={{
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    backgroundColor: selectedSession === session.id ? '#1890ff' : 'transparent',
+                    borderRadius: '4px',
+                    marginBottom: '4px',
+                  }}
+                  onClick={() => handleSessionSelect(session.id)}
+                >
+                  <List.Item.Meta
+                    avatar={<Avatar icon={<MessageOutlined />} size="small" />}
+                    title={
+                      <Text style={{ color: 'white', fontSize: '12px' }}>
+                        {session.title}
+                      </Text>
+                    }
+                    description={
+                      <Text style={{ color: '#ccc', fontSize: '10px' }}>
+                        {new Date(session.created_at).toLocaleDateString()}
+                      </Text>
+                    }
+                  />
+                </List.Item>
+              )}
             />
           </div>
-          <List
-            size="small"
-            dataSource={sessions}
-            renderItem={(session) => (
-              <List.Item
-                style={{
-                  padding: '8px 12px',
-                  cursor: 'pointer',
-                  backgroundColor: selectedSession === session.id ? '#1890ff' : 'transparent',
-                  borderRadius: '4px',
-                  marginBottom: '4px',
-                }}
-                onClick={() => handleSessionSelect(session.id)}
-              >
-                <List.Item.Meta
-                  avatar={<Avatar icon={<MessageOutlined />} size="small" />}
-                  title={
-                    <Text style={{ color: 'white', fontSize: '12px' }}>
-                      {session.title}
-                    </Text>
-                  }
-                  description={
-                    <Text style={{ color: '#ccc', fontSize: '10px' }}>
-                      {new Date(session.created_at).toLocaleDateString()}
-                    </Text>
-                  }
-                />
-              </List.Item>
-            )}
-          />
-        </div>
 
-        {/* 设置按钮 - 固定在底部 */}
-        <div style={{ 
-          position: 'absolute', 
-          bottom: '16px', 
-          left: '16px', 
-          right: '16px',
-          backgroundColor: '#001529'
-        }}>
-          <Button
-            type="text"
-            icon={<SettingOutlined />}
-            style={{ 
-              color: 'white', 
-              width: '100%',
-              textAlign: 'left',
-              height: '40px',
-              border: '1px solid #303030',
-              borderRadius: '4px'
-            }}
-            onClick={() => setIsSettingsDrawerVisible(true)}
-          >
-            设置
-          </Button>
+          {/* 设置按钮 - 固定在底部 */}
+          <div style={{ 
+            position: 'absolute', 
+            bottom: '16px', 
+            left: '16px', 
+            right: '16px',
+            backgroundColor: '#001529'
+          }}>
+            <Button
+              type="text"
+              icon={<SettingOutlined />}
+              style={{ 
+                color: 'white', 
+                width: '100%',
+                textAlign: 'left',
+                height: '40px',
+                border: '1px solid #303030',
+                borderRadius: '4px'
+              }}
+              onClick={() => setIsSettingsDrawerVisible(true)}
+            >
+              设置
+            </Button>
+          </div>
         </div>
 
         {/* 创建会话模态框 */}

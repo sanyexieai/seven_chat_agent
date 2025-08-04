@@ -18,7 +18,7 @@ function App() {
     <Router>
       <Layout style={{ height: '100vh' }}>
         <Sidebar />
-        <Content style={{ padding: 0, margin: 0 }}>
+        <Content style={{ padding: 0, margin: 0, marginLeft: '280px' }}>
           <Routes>
             <Route path="/" element={<ChatPage />} />
             <Route path="/chat" element={<ChatPage />} />

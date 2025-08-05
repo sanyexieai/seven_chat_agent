@@ -242,6 +242,7 @@ class MCPServerResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    tools: Optional[List['MCPToolResponse']] = None  # 添加工具列表
     
     class Config:
         from_attributes = True

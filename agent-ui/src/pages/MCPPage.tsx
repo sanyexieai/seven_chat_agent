@@ -299,6 +299,41 @@ const MCPPage: React.FC = () => {
       let importedCount = 0;
       for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
         try {
+          const serverConfigAny = serverConfig as any;
+          
+          // 处理传输类型映射
+          let transport = 'stdio'; // 默认值
+          if (serverConfigAny.transport) {
+            transport = serverConfigAny.transport;
+          } else if (serverConfigAny.type) {
+            // 将type字段转换为transport
+            const type = serverConfigAny.type;
+            if (type === 'streamable-http') {
+              transport = 'streamable_http';
+            } else if (type === 'stdio') {
+              transport = 'stdio';
+            } else if (type === 'sse') {
+              transport = 'sse';
+            } else if (type === 'websocket') {
+              transport = 'websocket';
+            } else {
+              transport = type; // 尝试直接使用
+            }
+          } else if (serverConfigAny.url) {
+            // 根据URL推断传输类型
+            const url = serverConfigAny.url.toLowerCase();
+            if (url.includes('sse')) {
+              transport = 'sse';
+            } else if (url.includes('ws') || url.includes('websocket')) {
+              transport = 'websocket';
+            } else if (url.includes('stream') || url.startsWith('http')) {
+              transport = 'streamable_http';
+            }
+          }
+          
+          console.log(`导入服务器 ${name}，原始配置:`, serverConfigAny);
+          console.log(`转换后transport: ${transport}`);
+
           const response = await fetch('/api/mcp/servers', {
             method: 'POST',
             headers: {
@@ -308,16 +343,19 @@ const MCPPage: React.FC = () => {
               name: name,
               display_name: `${name.charAt(0).toUpperCase() + name.slice(1)} MCP服务器`,
               description: `从JSON导入的${name} MCP服务器`,
-              transport: (serverConfig as any).transport || 'stdio',
-              command: (serverConfig as any).command || '',
-              args: (serverConfig as any).args || [],
-              env: (serverConfig as any).env || {},
-              url: (serverConfig as any).url || ''
+              transport: transport,
+              command: serverConfigAny.command || '',
+              args: serverConfigAny.args || [],
+              env: serverConfigAny.env || {},
+              url: serverConfigAny.url || ''
             })
           });
           
           if (response.ok) {
             importedCount++;
+          } else {
+            const errorData = await response.json();
+            console.error(`导入服务器 ${name} 失败:`, errorData);
           }
         } catch (err) {
           console.error(`导入服务器 ${name} 失败:`, err);

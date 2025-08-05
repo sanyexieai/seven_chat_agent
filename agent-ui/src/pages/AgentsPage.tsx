@@ -1,18 +1,39 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Card, Row, Col, Typography, Tag, Button, Modal, Descriptions, Space,
-  Form, Input, Select, Switch, message, Popconfirm, Divider, Tabs
+  Card,
+  Button,
+  Table,
+  Modal,
+  Form,
+  Input,
+  Select,
+  Switch,
+  message,
+  Space,
+  Tag,
+  Popconfirm,
+  Typography,
+  Tree,
+  TreeSelect,
+  Row,
+  Col
 } from 'antd';
 import {
-  RobotOutlined, MessageOutlined, SearchOutlined, FileTextOutlined,
-  PlusOutlined, EditOutlined, DeleteOutlined, SettingOutlined
+  PlusOutlined,
+  EditOutlined,
+  DeleteOutlined,
+  RobotOutlined,
+  SearchOutlined,
+  FileTextOutlined,
+  MessageOutlined,
+  ToolOutlined,
+  BranchesOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
 
-const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
 const { Option } = Select;
-const { TabPane } = Tabs;
+const { Title, Paragraph, Text } = Typography;
 
 interface Agent {
   id: number;
@@ -39,6 +60,37 @@ interface AgentFormData {
   flow_config?: any;
 }
 
+interface MCPTool {
+  id: number;
+  server_id: number;
+  name: string;
+  display_name?: string;
+  description?: string;
+  tool_type: string;
+  input_schema?: any;
+  output_schema?: any;
+  examples?: any[];
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MCPServer {
+  id: number;
+  name: string;
+  display_name: string;
+  description?: string;
+  transport: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  tools?: MCPTool[];
+}
+
 const AgentsPage: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,10 +101,13 @@ const AgentsPage: React.FC = () => {
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
   const [availableTools, setAvailableTools] = useState<string[]>([]);
+  const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [toolTreeData, setToolTreeData] = useState<any[]>([]);
 
   useEffect(() => {
     fetchAgents();
     fetchAvailableTools();
+    fetchMCPServers();
   }, []);
 
   const fetchAgents = async () => {
@@ -81,6 +136,92 @@ const AgentsPage: React.FC = () => {
     }
   };
 
+  const fetchMCPServers = async () => {
+    try {
+      const response = await axios.get('/api/mcp/servers');
+      const servers = response.data || [];
+      setMcpServers(servers);
+      
+      console.log('获取到的MCP服务器数据:', servers);
+      
+      // 构建工具树数据
+      const treeData: any[] = [];
+      for (const server of servers) {
+        console.log(`处理服务器 ${server.name}:`, server);
+        
+        if (server.tools && server.tools.length > 0) {
+          const serverNode = {
+            title: server.display_name || server.name,
+            key: `server_${server.id}`,
+            value: `server_${server.id}`, // 添加value字段
+            children: server.tools.map((tool: MCPTool) => ({
+              title: tool.display_name || tool.name,
+              key: `${server.name}_${tool.name}`,
+              value: `${server.name}_${tool.name}`,
+              isLeaf: true,
+              tool: tool
+            }))
+          };
+          treeData.push(serverNode);
+          console.log(`服务器 ${server.name} 的工具:`, server.tools);
+        } else {
+          // 即使没有工具，也显示服务器节点
+          const serverNode = {
+            title: server.display_name || server.name,
+            key: `server_${server.id}`,
+            value: `server_${server.id}`,
+            children: []
+          };
+          treeData.push(serverNode);
+          console.log(`服务器 ${server.name} 没有工具`);
+        }
+      }
+      
+      console.log('构建的树数据:', treeData);
+      setToolTreeData(treeData);
+    } catch (error) {
+      console.error('获取MCP服务器失败:', error);
+    }
+  };
+
+  // 将树选择的值转换为工具名称数组
+  const convertTreeValuesToToolNames = (treeValues: string[]): string[] => {
+    const toolNames: string[] = [];
+    console.log('转换树选择值:', treeValues);
+    
+    for (const value of treeValues) {
+      if (value.includes('_')) {
+        const parts = value.split('_');
+        if (parts.length >= 2) {
+          const toolName = parts.slice(1).join('_'); // 处理工具名中可能包含下划线的情况
+          toolNames.push(toolName);
+        }
+      }
+    }
+    
+    console.log('转换后的工具名称:', toolNames);
+    return toolNames;
+  };
+
+  // 将工具名称数组转换为树选择的值
+  const convertToolNamesToTreeValues = (toolNames: string[]): string[] => {
+    const treeValues: string[] = [];
+    console.log('转换工具名称为树值:', toolNames);
+    
+    for (const server of mcpServers) {
+      if (server.tools) {
+        for (const tool of server.tools) {
+          if (toolNames.includes(tool.name)) {
+            treeValues.push(`${server.name}_${tool.name}`);
+          }
+        }
+      }
+    }
+    
+    console.log('转换后的树值:', treeValues);
+    return treeValues;
+  };
+
   const getAgentIcon = (agentType: string) => {
     switch (agentType) {
       case 'chat':
@@ -90,11 +231,11 @@ const AgentsPage: React.FC = () => {
       case 'report':
         return <FileTextOutlined />;
       case 'prompt_driven':
-        return <RobotOutlined style={{ color: '#1890ff' }} />;
+        return <RobotOutlined />;
       case 'tool_driven':
-        return <SettingOutlined style={{ color: '#52c41a' }} />;
+        return <ToolOutlined />;
       case 'flow_driven':
-        return <RobotOutlined style={{ color: '#722ed1' }} />;
+        return <BranchesOutlined />;
       default:
         return <RobotOutlined />;
     }
@@ -140,6 +281,11 @@ const AgentsPage: React.FC = () => {
 
   const handleCreateAgent = async (values: AgentFormData) => {
     try {
+      // 如果是工具驱动智能体，需要转换树选择的值
+      if (values.agent_type === 'tool_driven' && values.bound_tools) {
+        values.bound_tools = convertTreeValuesToToolNames(values.bound_tools);
+      }
+      
       await axios.post('/api/agents', values);
       message.success('智能体创建成功');
       setCreateModalVisible(false);
@@ -155,6 +301,11 @@ const AgentsPage: React.FC = () => {
     if (!selectedAgent) return;
 
     try {
+      // 如果是工具驱动智能体，需要转换树选择的值
+      if (values.agent_type === 'tool_driven' && values.bound_tools) {
+        values.bound_tools = convertTreeValuesToToolNames(values.bound_tools);
+      }
+      
       await axios.put(`/api/agents/${selectedAgent.id}`, values);
       message.success('智能体更新成功');
       setEditModalVisible(false);
@@ -179,6 +330,13 @@ const AgentsPage: React.FC = () => {
 
   const handleEditClick = (agent: Agent) => {
     setSelectedAgent(agent);
+    
+    // 如果是工具驱动智能体，需要转换工具名称为树选择的值
+    let boundTools = agent.bound_tools;
+    if (agent.agent_type === 'tool_driven' && agent.bound_tools) {
+      boundTools = convertToolNamesToTreeValues(agent.bound_tools);
+    }
+    
     editForm.setFieldsValue({
       name: agent.name,
       display_name: agent.display_name,
@@ -186,7 +344,7 @@ const AgentsPage: React.FC = () => {
       agent_type: agent.agent_type,
       is_active: agent.is_active,
       system_prompt: agent.system_prompt,
-      bound_tools: agent.bound_tools,
+      bound_tools: boundTools,
       flow_config: agent.flow_config
     });
     setEditModalVisible(true);
@@ -273,10 +431,18 @@ const AgentsPage: React.FC = () => {
                   label="绑定工具"
                   rules={[{ required: true, message: '请选择要绑定的工具' }]}
                 >
-                  <Select
-                    mode="multiple"
+                  <TreeSelect
+                    treeData={toolTreeData}
                     placeholder="选择要绑定的工具"
-                    options={availableTools.map(tool => ({ label: tool, value: tool }))}
+                    treeCheckable={true}
+                    showCheckedStrategy={TreeSelect.SHOW_CHILD}
+                    allowClear={true}
+                    style={{ width: '100%' }}
+                    dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+                    treeDefaultExpandAll={true}
+                    onChange={(value) => {
+                      console.log('TreeSelect onChange:', value);
+                    }}
                   />
                 </Form.Item>
               )}

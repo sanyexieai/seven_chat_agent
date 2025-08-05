@@ -30,7 +30,22 @@ async def get_mcp_servers(
         if active_only:
             query = query.filter(MCPServer.is_active == True)
         servers = query.all()
-        return servers
+        
+        # 为每个服务器加载工具信息
+        result = []
+        for server in servers:
+            # 获取该服务器的工具
+            tools = db.query(MCPTool).filter(
+                MCPTool.server_id == server.id,
+                MCPTool.is_active == True
+            ).all()
+            
+            # 创建响应对象
+            server_response = MCPServerResponse.model_validate(server)
+            server_response.tools = [MCPToolResponse.model_validate(tool) for tool in tools]
+            result.append(server_response)
+        
+        return result
     except Exception as e:
         logger.error(f"获取MCP服务器失败: {str(e)}")
         raise HTTPException(status_code=500, detail="获取MCP服务器失败")

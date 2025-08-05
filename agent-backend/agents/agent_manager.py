@@ -251,13 +251,64 @@ class AgentManager:
                     mcp_config["mcpServers"][server_name] = server_config["server_config"]
                 
                 logger.info(f"MCP配置转换: {mcp_config}")
+                logger.info(f"MCP配置中的服务器: {list(mcp_config['mcpServers'].keys())}")
+                
+                # 详细记录每个服务器的配置
+                for server_name, server_config in mcp_config["mcpServers"].items():
+                    logger.info(f"服务器 {server_name} 配置详情: {server_config}")
                 
                 self.mcp_helper = get_mcp_helper(config=mcp_config)
                 logger.info("MCP助手初始化成功")
+                
+                # 测试连接和工具加载
+                logger.info("开始测试MCP服务器连接...")
+                available_services = await self.mcp_helper.get_available_services()
+                logger.info(f"可用的MCP服务: {available_services}")
+                
+                # 为每个可用服务加载工具
+                for service_name in available_services:
+                    try:
+                        logger.info(f"正在从服务器 {service_name} 加载工具...")
+                        tools = await self.mcp_helper.get_tools(server_name=service_name)
+                        logger.info(f"服务器 {service_name} 加载了 {len(tools)} 个工具")
+                        
+                        # 更新数据库中的工具信息
+                        if service_name in self.mcp_configs:
+                            self.mcp_configs[service_name]['tools'] = []
+                            for tool in tools:
+                                if isinstance(tool, dict):
+                                    tool_info = {
+                                        'name': tool.get('name', ''),
+                                        'display_name': tool.get('displayName', ''),
+                                        'description': tool.get('description', ''),
+                                        'tool_type': tool.get('type', 'tool'),
+                                        'input_schema': tool.get('inputSchema', {}),
+                                        'output_schema': tool.get('outputSchema', {}),
+                                        'examples': tool.get('examples', [])
+                                    }
+                                else:
+                                    tool_info = {
+                                        'name': getattr(tool, 'name', ''),
+                                        'display_name': getattr(tool, 'display_name', ''),
+                                        'description': getattr(tool, 'description', ''),
+                                        'tool_type': getattr(tool, 'type', 'tool'),
+                                        'input_schema': getattr(tool, 'input_schema', {}),
+                                        'output_schema': getattr(tool, 'output_schema', {}),
+                                        'examples': getattr(tool, 'examples', [])
+                                    }
+                                self.mcp_configs[service_name]['tools'].append(tool_info)
+                                logger.info(f"  工具: {tool_info['name']} - {tool_info['description']}")
+                    except Exception as e:
+                        logger.error(f"从服务器 {service_name} 加载工具失败: {str(e)}")
+                        import traceback
+                        logger.error(f"错误堆栈: {traceback.format_exc()}")
+                
             else:
                 logger.warning("没有MCP配置，跳过MCP助手初始化")
         except Exception as e:
             logger.error(f"MCP助手初始化失败: {str(e)}")
+            import traceback
+            logger.error(f"错误堆栈: {traceback.format_exc()}")
     
     async def _create_default_agents(self):
         """从数据库加载智能体"""
@@ -284,6 +335,12 @@ class AgentManager:
                     # 纯工具驱动智能体
                     bound_tools = db_agent.bound_tools or []
                     logger.info(f"创建工具驱动智能体 {db_agent.name}，绑定工具: {bound_tools}")
+                    logger.info(f"绑定工具类型: {type(bound_tools)}")
+                    logger.info(f"绑定工具原始值: {db_agent.bound_tools}")
+                    if bound_tools:
+                        logger.info(f"绑定工具列表长度: {len(bound_tools)}")
+                        for i, tool in enumerate(bound_tools):
+                            logger.info(f"  工具 {i+1}: {tool} (类型: {type(tool)})")
                     agent = ToolDrivenAgent(db_agent.name, db_agent.display_name, bound_tools)
                 elif db_agent.agent_type == "flow_driven":
                     # 流程图驱动智能体（暂时使用提示词驱动作为占位符）

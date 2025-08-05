@@ -1,8 +1,12 @@
 import asyncio
 import os
 import json
+import logging
 from typing import Dict, List, Any, Optional
 from langchain_mcp_adapters.client import MultiServerMCPClient
+
+# 获取logger
+logger = logging.getLogger(__name__)
 
 class MCPHelper:
     """
@@ -30,24 +34,56 @@ class MCPHelper:
         """
         servers = mcp_config.get("mcpServers", {})
         for name, server in servers.items():
-            if "transport" not in server:
-                # 推断 transport
-                if "url" in server:
-                    url = server["url"].lower()
-                    if "sse" in url:
-                        server["transport"] = "sse"
-                    elif "ws" in url or "websocket" in url:
-                        server["transport"] = "websocket"
-                    elif "stream" in url:
-                        server["transport"] = "streamable_http"
-                    elif url.startswith("http"):
-                        server["transport"] = "streamable_http"
-                    else:
-                        server["transport"] = "streamable_http"  # 默认
-                elif "command" in server:
+            logger.info(f"处理服务器 {name} 的传输配置: {server}")
+            
+            # 如果已经有transport字段，跳过
+            if "transport" in server:
+                logger.info(f"服务器 {name} 已有transport配置: {server['transport']}")
+                continue
+            
+            # 检查是否有type字段，如果有则转换为transport
+            if "type" in server:
+                transport_type = server["type"]
+                logger.info(f"服务器 {name} 使用type字段: {transport_type}")
+                
+                # 转换type为transport
+                if transport_type == "streamable-http":
+                    server["transport"] = "streamable_http"
+                elif transport_type == "stdio":
                     server["transport"] = "stdio"
+                elif transport_type == "sse":
+                    server["transport"] = "sse"
+                elif transport_type == "websocket":
+                    server["transport"] = "websocket"
                 else:
-                    raise ValueError(f"无法为 {name} 推断 transport，请手动指定")
+                    # 尝试直接使用type值
+                    server["transport"] = transport_type
+                
+                # 删除type字段，避免冲突
+                del server["type"]
+                logger.info(f"服务器 {name} 转换后transport: {server['transport']}")
+                continue
+            
+            # 如果没有transport和type字段，则根据其他字段推断
+            if "url" in server:
+                url = server["url"].lower()
+                logger.info(f"服务器 {name} 根据URL推断传输类型: {url}")
+                if "sse" in url:
+                    server["transport"] = "sse"
+                elif "ws" in url or "websocket" in url:
+                    server["transport"] = "websocket"
+                elif "stream" in url:
+                    server["transport"] = "streamable_http"
+                elif url.startswith("http"):
+                    server["transport"] = "streamable_http"
+                else:
+                    server["transport"] = "streamable_http"  # 默认
+                logger.info(f"服务器 {name} 推断结果: {server['transport']}")
+            elif "command" in server:
+                server["transport"] = "stdio"
+                logger.info(f"服务器 {name} 使用stdio传输")
+            else:
+                raise ValueError(f"无法为 {name} 推断 transport，请手动指定")
         return mcp_config
 
     def setup(self, config: Dict = None, config_file: str = None) -> 'MCPHelper':
@@ -60,15 +96,16 @@ class MCPHelper:
         if not config:
             raise ValueError("必须传入 config 或 config_file")
         
-        print(f"MCPHelper setup - 原始配置: {config}")
+        logger.info(f"MCPHelper setup - 原始配置: {config}")
         config = self.auto_infer_transport(config)
-        print(f"MCPHelper setup - 处理后配置: {config}")
+        logger.info(f"MCPHelper setup - 处理后配置: {config}")
         
         self._config = config
+        logger.info(f"创建MultiServerMCPClient，配置: {config['mcpServers']}")
         self._client = MultiServerMCPClient(config["mcpServers"])
         self._tools_cache.clear()
         
-        print(f"MCPHelper setup - 最终配置: {self._config}")
+        logger.info(f"MCPHelper setup - 最终配置: {self._config}")
         return self
 
     def get_all_services(self) -> List[str]:
@@ -77,7 +114,9 @@ class MCPHelper:
         """
         if not self._client:
             raise RuntimeError("MCPHelper 未初始化，请先 setup")
-        return list(self._config["mcpServers"].keys())
+        services = list(self._config["mcpServers"].keys())
+        logger.info(f"获取所有服务名: {services}")
+        return services
     
     async def get_available_services(self) -> List[str]:
         """
@@ -86,23 +125,38 @@ class MCPHelper:
         if not self._client:
             raise RuntimeError("MCPHelper 未初始化，请先 setup")
         
-        print(f"配置中的所有服务: {list(self._config['mcpServers'].keys())}")
+        logger.info(f"配置中的所有服务: {list(self._config['mcpServers'].keys())}")
         
         available_services = []
         for service_name in self._config["mcpServers"].keys():
             try:
+                logger.info(f"正在测试服务 {service_name} 的连接...")
+                logger.info(f"服务 {service_name} 的配置: {self._config['mcpServers'][service_name]}")
+                
                 # 尝试获取工具来测试连接
                 tools = await self._client.get_tools(server_name=service_name)
                 available_services.append(service_name)
-                print(f"服务 {service_name} 连接成功，获取到 {len(tools)} 个工具")
+                logger.info(f"服务 {service_name} 连接成功，获取到 {len(tools)} 个工具")
+                
+                # 详细记录工具信息
+                for i, tool in enumerate(tools):
+                    if isinstance(tool, dict):
+                        tool_name = tool.get('name', 'unknown')
+                        tool_desc = tool.get('description', 'no description')
+                    else:
+                        tool_name = getattr(tool, 'name', 'unknown')
+                        tool_desc = getattr(tool, 'description', 'no description')
+                    logger.info(f"  工具 {i+1}: {tool_name} - {tool_desc}")
+                    
             except Exception as e:
                 # 连接失败，记录错误
-                print(f"服务 {service_name} 连接失败: {type(e).__name__}: {e}")
-                print(f"服务 {service_name} 错误详情: {str(e)}")
+                logger.error(f"服务 {service_name} 连接失败: {type(e).__name__}: {e}")
+                logger.error(f"服务 {service_name} 错误详情: {str(e)}")
                 import traceback
-                print(f"服务 {service_name} 错误堆栈: {traceback.format_exc()}")
+                logger.error(f"服务 {service_name} 错误堆栈: {traceback.format_exc()}")
                 continue
         
+        logger.info(f"最终可用的服务: {available_services}")
         return available_services
 
     async def get_tools(self, server_name: str = None) -> List[Dict]:
@@ -111,17 +165,44 @@ class MCPHelper:
         """
         if not self._client:
             raise RuntimeError("MCPHelper 未初始化，请先 setup")
+        
         if server_name:
+            logger.info(f"尝试从服务器 {server_name} 获取工具...")
             if server_name in self._tools_cache:
+                logger.info(f"从缓存获取服务器 {server_name} 的工具，共 {len(self._tools_cache[server_name])} 个")
                 return self._tools_cache[server_name]
-            tools = await self._client.get_tools(server_name=server_name)
-            self._tools_cache[server_name] = tools
-            return tools
+            
+            try:
+                logger.info(f"从服务器 {server_name} 获取工具，配置: {self._config['mcpServers'].get(server_name, 'not found')}")
+                tools = await self._client.get_tools(server_name=server_name)
+                logger.info(f"从服务器 {server_name} 获取到 {len(tools)} 个工具")
+                
+                # 详细记录工具信息
+                for i, tool in enumerate(tools):
+                    if isinstance(tool, dict):
+                        tool_name = tool.get('name', 'unknown')
+                        tool_desc = tool.get('description', 'no description')
+                    else:
+                        tool_name = getattr(tool, 'name', 'unknown')
+                        tool_desc = getattr(tool, 'description', 'no description')
+                    logger.info(f"  工具 {i+1}: {tool_name} - {tool_desc}")
+                
+                self._tools_cache[server_name] = tools
+                return tools
+            except Exception as e:
+                logger.error(f"从服务器 {server_name} 获取工具失败: {type(e).__name__}: {e}")
+                logger.error(f"错误详情: {str(e)}")
+                import traceback
+                logger.error(f"错误堆栈: {traceback.format_exc()}")
+                return []
+        
         # 查询所有服务的全部工具
+        logger.info("获取所有服务器的工具...")
         all_tools = []
         for name in self.get_all_services():
             tools = await self.get_tools(server_name=name)
             all_tools.extend(tools)
+        logger.info(f"总共获取到 {len(all_tools)} 个工具")
         return all_tools
 
     async def get_tool_info(self, tool_name: str) -> Optional[Dict]:

@@ -32,9 +32,9 @@ def run_migrations():
     try:
         # 检查agents表是否存在
         if not check_table_exists('agents'):
-            logger.info("agents表不存在，创建表...")
+            logger.info("agents表不存在，创建所有表...")
             Base.metadata.create_all(bind=engine)
-            logger.info("agents表创建完成")
+            logger.info("所有表创建完成")
             return
         
         # 检查新字段是否存在
@@ -66,12 +66,112 @@ def run_migrations():
                         logger.info("添加 flow_config 字段")
                 
                 conn.commit()
-                logger.info("数据库迁移完成")
+                logger.info("agents表迁移完成")
         else:
-            logger.info("数据库结构已是最新版本")
+            logger.info("agents表结构已是最新版本")
+        
+        # 运行MCP服务器表迁移
+        run_mcp_migrations()
             
     except Exception as e:
         logger.error(f"数据库迁移失败: {str(e)}")
+        raise
+
+def run_mcp_migrations():
+    """运行MCP相关的数据库迁移"""
+    logger.info("开始检查MCP相关表迁移...")
+    
+    try:
+        with engine.connect() as conn:
+            # 检查mcp_servers表是否存在
+            inspector = inspect(engine)
+            if 'mcp_servers' not in inspector.get_table_names():
+                logger.info("mcp_servers表不存在，创建所有MCP表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("所有MCP表创建完成")
+                return
+            
+            # 检查config字段是否存在
+            if not check_column_exists('mcp_servers', 'config'):
+                logger.info("添加config字段到mcp_servers表...")
+                conn.execute(text("""
+                    ALTER TABLE mcp_servers 
+                    ADD COLUMN config JSON;
+                """))
+                logger.info("成功添加config字段到mcp_servers表")
+            else:
+                logger.info("config字段已存在，跳过添加")
+            
+            # 检查其他可能缺失的字段
+            missing_server_columns = []
+            
+            if not check_column_exists('mcp_servers', 'args'):
+                missing_server_columns.append('args')
+            
+            if not check_column_exists('mcp_servers', 'env'):
+                missing_server_columns.append('env')
+            
+            if missing_server_columns:
+                logger.info(f"发现缺失字段: {missing_server_columns}")
+                for column in missing_server_columns:
+                    if column == 'args':
+                        conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN args JSON;"))
+                        logger.info("添加 args 字段")
+                    elif column == 'env':
+                        conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN env JSON;"))
+                        logger.info("添加 env 字段")
+                
+                logger.info("MCP服务器表迁移完成")
+            else:
+                logger.info("MCP服务器表结构已是最新版本")
+            
+            # 检查mcp_tools表
+            if 'mcp_tools' not in inspector.get_table_names():
+                logger.info("mcp_tools表不存在，创建所有MCP表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("所有MCP表创建完成")
+            else:
+                # 检查mcp_tools表的字段
+                missing_tool_columns = []
+                
+                if not check_column_exists('mcp_tools', 'tool_type'):
+                    missing_tool_columns.append('tool_type')
+                if not check_column_exists('mcp_tools', 'input_schema'):
+                    missing_tool_columns.append('input_schema')
+                if not check_column_exists('mcp_tools', 'output_schema'):
+                    missing_tool_columns.append('output_schema')
+                if not check_column_exists('mcp_tools', 'examples'):
+                    missing_tool_columns.append('examples')
+                if not check_column_exists('mcp_tools', 'tool_schema'):
+                    missing_tool_columns.append('tool_schema')
+                
+                if missing_tool_columns:
+                    logger.info(f"发现缺失字段: {missing_tool_columns}")
+                    for column in missing_tool_columns:
+                        if column == 'tool_type':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN tool_type VARCHAR(50);"))
+                            logger.info("添加 tool_type 字段")
+                        elif column == 'input_schema':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN input_schema JSON;"))
+                            logger.info("添加 input_schema 字段")
+                        elif column == 'output_schema':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN output_schema JSON;"))
+                            logger.info("添加 output_schema 字段")
+                        elif column == 'examples':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN examples JSON;"))
+                            logger.info("添加 examples 字段")
+                        elif column == 'tool_schema':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN tool_schema JSON;"))
+                            logger.info("添加 tool_schema 字段")
+                    
+                    logger.info("MCP工具表迁移完成")
+                else:
+                    logger.info("MCP工具表结构已是最新版本")
+            
+            conn.commit()
+                
+    except Exception as e:
+        logger.error(f"MCP相关表迁移失败: {str(e)}")
         raise
 
 def create_default_agents():
@@ -152,6 +252,10 @@ def init_database():
     
     # 创建默认智能体
     create_default_agents()
+    
+    # 创建默认LLM配置
+    from database.database import create_default_llm_configs
+    create_default_llm_configs()
     
     logger.info("数据库初始化完成")
 

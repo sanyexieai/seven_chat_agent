@@ -5,6 +5,7 @@ from agents.search_agent import SearchAgent
 from agents.report_agent import ReportAgent
 from agents.prompt_driven_agent import PromptDrivenAgent
 from agents.tool_driven_agent import ToolDrivenAgent
+from agents.flow_driven_agent import FlowDrivenAgent
 from models.chat_models import AgentMessage, StreamChunk, AgentContext
 from utils.log_helper import get_logger
 from database.database import SessionLocal
@@ -31,6 +32,10 @@ class AgentManager:
     async def initialize(self):
         """初始化智能体管理器"""
         logger.info("初始化智能体管理器...")
+        
+        # 运行数据库迁移
+        from database.database import init_db
+        init_db()
         
         # 检查数据库表
         await self._check_database_tables()
@@ -343,10 +348,9 @@ class AgentManager:
                             logger.info(f"  工具 {i+1}: {tool} (类型: {type(tool)})")
                     agent = ToolDrivenAgent(db_agent.name, db_agent.display_name, bound_tools)
                 elif db_agent.agent_type == "flow_driven":
-                    # 流程图驱动智能体（暂时使用提示词驱动作为占位符）
-                    logger.warning(f"流程图驱动智能体 {db_agent.name} 暂未实现，使用提示词驱动作为占位符")
-                    system_prompt = db_agent.system_prompt or "你是一个流程图驱动的智能体，但目前功能还在开发中。"
-                    agent = PromptDrivenAgent(db_agent.name, db_agent.display_name, system_prompt)
+                    # 流程图驱动智能体
+                    logger.info(f"加载流程图驱动智能体 {db_agent.name}，流程图: {db_agent.flow_config}")
+                    agent = FlowDrivenAgent(db_agent.name, db_agent.display_name, db_agent.flow_config)
                 else:
                     # 默认使用聊天智能体
                     agent = ChatAgent(db_agent.name, db_agent.display_name)
@@ -412,6 +416,11 @@ class AgentManager:
             tool_agent.mcp_helper = self.mcp_helper
             logger.info("工具驱动智能体设置MCP助手")
         self.agents["tool_agent"] = tool_agent
+        
+        # 流程图驱动智能体（不需要MCP助手）
+        flow_agent = FlowDrivenAgent("flow_agent", "流程图驱动智能体")
+        self.agents["flow_agent"] = flow_agent
+        logger.info("创建流程图驱动智能体，不设置MCP助手")
         
         logger.info("创建默认智能体完成")
     
@@ -523,6 +532,9 @@ class AgentManager:
         elif any(keyword in message_lower for keyword in ['提示', 'prompt']):
             if 'prompt_agent' in self.agents:
                 return self.agents['prompt_agent']
+        elif any(keyword in message_lower for keyword in ['流程图', 'flow', 'graph']):
+            if 'flow_agent' in self.agents:
+                return self.agents['flow_agent']
         
         # 默认返回聊天智能体
         return self.agents.get('chat_agent', list(self.agents.values())[0])

@@ -1,40 +1,31 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { Layout } from 'antd';
-import './App.css';
-
-import ChatPage from './pages/ChatPage';
-import MCPPage from './pages/MCPPage';
+import { ConfigProvider } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
+import Layout from './components/Layout';
+import HomePage from './pages/HomePage';
 import AgentsPage from './pages/AgentsPage';
 import AgentTestPage from './pages/AgentTestPage';
-import KnowledgeBasePage from './pages/KnowledgeBasePage';
-import KnowledgeQueryPage from './pages/KnowledgeQueryPage';
-import LLMConfigPage from './pages/LLMConfigPage';
-import Sidebar from './components/Sidebar';
+import MCPPage from './pages/MCPPage';
+import FlowEditorPage from './pages/FlowEditorPage';
+import './App.css';
 
-const { Content } = Layout;
-
-function App() {
+const App: React.FC = () => {
   return (
-    <Router>
-      <Layout style={{ height: '100vh' }}>
-        <Sidebar />
-        <Content style={{ padding: 0, margin: 0, marginLeft: '280px' }}>
+    <ConfigProvider locale={zhCN}>
+      <Router>
+        <Layout>
           <Routes>
-            <Route path="/" element={<ChatPage />} />
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/chat/:sessionId" element={<ChatPage />} />
-            <Route path="/mcp" element={<MCPPage />} />
+            <Route path="/" element={<HomePage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agent-test" element={<AgentTestPage />} />
-            <Route path="/llm-config" element={<LLMConfigPage />} />
-            <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
-            <Route path="/knowledge-query" element={<KnowledgeQueryPage />} />
+            <Route path="/mcp" element={<MCPPage />} />
+            <Route path="/flow-editor" element={<FlowEditorPage />} />
           </Routes>
-        </Content>
-      </Layout>
-    </Router>
+        </Layout>
+      </Router>
+    </ConfigProvider>
   );
-}
+};
 
 export default App; 

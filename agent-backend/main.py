@@ -1,68 +1,72 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
-import json
-import asyncio
-from typing import Dict, List
 import uvicorn
+import asyncio
+import json
+import uuid
+from typing import Dict, List, Any
+import logging
 
-from agents.agent_manager import AgentManager
-from tools.tool_manager import ToolManager
-from models.chat_models import ChatRequest, ChatResponse, AgentMessage
-from utils.log_helper import get_logger
-from database.database import init_db
-from database.migrations import init_database
+# 导入路由
 from api.agents import router as agents_router
 from api.sessions import router as sessions_router
+from api.chat import router as chat_router
 from api.mcp import router as mcp_router
-from api.knowledge_base import router as knowledge_base_router
-from api.llm_config import router as llm_config_router
-from config.llm_config_manager import llm_config_manager
+from api.flows import router as flows_router
 
-# 获取logger实例
+# 导入数据库和智能体管理器
+from database.database import engine, Base, get_db
+from database.migrations import run_migrations, create_default_agents
+from agents.agent_manager import AgentManager
+from utils.log_helper import get_logger
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
 logger = get_logger("main")
 
-# 全局管理器
+# 运行数据库迁移
+logger.info("开始数据库迁移...")
+from database.database import init_db
+init_db()
+logger.info("数据库迁移完成")
+
+# 全局变量
 agent_manager = None
-tool_manager = None
-
-# 直接初始化
-logger.info("AI Agent System starting up...")
-
-# 初始化数据库（包括迁移）
-init_database()
-logger.info("Database initialized")
-
-# 确保所有表都被创建
-from models.database_models import Base
-from database.database import engine
-Base.metadata.create_all(bind=engine)
-logger.info("All database tables created")
-
-agent_manager = AgentManager()
-tool_manager = ToolManager()
-
-# 同步初始化
-import asyncio
-asyncio.run(agent_manager.initialize())
-asyncio.run(tool_manager.initialize())
-
-# 初始化LLM配置管理器
-llm_config_manager.initialize()
-logger.info("AI Agent System started successfully")
+active_connections: Dict[str, WebSocket] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    global agent_manager
+    
+    # 启动时初始化
+    logger.info("应用启动中...")
+    agent_manager = AgentManager()
+    await agent_manager.initialize()
+    logger.info("应用启动完成")
+    
     yield
+    
+    # 关闭时清理
+    logger.info("应用关闭中...")
+    if agent_manager:
+        await agent_manager.cleanup()
+    logger.info("应用关闭完成")
 
-app = FastAPI(title="AI Agent System", version="1.0.0", lifespan=lifespan)
+# 创建FastAPI应用
+app = FastAPI(
+    title="Seven Chat Agent API",
+    description="多智能体聊天系统API",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
-# CORS配置
+# 配置CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 在生产环境中应该限制为特定域名
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,84 +75,56 @@ app.add_middleware(
 # 注册路由
 app.include_router(agents_router)
 app.include_router(sessions_router)
+app.include_router(chat_router)
 app.include_router(mcp_router)
-app.include_router(knowledge_base_router)
-app.include_router(llm_config_router)
+app.include_router(flows_router)
 
 @app.get("/")
 async def root():
     """根路径"""
-    return {"message": "AI Agent System API", "version": "1.0.0"}
+    return {
+        "message": "Seven Chat Agent API",
+        "version": "1.0.0",
+        "status": "running"
+    }
 
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    if agent_manager is None:
-        return {"status": "initializing", "agents": 0}
-    return {"status": "healthy", "agents": len(agent_manager.agents)}
+    return {
+        "status": "healthy",
+        "agent_manager": "initialized" if agent_manager else "not_initialized"
+    }
 
-@app.post("/api/chat")
-async def chat(request: ChatRequest):
-    """聊天接口"""
-    if agent_manager is None:
-        return ChatResponse(
-            success=False,
-            message="系统正在初始化，请稍后再试"
-        )
-    
-    try:
-        logger.info(f"聊天请求 - 用户ID: {request.user_id}, 消息: {request.message}")
-        logger.info(f"指定智能体名称: {request.agent_name}")
-        
-        # 如果指定了智能体名称，直接使用该智能体
-        if request.agent_name and request.agent_name in agent_manager.agents:
-            logger.info(f"使用指定智能体: {request.agent_name}")
-            agent = agent_manager.agents[request.agent_name]
-            response = await agent.process_message(
-                user_id=request.user_id,
-                message=request.message,
-                context=request.context
-            )
-        else:
-            # 否则使用智能体选择逻辑
-            logger.info("使用智能体选择逻辑")
-            response = await agent_manager.process_message(
-                user_id=request.user_id,
-                message=request.message,
-                context=request.context
-            )
-        
-        logger.info(f"API响应处理 - 智能体: {response.agent_name}")
-        logger.info(f"API响应内容: {response.content}")
-        
-        chat_response = ChatResponse(
-            success=True,
-            message=response.content,
-            agent_name=response.agent_name,
-            tools_used=[]
-        )
-        
-        logger.info(f"API返回的ChatResponse: {chat_response}")
-        return chat_response
-    except Exception as e:
-        logger.error(f"Chat error: {str(e)}")
-        return ChatResponse(
-            success=False,
-            message=f"处理消息时出错: {str(e)}"
-        )
+# WebSocket连接管理
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
 
-@app.websocket("/ws/chat/{user_id}")
-async def websocket_chat(websocket: WebSocket, user_id: str):
-    """WebSocket聊天接口"""
-    await websocket.accept()
-    
-    if agent_manager is None:
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": "系统正在初始化，请稍后再试"
-        }))
-        return
-    
+    async def connect(self, websocket: WebSocket, session_id: str):
+        await websocket.accept()
+        self.active_connections[session_id] = websocket
+        logger.info(f"WebSocket连接已建立: {session_id}")
+
+    def disconnect(self, session_id: str):
+        if session_id in self.active_connections:
+            del self.active_connections[session_id]
+            logger.info(f"WebSocket连接已断开: {session_id}")
+
+    async def send_message(self, session_id: str, message: str):
+        if session_id in self.active_connections:
+            try:
+                await self.active_connections[session_id].send_text(message)
+            except Exception as e:
+                logger.error(f"发送消息失败: {str(e)}")
+                self.disconnect(session_id)
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """WebSocket端点"""
+    await manager.connect(websocket, session_id)
     try:
         while True:
             # 接收消息
@@ -156,76 +132,126 @@ async def websocket_chat(websocket: WebSocket, user_id: str):
             message_data = json.loads(data)
             
             # 处理消息
-            response = await agent_manager.process_message_stream(
-                user_id=user_id,
-                message=message_data.get("message", ""),
-                context=message_data.get("context", {})
-            )
+            user_id = message_data.get("user_id", "anonymous")
+            message = message_data.get("message", "")
+            agent_name = message_data.get("agent_name", "chat_agent")
             
-            # 流式发送响应
-            async for chunk in response:
-                await websocket.send_text(json.dumps(chunk))
+            logger.info(f"收到WebSocket消息: session_id={session_id}, user_id={user_id}, agent={agent_name}")
+            
+            # 获取智能体
+            if not agent_manager:
+                await websocket.send_text(json.dumps({
+                    "error": "智能体管理器未初始化"
+                }))
+                continue
+            
+            agent = agent_manager.get_agent(agent_name)
+            if not agent:
+                await websocket.send_text(json.dumps({
+                    "error": f"智能体 {agent_name} 不存在"
+                }))
+                continue
+            
+            # 处理消息
+            try:
+                context = {
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "websocket": websocket
+                }
+                
+                # 流式处理
+                async for chunk in agent.process_message_stream(user_id, message, context):
+                    chunk_data = {
+                        "chunk_id": chunk.chunk_id,
+                        "type": chunk.type,
+                        "content": chunk.content,
+                        "agent_name": chunk.agent_name,
+                        "metadata": chunk.metadata,
+                        "is_end": chunk.is_end
+                    }
+                    await websocket.send_text(json.dumps(chunk_data))
+                    
+                    if chunk.is_end:
+                        break
+                        
+            except Exception as e:
+                logger.error(f"处理消息失败: {str(e)}")
+                await websocket.send_text(json.dumps({
+                    "error": f"处理消息失败: {str(e)}"
+                }))
                 
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for user {user_id}")
+        manager.disconnect(session_id)
+        logger.info(f"WebSocket连接断开: {session_id}")
     except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": f"处理消息时出错: {str(e)}"
-        }))
+        logger.error(f"WebSocket错误: {str(e)}")
+        manager.disconnect(session_id)
 
 @app.post("/api/chat/stream")
-async def chat_stream(request: ChatRequest):
-    """流式聊天接口"""
-    if agent_manager is None:
-        return StreamingResponse(
-            iter([json.dumps({"type": "error", "content": "系统正在初始化，请稍后再试"})]),
-            media_type="text/plain"
-        )
-    
-    async def generate():
-        try:
-            logger.info(f"流式聊天请求 - 用户ID: {request.user_id}, 消息: {request.message}")
-            logger.info(f"指定智能体名称: {request.agent_name}")
-            
-            # 如果指定了智能体名称，直接使用该智能体
-            if request.agent_name and request.agent_name in agent_manager.agents:
-                logger.info(f"使用指定智能体: {request.agent_name}")
-                agent = agent_manager.agents[request.agent_name]
-                async for chunk in agent.process_message_stream(
-                    user_id=request.user_id,
-                    message=request.message,
-                    context=request.context
-                ):
-                    yield f"data: {json.dumps(chunk)}\n\n"
-            else:
-                # 否则使用智能体选择逻辑
-                logger.info("使用智能体选择逻辑")
-                async for chunk in agent_manager.process_message_stream(
-                    user_id=request.user_id,
-                    message=request.message,
-                    context=request.context
-                ):
-                    yield f"data: {json.dumps(chunk)}\n\n"
+async def chat_stream(request: Dict[str, Any]):
+    """流式聊天API"""
+    try:
+        user_id = request.get("user_id", "anonymous")
+        message = request.get("message", "")
+        agent_name = request.get("agent_name", "chat_agent")
+        session_id = request.get("session_id", str(uuid.uuid4()))
+        
+        logger.info(f"收到聊天请求: user_id={user_id}, agent={agent_name}")
+        
+        if not agent_manager:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="智能体管理器未初始化"
+            )
+        
+        agent = agent_manager.get_agent(agent_name)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"智能体 {agent_name} 不存在"
+            )
+        
+        context = {
+            "session_id": session_id,
+            "user_id": user_id
+        }
+        
+        # 返回流式响应
+        async def generate_response():
+            try:
+                async for chunk in agent.process_message_stream(user_id, message, context):
+                    yield f"data: {json.dumps({
+                        'chunk_id': chunk.chunk_id,
+                        'type': chunk.type,
+                        'content': chunk.content,
+                        'agent_name': chunk.agent_name,
+                        'metadata': chunk.metadata,
+                        'is_end': chunk.is_end
+                    })}\n\n"
                     
-        except Exception as e:
-            logger.error(f"流式聊天处理失败: {str(e)}")
-            yield f"data: {json.dumps({'type': 'error', 'content': f'处理消息时出错: {str(e)}'})}\n\n"
-    
-    return StreamingResponse(generate(), media_type="text/plain")
-
-
-
-@app.get("/api/tools")
-async def get_tools():
-    """获取可用工具列表"""
-    if tool_manager is None:
-        return {"tools": []}
-    tools = tool_manager.get_available_tools()
-    return {"tools": tools}
-
-
+                    if chunk.is_end:
+                        break
+            except Exception as e:
+                logger.error(f"生成响应失败: {str(e)}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        
+        return generate_response()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"聊天API错误: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"聊天API错误: {str(e)}"
+        )
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    ) 

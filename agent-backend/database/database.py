@@ -4,6 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from typing import Generator
 import os
 from config.env import DATABASE_URL
+from models.database_models import Base
 
 # 创建数据库引擎
 engine = create_engine(
@@ -15,7 +16,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # 使用database_models中的Base
-from models.database_models import Base
+from models.database_models import Agent, UserSession, ChatMessage, MCPServer, MCPTool, LLMConfig, Flow
 
 def get_db() -> Generator[Session, None, None]:
     """获取数据库会话"""
@@ -38,16 +39,11 @@ def init_db():
     os.makedirs(documents_dir, exist_ok=True)
     
     # 导入所有模型以确保表被创建
-    from models.database_models import Agent, UserSession, Message, MCPServer, MCPTool, KnowledgeBase, Document, DocumentChunk, KnowledgeBaseQuery, LLMConfig
+    from models.database_models import Agent, UserSession, MCPServer, MCPTool, LLMConfig, Flow
     
-    # 创建所有表
-    Base.metadata.create_all(bind=engine)
-    
-    # 创建默认智能体
-    create_default_agents()
-    
-    # 创建默认LLM配置
-    create_default_llm_configs()
+    # 运行数据库迁移
+    from database.migrations import init_database
+    init_database()
 
 def create_default_agents():
     """创建默认智能体"""

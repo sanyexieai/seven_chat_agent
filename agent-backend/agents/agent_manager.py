@@ -539,6 +539,22 @@ class AgentManager:
         # 默认返回聊天智能体
         return self.agents.get('chat_agent', list(self.agents.values())[0])
     
+    def get_agent(self, agent_name: str) -> Optional[BaseAgent]:
+        """根据名称获取智能体"""
+        return self.agents.get(agent_name)
+    
+    def get_agent_by_id(self, agent_id: int) -> Optional[BaseAgent]:
+        """根据ID获取智能体"""
+        # 从数据库获取智能体信息
+        db = SessionLocal()
+        try:
+            db_agent = db.query(DBAgent).filter(DBAgent.id == agent_id).first()
+            if db_agent:
+                return self.agents.get(db_agent.name)
+            return None
+        finally:
+            db.close()
+    
     async def get_mcp_configs(self) -> Dict[str, Any]:
         """获取MCP配置"""
         return self.mcp_configs

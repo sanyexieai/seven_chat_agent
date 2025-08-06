@@ -1,10 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict, Any
 from database.database import get_db
 from services.agent_service import AgentService
 from models.database_models import AgentCreate, AgentUpdate, AgentResponse
 from utils.log_helper import get_logger
+import time
+from models.database_models import Agent
+from fastapi import status
 
 logger = get_logger("agents_api")
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -47,6 +50,44 @@ async def create_agent(
     """创建智能体"""
     try:
         agent = AgentService.create_agent(db, agent_data)
+        
+        # 重新加载智能体到agent_manager
+        try:
+            from main import agent_manager
+            if agent_manager:
+                # 根据智能体类型创建相应的智能体实例
+                if agent_data.agent_type == "chat":
+                    from agents.chat_agent import ChatAgent
+                    chat_agent = ChatAgent(agent.name, agent.display_name)
+                    agent_manager.agents[agent.name] = chat_agent
+                elif agent_data.agent_type == "search":
+                    from agents.search_agent import SearchAgent
+                    search_agent = SearchAgent(agent.name, agent.display_name)
+                    agent_manager.agents[agent.name] = search_agent
+                elif agent_data.agent_type == "report":
+                    from agents.report_agent import ReportAgent
+                    report_agent = ReportAgent(agent.name, agent.display_name)
+                    agent_manager.agents[agent.name] = report_agent
+                elif agent_data.agent_type == "prompt_driven":
+                    from agents.prompt_driven_agent import PromptDrivenAgent
+                    system_prompt = agent_data.system_prompt or ""
+                    prompt_agent = PromptDrivenAgent(agent.name, agent.display_name, system_prompt)
+                    agent_manager.agents[agent.name] = prompt_agent
+                elif agent_data.agent_type == "tool_driven":
+                    from agents.tool_driven_agent import ToolDrivenAgent
+                    bound_tools = agent_data.bound_tools or []
+                    tool_agent = ToolDrivenAgent(agent.name, agent.display_name, bound_tools)
+                    agent_manager.agents[agent.name] = tool_agent
+                elif agent_data.agent_type == "flow_driven":
+                    from agents.flow_driven_agent import FlowDrivenAgent
+                    flow_config = agent_data.flow_config or {}
+                    flow_agent = FlowDrivenAgent(agent.name, agent.display_name, flow_config)
+                    agent_manager.agents[agent.name] = flow_agent
+                
+                logger.info(f"智能体 {agent.name} 已加载到agent_manager")
+        except Exception as e:
+            logger.warning(f"重新加载智能体到agent_manager失败: {str(e)}")
+        
         return agent
     except Exception as e:
         logger.error(f"创建智能体失败: {str(e)}")
@@ -119,4 +160,77 @@ async def deactivate_agent(
         raise
     except Exception as e:
         logger.error(f"停用智能体失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="停用智能体失败") 
+        raise HTTPException(status_code=500, detail="停用智能体失败")
+
+@router.post("/create_from_flow", response_model=AgentResponse)
+async def create_agent_from_flow(
+    flow_data: Dict[str, Any],
+    db: Session = Depends(get_db)
+):
+    """从流程图创建智能体"""
+    try:
+        flow_name = flow_data.get('flow_name', '未命名流程图')
+        flow_description = flow_data.get('flow_description', '')
+        flow_config = flow_data.get('flow_config', {})
+
+        # 生成智能体名称
+        agent_name = f"flow_agent_{flow_name.lower().replace(' ', '_')}_{int(time.time())}"
+        agent_display_name = f"{flow_name} 智能体"
+
+        # 创建智能体
+        agent = Agent(
+            name=agent_name,
+            display_name=agent_display_name,
+            description=f"基于流程图 '{flow_name}' 创建的智能体。{flow_description}",
+            agent_type="flow_driven",
+            flow_config=flow_config,
+            is_active=True
+        )
+
+        db.add(agent)
+        db.commit()
+        db.refresh(agent)
+
+        logger.info(f"从流程图创建智能体: {agent.name}")
+        
+        # 重新加载智能体到agent_manager
+        try:
+            from main import agent_manager
+            if agent_manager:
+                # 创建FlowDrivenAgent实例
+                from agents.flow_driven_agent import FlowDrivenAgent
+                flow_agent = FlowDrivenAgent(agent.name, agent.display_name, agent.flow_config)
+                agent_manager.agents[agent.name] = flow_agent
+                logger.info(f"智能体 {agent.name} 已加载到agent_manager")
+        except Exception as e:
+            logger.warning(f"重新加载智能体到agent_manager失败: {str(e)}")
+        
+        return agent
+    except Exception as e:
+        logger.error(f"从流程图创建智能体失败: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"从流程图创建智能体失败: {str(e)}"
+        ) 
+
+@router.post("/reload")
+async def reload_agents():
+    """重新加载所有智能体"""
+    try:
+        from main import agent_manager
+        if agent_manager:
+            await agent_manager._create_default_agents()
+            logger.info("智能体重新加载完成")
+            return {"message": "智能体重新加载完成"}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="智能体管理器未初始化"
+            )
+    except Exception as e:
+        logger.error(f"重新加载智能体失败: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"重新加载智能体失败: {str(e)}"
+        ) 

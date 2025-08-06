@@ -66,8 +66,12 @@ class AgentContext(BaseModel):
 
 class StreamChunk(BaseModel):
     """流式响应块模型"""
+    chunk_id: str = Field(..., description="块ID")
+    session_id: str = Field(..., description="会话ID")
     type: str = Field(..., description="块类型")
     content: str = Field(..., description="内容")
     agent_name: Optional[str] = Field(default=None, description="智能体名称")
     tool_name: Optional[str] = Field(default=None, description="工具名称")
+    metadata: Optional[Dict[str, Any]] = Field(default={}, description="元数据")
+    is_end: bool = Field(default=False, description="是否为最后一个块")
     timestamp: datetime = Field(default_factory=datetime.now, description="时间戳") 

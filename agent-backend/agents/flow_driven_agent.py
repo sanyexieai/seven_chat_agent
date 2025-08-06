@@ -15,8 +15,6 @@ class NodeType(str, Enum):
     AGENT = "agent"           # 智能体节点
     CONDITION = "condition"    # 条件节点
     ACTION = "action"         # 动作节点
-    INPUT = "input"           # 输入节点
-    OUTPUT = "output"         # 输出节点
 
 class FlowNode:
     """流程图节点"""
@@ -57,6 +55,9 @@ class FlowDrivenAgent(BaseAgent):
     
     def _load_flow_config(self):
         """加载流程图配置"""
+        self.nodes = {}
+        self.start_node_id = None
+        
         try:
             if not self.flow_config:
                 logger.warning("流程图配置为空")
@@ -64,20 +65,38 @@ class FlowDrivenAgent(BaseAgent):
             
             # 解析节点配置
             nodes_config = self.flow_config.get('nodes', [])
+            logger.info(f"开始解析 {len(nodes_config)} 个节点")
+            
             for node_config in nodes_config:
                 node_id = node_config.get('id')
                 node_type = NodeType(node_config.get('type', 'agent'))
-                node_name = node_config.get('name', '')
+                node_data = node_config.get('data', {})
+                node_name = node_data.get('label', '')
                 
-                node = FlowNode(node_id, node_type, node_name, node_config)
+                # 从data中提取config
+                node_config_dict = node_data.get('config', {})
+                
+                logger.info(f"解析节点 {node_id}: type={node_type}, name={node_name}, config={node_config_dict}")
+                
+                node = FlowNode(node_id, node_type, node_name, node_config_dict)
                 self.nodes[node_id] = node
                 
-                # 如果是起始节点
-                if node_config.get('isStart', False):
+                # 检查是否为起始节点
+                if node_data.get('isStartNode', False):
                     self.start_node_id = node_id
+                    logger.info(f"设置起始节点: {node_id}")
+            
+            # 如果没有找到起始节点，使用第一个节点作为起始节点
+            if not self.start_node_id and nodes_config:
+                self.start_node_id = nodes_config[0]['id']
+                logger.info(f"未找到起始节点，使用第一个节点作为起始节点: {self.start_node_id}")
             
             logger.info(f"加载了 {len(self.nodes)} 个流程图节点")
             logger.info(f"起始节点: {self.start_node_id}")
+            
+            # 打印所有节点的配置
+            for node_id, node in self.nodes.items():
+                logger.info(f"节点 {node_id} 配置: {node.config}")
             
         except Exception as e:
             logger.error(f"加载流程图配置失败: {str(e)}")
@@ -115,8 +134,7 @@ class FlowDrivenAgent(BaseAgent):
         """执行流程图"""
         if not self.start_node_id:
             return AgentMessage(
-                message_id=str(uuid.uuid4()),
-                session_id=context.get('session_id', ''),
+                id=str(uuid.uuid4()),
                 type=MessageType.AGENT,
                 content="流程图未配置起始节点，无法执行。",
                 agent_name=self.name,
@@ -124,27 +142,32 @@ class FlowDrivenAgent(BaseAgent):
             )
         
         try:
-            # 执行流程图
-            result = await self._execute_node(self.start_node_id, user_id, message, context)
-            return result
+            logger.info(f"开始执行流程图，起始节点: {self.start_node_id}")
+            logger.info(f"用户消息: {message}")
+            
+            # 直接执行起始节点，传入用户消息
+            response = await self._execute_node(self.start_node_id, user_id, message, context)
+            
+            logger.info(f"流程图执行完成")
+            return response
+            
         except Exception as e:
             logger.error(f"执行流程图失败: {str(e)}")
             return AgentMessage(
-                message_id=str(uuid.uuid4()),
-                session_id=context.get('session_id', ''),
+                id=str(uuid.uuid4()),
                 type=MessageType.AGENT,
-                content=f"执行流程图时发生错误: {str(e)}",
+                content=f"流程图执行失败: {str(e)}",
                 agent_name=self.name,
                 metadata={'flow_executed': False, 'error': str(e)}
             )
     
     async def _execute_node(self, node_id: str, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
-        """执行单个节点"""
-        if node_id not in self.nodes:
+        """执行节点"""
+        node = self.nodes.get(node_id)
+        if not node:
             raise ValueError(f"节点 {node_id} 不存在")
         
-        node = self.nodes[node_id]
-        logger.info(f"执行节点: {node_id} ({node.type.value})")
+        logger.info(f"执行节点: {node_id} ({node.type})")
         
         try:
             if node.type == NodeType.AGENT:
@@ -153,10 +176,6 @@ class FlowDrivenAgent(BaseAgent):
                 return await self._execute_condition_node(node, user_id, message, context)
             elif node.type == NodeType.ACTION:
                 return await self._execute_action_node(node, user_id, message, context)
-            elif node.type == NodeType.INPUT:
-                return await self._execute_input_node(node, user_id, message, context)
-            elif node.type == NodeType.OUTPUT:
-                return await self._execute_output_node(node, user_id, message, context)
             else:
                 raise ValueError(f"不支持的节点类型: {node.type}")
         except Exception as e:
@@ -169,24 +188,29 @@ class FlowDrivenAgent(BaseAgent):
         if not agent_name:
             raise ValueError(f"智能体节点 {node.id} 未配置智能体名称")
         
-        # 这里需要从AgentManager获取对应的智能体
-        # 暂时使用LLM直接处理
-        prompt = f"作为智能体 '{agent_name}'，请处理以下用户消息：\n{message}"
-        
         try:
-            response = await self.llm_helper.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                stream=False
-            )
-            
-            return AgentMessage(
-                message_id=str(uuid.uuid4()),
-                session_id=context.get('session_id', ''),
-                type=MessageType.AGENT,
-                content=response,
-                agent_name=f"{self.name}->{agent_name}",
-                metadata={'node_id': node.id, 'node_type': node.type.value, 'agent_name': agent_name}
-            )
+            # 尝试从AgentManager获取对应的智能体
+            from main import agent_manager
+            if agent_manager and agent_name in agent_manager.agents:
+                # 使用实际的智能体
+                target_agent = agent_manager.agents[agent_name]
+                response = await target_agent.process_message(user_id, message, context)
+                return response
+            else:
+                # 如果找不到智能体，使用LLM模拟
+                prompt = f"作为智能体 '{agent_name}'，请处理以下用户消息：\n{message}"
+                response = await self.llm_helper.chat_completion(
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=False
+                )
+                
+                return AgentMessage(
+                    id=str(uuid.uuid4()),
+                    type=MessageType.AGENT,
+                    content=response,
+                    agent_name=f"{self.name}->{agent_name}",
+                    metadata={'node_id': node.id, 'node_type': node.type.value, 'agent_name': agent_name}
+                )
         except Exception as e:
             logger.error(f"执行智能体节点失败: {str(e)}")
             raise
@@ -220,8 +244,7 @@ class FlowDrivenAgent(BaseAgent):
                 return await self._execute_node(next_node_id, user_id, message, context)
             else:
                 return AgentMessage(
-                    message_id=str(uuid.uuid4()),
-                    session_id=context.get('session_id', ''),
+                    id=str(uuid.uuid4()),
                     type=MessageType.AGENT,
                     content=f"条件判断结果：{is_true}，但未找到后续节点",
                     agent_name=self.name,
@@ -246,45 +269,12 @@ class FlowDrivenAgent(BaseAgent):
             return await self._execute_node(next_node_id, user_id, message, context)
         else:
             return AgentMessage(
-                message_id=str(uuid.uuid4()),
-                session_id=context.get('session_id', ''),
+                id=str(uuid.uuid4()),
                 type=MessageType.AGENT,
                 content=result,
                 agent_name=self.name,
                 metadata={'node_id': node.id, 'node_type': node.type.value, 'action': action}
             )
-    
-    async def _execute_input_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
-        """执行输入节点"""
-        input_prompt = node.config.get('prompt', '请输入：')
-        
-        # 如果有后续节点，继续执行
-        if node.connections:
-            next_node_id = node.connections[0]
-            return await self._execute_node(next_node_id, user_id, message, context)
-        else:
-            return AgentMessage(
-                message_id=str(uuid.uuid4()),
-                session_id=context.get('session_id', ''),
-                type=MessageType.AGENT,
-                content=input_prompt,
-                agent_name=self.name,
-                metadata={'node_id': node.id, 'node_type': node.type.value}
-            )
-    
-    async def _execute_output_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
-        """执行输出节点"""
-        output_template = node.config.get('template', '处理结果：{message}')
-        output_content = output_template.format(message=message)
-        
-        return AgentMessage(
-            message_id=str(uuid.uuid4()),
-            session_id=context.get('session_id', ''),
-            type=MessageType.AGENT,
-            content=output_content,
-            agent_name=self.name,
-            metadata={'node_id': node.id, 'node_type': node.type.value}
-        )
     
     async def process_message(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AgentMessage:
         """处理用户消息"""

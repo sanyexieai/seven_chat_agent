@@ -1,148 +1,120 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Card, Row, Col, Typography, Button, Input, Select, Space, 
-  message, Divider, Tabs, Tag, Spin, Alert, Collapse
+import {
+  Card,
+  Input,
+  Button,
+  Space,
+  Typography,
+  Select,
+  message,
+  Divider,
+  List,
+  Avatar,
+  Tag
 } from 'antd';
-import { 
-  RobotOutlined, MessageOutlined, SearchOutlined, FileTextOutlined,
-  SettingOutlined, PlayCircleOutlined, StopOutlined, ReloadOutlined
+import {
+  SendOutlined,
+  RobotOutlined,
+  UserOutlined,
+  LoadingOutlined
 } from '@ant-design/icons';
-import axios from 'axios';
+import { useSearchParams } from 'react-router-dom';
 
-const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
+const { Title, Paragraph } = Typography;
 const { Option } = Select;
-const { TabPane } = Tabs;
-const { Panel } = Collapse;
 
 interface Agent {
   id: number;
   name: string;
   display_name: string;
-  description: string;
+  description?: string;
   agent_type: string;
   is_active: boolean;
-  system_prompt?: string;
-  bound_tools?: string[];
-  flow_config?: any;
 }
 
-interface ChatMessage {
+interface Message {
   id: string;
   type: 'user' | 'agent';
   content: string;
-  timestamp: string;
+  timestamp: Date;
 }
 
 const AgentTestPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [inputMessage, setInputMessage] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [streamContent, setStreamContent] = useState('');
 
   useEffect(() => {
     fetchAgents();
-  }, []);
+    // 从URL参数获取智能体ID
+    const agentId = searchParams.get('agent_id');
+    if (agentId) {
+      setSelectedAgentId(parseInt(agentId));
+    }
+  }, [searchParams]);
 
   const fetchAgents = async () => {
     try {
-      const response = await axios.get('/api/agents');
-      setAgents(response.data || []);
+      const response = await fetch('/api/agents');
+      if (response.ok) {
+        const data = await response.json();
+        setAgents(data);
+      } else {
+        message.error('获取智能体列表失败');
+      }
     } catch (error) {
-      console.error('获取智能体失败:', error);
-      message.error('获取智能体失败');
-    }
-  };
-
-  const getAgentIcon = (agentType: string) => {
-    switch (agentType) {
-      case 'chat':
-        return <MessageOutlined />;
-      case 'search':
-        return <SearchOutlined />;
-      case 'report':
-        return <FileTextOutlined />;
-      case 'prompt_driven':
-        return <RobotOutlined style={{ color: '#1890ff' }} />;
-      case 'tool_driven':
-        return <SettingOutlined style={{ color: '#52c41a' }} />;
-      case 'flow_driven':
-        return <RobotOutlined style={{ color: '#722ed1' }} />;
-      default:
-        return <RobotOutlined />;
-    }
-  };
-
-  const getAgentTypeLabel = (agentType: string) => {
-    switch (agentType) {
-      case 'chat':
-        return '聊天智能体';
-      case 'search':
-        return '搜索智能体';
-      case 'report':
-        return '报告智能体';
-      case 'prompt_driven':
-        return '提示词驱动';
-      case 'tool_driven':
-        return '工具驱动';
-      case 'flow_driven':
-        return '流程图驱动';
-      default:
-        return agentType;
-    }
-  };
-
-  const getAgentTypeColor = (agentType: string) => {
-    switch (agentType) {
-      case 'chat':
-        return 'blue';
-      case 'search':
-        return 'green';
-      case 'report':
-        return 'orange';
-      case 'prompt_driven':
-        return 'cyan';
-      case 'tool_driven':
-        return 'purple';
-      case 'flow_driven':
-        return 'magenta';
-      default:
-        return 'default';
+      console.error('获取智能体列表失败:', error);
+      message.error('获取智能体列表失败');
     }
   };
 
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || !selectedAgent) return;
+    if (!inputValue.trim() || !selectedAgentId) {
+      return;
+    }
 
-    const userMessage: ChatMessage = {
+    const userMessage: Message = {
       id: Date.now().toString(),
       type: 'user',
-      content: inputMessage,
-      timestamp: new Date().toISOString()
+      content: inputValue,
+      timestamp: new Date()
     };
 
-    setChatMessages(prev => [...prev, userMessage]);
-    setInputMessage('');
+    setMessages(prev => [...prev, userMessage]);
+    setInputValue('');
     setLoading(true);
 
     try {
-      const response = await axios.post('/api/chat', {
-        user_id: 'test_user',
-        message: inputMessage,
-        agent_name: selectedAgent.name
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: 'test_user',
+          message: userMessage.content,
+          agent_id: selectedAgentId
+        }),
       });
 
-      const agentMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        type: 'agent',
-        content: response.data.message,
-        timestamp: new Date().toISOString()
-      };
-
-      setChatMessages(prev => [...prev, agentMessage]);
+      if (response.ok) {
+        const data = await response.json();
+        const agentMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          type: 'agent',
+          content: data.content,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, agentMessage]);
+      } else {
+        const error = await response.json();
+        message.error(`发送消息失败: ${error.detail || '未知错误'}`);
+      }
     } catch (error) {
       console.error('发送消息失败:', error);
       message.error('发送消息失败');
@@ -151,322 +123,239 @@ const AgentTestPage: React.FC = () => {
     }
   };
 
-  const handleStreamChat = async () => {
-    if (!inputMessage.trim() || !selectedAgent) return;
+  const handleStreamMessage = async () => {
+    if (!inputValue.trim() || !selectedAgentId) {
+      return;
+    }
 
-    const userMessage: ChatMessage = {
+    const userMessage: Message = {
       id: Date.now().toString(),
       type: 'user',
-      content: inputMessage,
-      timestamp: new Date().toISOString()
+      content: inputValue,
+      timestamp: new Date()
     };
 
-    setChatMessages(prev => [...prev, userMessage]);
-    setInputMessage('');
+    setMessages(prev => [...prev, userMessage]);
+    setInputValue('');
     setStreaming(true);
-    setStreamContent('');
 
     try {
-      const response = await fetch(`/api/chat/stream`, {
+      const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           user_id: 'test_user',
-          message: inputMessage,
-          agent_name: selectedAgent.name
+          message: userMessage.content,
+          agent_id: selectedAgentId
         }),
       });
 
-      const reader = response.body?.getReader();
-      if (!reader) return;
+      if (response.ok) {
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let agentMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          type: 'agent',
+          content: '',
+          timestamp: new Date()
+        };
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        setMessages(prev => [...prev, agentMessage]);
 
-        const chunk = new TextDecoder().decode(value);
-        const lines = chunk.split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.type === 'content') {
-                setStreamContent(prev => prev + data.content);
-              } else if (data.type === 'final') {
-                const agentMessage: ChatMessage = {
-                  id: (Date.now() + 1).toString(),
-                  type: 'agent',
-                  content: data.content,
-                  timestamp: new Date().toISOString()
-                };
-                setChatMessages(prev => [...prev, agentMessage]);
-                setStreamContent('');
-                setStreaming(false);
-                break;
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') {
+                  break;
+                }
+                try {
+                  const parsed = JSON.parse(data);
+                  if (parsed.content) {
+                    agentMessage.content += parsed.content;
+                    setMessages(prev => [...prev.slice(0, -1), { ...agentMessage }]);
+                  }
+                } catch (e) {
+                  // 忽略解析错误
+                }
               }
-            } catch (e) {
-              console.error('解析流数据失败:', e);
             }
           }
         }
+      } else {
+        const error = await response.json();
+        message.error(`流式发送消息失败: ${error.detail || '未知错误'}`);
       }
     } catch (error) {
-      console.error('流式聊天失败:', error);
-      message.error('流式聊天失败');
+      console.error('流式发送消息失败:', error);
+      message.error('流式发送消息失败');
+    } finally {
       setStreaming(false);
     }
   };
 
-  const handleAgentSelect = (agent: Agent) => {
-    setSelectedAgent(agent);
-    setChatMessages([]);
-    setStreamContent('');
+  const getAgentTypeLabel = (type: string) => {
+    const typeMap: { [key: string]: string } = {
+      'chat': '聊天智能体',
+      'search': '搜索智能体',
+      'report': '报告智能体',
+      'prompt_driven': '提示词驱动',
+      'tool_driven': '工具驱动',
+      'flow_driven': '流程图驱动'
+    };
+    return typeMap[type] || type;
   };
 
-  const renderAgentInfo = (agent: Agent) => (
-    <Card size="small" style={{ marginBottom: 16 }}>
-      <Space direction="vertical" style={{ width: '100%' }}>
-        <div>
-          <Text strong>类型: </Text>
-          <Tag color={getAgentTypeColor(agent.agent_type)}>
-            {getAgentTypeLabel(agent.agent_type)}
-          </Tag>
-        </div>
-        <div>
-          <Text strong>描述: </Text>
-          <Text>{agent.description}</Text>
-        </div>
-        {agent.system_prompt && (
-          <div>
-            <Text strong>系统提示词: </Text>
-            <Text type="secondary" style={{ fontSize: '12px' }}>
-              {agent.system_prompt.substring(0, 100)}...
-            </Text>
-          </div>
-        )}
-        {agent.bound_tools && agent.bound_tools.length > 0 && (
-          <div>
-            <Text strong>绑定工具: </Text>
-                         {agent.bound_tools.map(tool => (
-               <Tag key={tool}>{tool}</Tag>
-             ))}
-          </div>
-        )}
-      </Space>
-    </Card>
-  );
+  const getAgentTypeColor = (type: string) => {
+    const colorMap: { [key: string]: string } = {
+      'chat': 'blue',
+      'search': 'green',
+      'report': 'orange',
+      'prompt_driven': 'purple',
+      'tool_driven': 'cyan',
+      'flow_driven': 'magenta'
+    };
+    return colorMap[type] || 'default';
+  };
 
-  const renderChatInterface = () => (
-    <Card title="聊天界面" style={{ height: '500px', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ flex: 1, overflowY: 'auto', marginBottom: 16, padding: 16 }}>
-        {chatMessages.map(message => (
-          <div key={message.id} style={{ marginBottom: 16 }}>
-            <div style={{ 
-              textAlign: message.type === 'user' ? 'right' : 'left',
-              marginBottom: 4
-            }}>
-              <Tag color={message.type === 'user' ? 'blue' : 'green'}>
-                {message.type === 'user' ? '用户' : selectedAgent?.display_name}
-              </Tag>
-            </div>
-            <div style={{
-              padding: 12,
-              borderRadius: 8,
-              backgroundColor: message.type === 'user' ? '#e6f7ff' : '#f6ffed',
-              border: `1px solid ${message.type === 'user' ? '#91d5ff' : '#b7eb8f'}`,
-              textAlign: message.type === 'user' ? 'right' : 'left'
-            }}>
-              {message.content}
-            </div>
-            <div style={{ 
-              fontSize: '12px', 
-              color: '#999',
-              textAlign: message.type === 'user' ? 'right' : 'left',
-              marginTop: 4
-            }}>
-              {new Date(message.timestamp).toLocaleTimeString()}
-            </div>
-          </div>
-        ))}
-        {streaming && streamContent && (
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 4 }}>
-              <Tag color="green">{selectedAgent?.display_name}</Tag>
-            </div>
-            <div style={{
-              padding: 12,
-              borderRadius: 8,
-              backgroundColor: '#f6ffed',
-              border: '1px solid #b7eb8f',
-              textAlign: 'left'
-            }}>
-              {streamContent}
-              <span style={{ animation: 'blink 1s infinite' }}>|</span>
-            </div>
-          </div>
-        )}
-        {loading && (
-          <div style={{ textAlign: 'center', padding: 20 }}>
-            <Spin /> <Text>智能体正在思考...</Text>
-          </div>
-        )}
-      </div>
-      <div style={{ borderTop: '1px solid #f0f0f0', padding: 16 }}>
-        <Space.Compact style={{ width: '100%' }}>
-          <Input
-            value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
-            onPressEnter={handleSendMessage}
-            placeholder="输入消息..."
-            disabled={!selectedAgent || loading || streaming}
-          />
-          <Button 
-            type="primary" 
-            onClick={handleSendMessage}
-            disabled={!selectedAgent || loading || streaming}
-          >
-            发送
-          </Button>
-          <Button 
-            onClick={handleStreamChat}
-            disabled={!selectedAgent || loading || streaming}
-            icon={<PlayCircleOutlined />}
-          >
-            流式
-          </Button>
-        </Space.Compact>
-      </div>
-    </Card>
-  );
+  const selectedAgent = agents.find(agent => agent.id === selectedAgentId);
 
   return (
-    <div style={{ padding: '24px' }}>
-      <Title level={2}>智能体测试</Title>
-      <Paragraph>
-        测试不同类型的智能体，体验它们的功能和特点。
-      </Paragraph>
-
-      <Row gutter={[24, 24]}>
-        <Col span={8}>
-          <Card title="选择智能体" size="small">
-            <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-              {agents.map(agent => (
-                <Card
-                  key={agent.id}
-                  size="small"
-                  style={{ 
-                    marginBottom: 8, 
-                    cursor: 'pointer',
-                    border: selectedAgent?.id === agent.id ? '2px solid #1890ff' : '1px solid #f0f0f0'
-                  }}
-                  onClick={() => handleAgentSelect(agent)}
-                >
-                  <Card.Meta
-                    avatar={getAgentIcon(agent.agent_type)}
-                    title={
-                      <Space>
-                        {agent.display_name}
-                                                 <Tag color={getAgentTypeColor(agent.agent_type)}>
-                           {getAgentTypeLabel(agent.agent_type)}
-                         </Tag>
-                         {agent.is_active ? (
-                           <Tag color="green">活跃</Tag>
-                         ) : (
-                           <Tag color="red">非活跃</Tag>
-                         )}
-                      </Space>
-                    }
-                    description={agent.description}
-                  />
-                </Card>
-              ))}
-            </div>
-          </Card>
-        </Col>
-
-        <Col span={16}>
-          {selectedAgent ? (
-            <div style={{ paddingLeft: '16px' }}>
-              {renderAgentInfo(selectedAgent)}
-              {renderChatInterface()}
-            </div>
-          ) : (
-            <Card>
-              <div style={{ textAlign: 'center', padding: 40 }}>
-                <RobotOutlined style={{ fontSize: 48, color: '#d9d9d9' }} />
-                <div style={{ marginTop: 16 }}>
-                  <Text type="secondary">请选择一个智能体开始测试</Text>
+    <div style={{ padding: '24px', height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <Card style={{ marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
+          <Title level={3} style={{ margin: 0, marginRight: '16px' }}>
+            <RobotOutlined style={{ marginRight: '8px' }} />
+            智能体测试
+          </Title>
+          <Select
+            placeholder="选择要测试的智能体"
+            style={{ width: 300 }}
+            value={selectedAgentId}
+            onChange={setSelectedAgentId}
+          >
+            {agents.map(agent => (
+              <Option key={agent.id} value={agent.id}>
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                  <RobotOutlined style={{ marginRight: '8px' }} />
+                  <div>
+                    <div>{agent.display_name}</div>
+                    <div style={{ fontSize: '12px', color: '#666' }}>
+                      <Tag color={getAgentTypeColor(agent.agent_type)}>
+                        {getAgentTypeLabel(agent.agent_type)}
+                      </Tag>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </Card>
+              </Option>
+            ))}
+          </Select>
+        </div>
+
+        {selectedAgent && (
+          <div>
+            <Paragraph>
+              <strong>智能体:</strong> {selectedAgent.display_name}
+            </Paragraph>
+            <Paragraph>
+              <strong>类型:</strong>
+              <Tag color={getAgentTypeColor(selectedAgent.agent_type)} style={{ marginLeft: '8px' }}>
+                {getAgentTypeLabel(selectedAgent.agent_type)}
+              </Tag>
+            </Paragraph>
+            {selectedAgent.description && (
+              <Paragraph>
+                <strong>描述:</strong> {selectedAgent.description}
+              </Paragraph>
+            )}
+          </div>
+        )}
+      </Card>
+
+      <Card style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 1, overflow: 'auto', marginBottom: '16px' }}>
+          <List
+            dataSource={messages}
+            renderItem={(message) => (
+              <List.Item style={{ border: 'none', padding: '8px 0' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', width: '100%' }}>
+                  <Avatar
+                    icon={message.type === 'user' ? <UserOutlined /> : <RobotOutlined />}
+                    style={{
+                      backgroundColor: message.type === 'user' ? '#1890ff' : '#52c41a',
+                      marginRight: '12px'
+                    }}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={{
+                      background: message.type === 'user' ? '#f0f8ff' : '#f6ffed',
+                      padding: '12px',
+                      borderRadius: '8px',
+                      border: `1px solid ${message.type === 'user' ? '#d6e4ff' : '#b7eb8f'}`
+                    }}>
+                      {message.content}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+                      {message.timestamp.toLocaleTimeString()}
+                    </div>
+                  </div>
+                </div>
+              </List.Item>
+            )}
+          />
+          {(loading || streaming) && (
+            <div style={{ display: 'flex', alignItems: 'center', padding: '12px' }}>
+              <LoadingOutlined style={{ marginRight: '8px' }} />
+              <span>智能体正在思考...</span>
+            </div>
           )}
-        </Col>
-      </Row>
+        </div>
 
-      <Divider />
+        <Divider />
 
-      <Card title="智能体类型说明">
-        <Tabs defaultActiveKey="prompt_driven">
-          <TabPane tab="提示词驱动" key="prompt_driven">
-            <Alert
-              message="提示词驱动智能体"
-              description="通过数据库配置的系统提示词来实现不同的功能。这种智能体完全依赖提示词来定义行为，不需要特定的工具。"
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
-            <Paragraph>
-              <Text strong>特点：</Text>
-            </Paragraph>
-            <ul>
-              <li>完全依赖系统提示词定义行为</li>
-              <li>不需要特定的工具支持</li>
-              <li>可以通过修改提示词快速调整功能</li>
-              <li>适合对话、问答等场景</li>
-            </ul>
-          </TabPane>
-
-          <TabPane tab="工具驱动" key="tool_driven">
-            <Alert
-              message="工具驱动智能体"
-              description="通过绑定MCP工具，根据工具的内容和参数反向生成提示词。这种智能体专注于工具的使用。"
-              type="success"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
-            <Paragraph>
-              <Text strong>特点：</Text>
-            </Paragraph>
-            <ul>
-              <li>根据绑定的工具自动生成系统提示词</li>
-              <li>专注于工具的使用和调用</li>
-              <li>支持多种MCP工具集成</li>
-              <li>适合搜索、数据处理等场景</li>
-            </ul>
-          </TabPane>
-
-          <TabPane tab="流程图驱动" key="flow_driven">
-            <Alert
-              message="流程图驱动智能体"
-              description="通过流程图定义复杂的业务流程，每个节点可以绑定不同的提示词和工具。"
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
-            <Paragraph>
-              <Text strong>特点：</Text>
-            </Paragraph>
-            <ul>
-              <li>支持复杂的业务流程定义</li>
-              <li>每个节点可以绑定不同的提示词和工具</li>
-              <li>支持条件分支和循环</li>
-              <li>适合复杂的业务场景</li>
-            </ul>
-          </TabPane>
-        </Tabs>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <TextArea
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder="输入消息..."
+            autoSize={{ minRows: 2, maxRows: 4 }}
+            onPressEnter={(e) => {
+              if (!e.shiftKey) {
+                e.preventDefault();
+                handleSendMessage();
+              }
+            }}
+            style={{ flex: 1 }}
+          />
+          <Space direction="vertical">
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              onClick={handleSendMessage}
+              loading={loading}
+              disabled={!selectedAgentId || !inputValue.trim()}
+            >
+              发送
+            </Button>
+            <Button
+              icon={<SendOutlined />}
+              onClick={handleStreamMessage}
+              loading={streaming}
+              disabled={!selectedAgentId || !inputValue.trim()}
+            >
+              流式
+            </Button>
+          </Space>
+        </div>
       </Card>
     </div>
   );

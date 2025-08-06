@@ -1,33 +1,31 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Card,
   Button,
-  Modal,
-  Form,
   Input,
   Select,
-  message,
   Space,
   Typography,
+  Card,
   Row,
   Col,
   Divider,
   Tag,
   Popconfirm,
   Drawer,
-  Tabs
+  Tabs,
+  Checkbox,
+  Modal,
+  Form,
+  message
 } from 'antd';
 import {
   PlusOutlined,
-  EditOutlined,
-  DeleteOutlined,
   SaveOutlined,
   PlayCircleOutlined,
   SettingOutlined,
-  NodeIndexOutlined,
-  BranchesOutlined,
+  DeleteOutlined,
   RobotOutlined,
-  CheckCircleOutlined,
+  BranchesOutlined,
   ThunderboltOutlined,
   ImportOutlined,
   ExportOutlined
@@ -90,8 +88,8 @@ interface Agent {
 }
 
 // 自定义节点组件
-const AgentNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f0f8ff' }}>
+const AgentNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f0f8ff', position: 'relative' }}>
     <Handle type="target" position={Position.Top} />
     <div style={{ textAlign: 'center' }}>
       <RobotOutlined style={{ fontSize: '20px', color: '#1890ff' }} />
@@ -99,63 +97,180 @@ const AgentNode = ({ data }: { data: any }) => (
       <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
     </div>
     <Handle type="source" position={Position.Bottom} />
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        // 这里需要通过props传递deleteNode函数
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
   </div>
 );
 
-const ConditionNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff7e6' }}>
+const ConditionNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff7e6', position: 'relative' }}>
     <Handle type="target" position={Position.Top} />
     <div style={{ textAlign: 'center' }}>
       <BranchesOutlined style={{ fontSize: '20px', color: '#fa8c16' }} />
       <div style={{ fontWeight: 'bold' }}>{data.label}</div>
-      <div style={{ fontSize: '12px', color: '#666' }}>条件判断</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
     </div>
-    <Handle type="source" position={Position.Bottom} id="true" />
-    <Handle type="source" position={Position.Right} id="false" />
+    <Handle type="source" position={Position.Bottom} />
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
   </div>
 );
 
-const ActionNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f6ffed' }}>
+const ActionNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f6ffed', position: 'relative' }}>
     <Handle type="target" position={Position.Top} />
     <div style={{ textAlign: 'center' }}>
       <ThunderboltOutlined style={{ fontSize: '20px', color: '#52c41a' }} />
       <div style={{ fontWeight: 'bold' }}>{data.label}</div>
-      <div style={{ fontSize: '12px', color: '#666' }}>动作执行</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
     </div>
     <Handle type="source" position={Position.Bottom} />
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
   </div>
 );
 
-const InputNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff0f6' }}>
-    <Handle type="target" position={Position.Top} />
+const InputNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#e6f7ff', position: 'relative' }}>
     <div style={{ textAlign: 'center' }}>
-      <ImportOutlined style={{ fontSize: '20px', color: '#eb2f96' }} />
+      <ImportOutlined style={{ fontSize: '20px', color: '#1890ff' }} />
       <div style={{ fontWeight: 'bold' }}>{data.label}</div>
-      <div style={{ fontSize: '12px', color: '#666' }}>输入节点</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
     </div>
     <Handle type="source" position={Position.Bottom} />
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
   </div>
 );
 
-const OutputNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f9f0ff' }}>
+const OutputNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff2e8', position: 'relative' }}>
     <Handle type="target" position={Position.Top} />
     <div style={{ textAlign: 'center' }}>
-      <ExportOutlined style={{ fontSize: '20px', color: '#722ed1' }} />
+      <ExportOutlined style={{ fontSize: '20px', color: '#fa541c' }} />
       <div style={{ fontWeight: 'bold' }}>{data.label}</div>
-      <div style={{ fontSize: '12px', color: '#666' }}>输出节点</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
     </div>
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
   </div>
 );
 
 const nodeTypes: NodeTypes = {
   agent: AgentNode,
   condition: ConditionNode,
-  action: ActionNode,
-  input: InputNode,
-  output: OutputNode,
+  action: ActionNode
 };
 
 const FlowEditorPage: React.FC = () => {
@@ -167,10 +282,15 @@ const FlowEditorPage: React.FC = () => {
   const [flowDescription, setFlowDescription] = useState('');
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [currentFlowId, setCurrentFlowId] = useState<number | null>(null);
+  const [flows, setFlows] = useState<any[]>([]);
   const [configForm] = Form.useForm();
+  const [isStartNode, setIsStartNode] = useState(false);
+  const [configModalVisible, setConfigModalVisible] = useState(false);
 
   useEffect(() => {
     fetchAgents();
+    fetchFlows(); // 组件加载时获取已保存的流程图
   }, []);
 
   const fetchAgents = async () => {
@@ -180,6 +300,16 @@ const FlowEditorPage: React.FC = () => {
     } catch (error) {
       console.error('获取智能体失败:', error);
       message.error('获取智能体失败');
+    }
+  };
+
+  const fetchFlows = async () => {
+    try {
+      const response = await axios.get('/api/flows');
+      setFlows(response.data || []);
+    } catch (error) {
+      console.error('获取流程图失败:', error);
+      message.error('获取流程图失败');
     }
   };
 
@@ -194,12 +324,13 @@ const FlowEditorPage: React.FC = () => {
       type: nodeType,
       position,
       data: {
-        label: `新${getNodeTypeLabel(nodeType)}`,
-        nodeType,
-        config: {}
+        label: getNodeTypeLabel(nodeType),
+        nodeType: nodeType,
+        config: {},
+        onDelete: deleteNode // 传递删除函数
       }
     };
-    setNodes((nds: Node[]) => nds.concat(newNode));
+    setNodes((nds) => [...nds, newNode]);
   };
 
   const getNodeTypeLabel = (nodeType: string) => {
@@ -215,41 +346,66 @@ const FlowEditorPage: React.FC = () => {
 
   const onNodeClick = (event: React.MouseEvent, node: Node) => {
     setSelectedNode(node);
-    setNodeConfigModal(true);
-    
-    // 填充表单
     configForm.setFieldsValue({
       label: node.data.label,
-      nodeType: node.data.nodeType,
-      ...node.data.config
+      isStartNode: node.data.isStartNode || false,
+      agent_name: node.data.config?.agent_name || '',
+      condition: node.data.config?.condition || '',
+      action: node.data.config?.action || '',
+      config: JSON.stringify(node.data.config || {}, null, 2)
     });
+    setConfigModalVisible(true);
   };
 
-  const saveNodeConfig = () => {
-    configForm.validateFields().then((values) => {
-      if (selectedNode) {
-        setNodes((nds: Node[]) =>
-          nds.map((node: Node) =>
-            node.id === selectedNode.id
-              ? {
-                  ...node,
-                  data: {
-                    ...node.data,
-                    label: values.label,
-                    config: {
-                      ...node.data.config,
-                      ...values
-                    }
-                  }
-                }
-              : node
-          )
-        );
-        setNodeConfigModal(false);
-        setSelectedNode(null);
-        message.success('节点配置已保存');
+  const saveNodeConfig = (values: any) => {
+    if (!selectedNode) return;
+    
+    try {
+      // 构建节点配置
+      const config = {
+        ...selectedNode.data.config,
+        ...values
+      };
+      
+      // 移除不需要的字段，但保留节点类型特定的配置
+      delete config.label;
+      delete config.isStartNode;
+      delete config.config; // 高级配置字段
+      
+      // 根据节点类型保留相应的配置字段
+      if (selectedNode.data.nodeType === 'agent') {
+        // 保留智能体相关配置
+        config.agent_name = values.agent_name;
+      } else if (selectedNode.data.nodeType === 'condition') {
+        // 保留条件相关配置
+        config.condition = values.condition;
+      } else if (selectedNode.data.nodeType === 'action') {
+        // 保留动作相关配置
+        config.action = values.action;
       }
-    });
+      
+      setNodes((nds) =>
+        nds.map((node) =>
+          node.id === selectedNode.id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  label: values.label,
+                  isStartNode: values.isStartNode || false,
+                  config: config
+                }
+              }
+            : node
+        )
+      );
+      
+      setConfigModalVisible(false);
+      setSelectedNode(null);
+      message.success('节点配置已保存');
+    } catch (error) {
+      message.error('配置格式错误，请检查JSON格式');
+    }
   };
 
   const deleteNode = (nodeId: string) => {
@@ -271,7 +427,10 @@ const FlowEditorPage: React.FC = () => {
           id: node.id,
           type: node.data.nodeType,
           position: node.position,
-          data: node.data
+          data: {
+            ...node.data,
+            isStartNode: node.data.isStartNode || false
+          }
         })),
         edges: edges.map(edge => ({
           id: edge.id,
@@ -286,14 +445,101 @@ const FlowEditorPage: React.FC = () => {
         }
       };
 
-      // 这里可以保存到后端
-      console.log('流程图配置:', flowConfig);
-      message.success('流程图已保存');
+      // 调用后端API保存流程图
+      const response = await fetch('/api/flows', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: flowName,
+          display_name: flowName,
+          description: flowDescription,
+          flow_config: flowConfig
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setCurrentFlowId(result.id);
+        message.success('流程图已保存');
+        console.log('保存结果:', result);
+      } else {
+        const error = await response.json();
+        message.error(`保存失败: ${error.detail || '未知错误'}`);
+      }
     } catch (error) {
       console.error('保存流程图失败:', error);
       message.error('保存流程图失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const testFlow = async () => {
+    if (!currentFlowId) {
+      message.error('请先保存流程图');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const testData = {
+        input: "测试输入",
+        context: {}
+      };
+
+      // 调用后端API测试流程图
+      const response = await fetch(`/api/flows/${currentFlowId}/test`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(testData),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        message.success('流程图测试成功');
+        console.log('测试结果:', result);
+      } else {
+        const error = await response.json();
+        message.error(`测试失败: ${error.detail || '未知错误'}`);
+      }
+    } catch (error) {
+      console.error('测试流程图失败:', error);
+      message.error('测试流程图失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openSettings = () => {
+    // 打开设置抽屉或模态框
+    message.info('设置功能开发中...');
+  };
+
+  const deleteFlow = async (flowId: number) => {
+    try {
+      const response = await fetch(`/api/flows/${flowId}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        message.success('流程图删除成功');
+        // 重新获取流程图列表
+        fetchFlows();
+        // 如果删除的是当前加载的流程图，清空编辑器
+        if (currentFlowId === flowId) {
+          clearFlow();
+        }
+      } else {
+        const error = await response.json();
+        message.error(`删除失败: ${error.detail || '未知错误'}`);
+      }
+    } catch (error) {
+      console.error('删除流程图失败:', error);
+      message.error('删除流程图失败');
     }
   };
 
@@ -305,12 +551,125 @@ const FlowEditorPage: React.FC = () => {
     message.success('流程图已加载');
   };
 
+  const loadSavedFlow = async (flowId: number) => {
+    try {
+      const response = await fetch(`/api/flows/${flowId}`);
+      if (response.ok) {
+        const flow = await response.json();
+        setFlowName(flow.display_name);
+        setFlowDescription(flow.description || '');
+        setCurrentFlowId(flow.id);
+        
+        // 加载流程图配置
+        if (flow.flow_config) {
+          const config = flow.flow_config;
+          if (config.nodes) {
+            // 为每个节点添加删除功能
+            const nodesWithDelete = config.nodes.map((node: any) => ({
+              ...node,
+              data: {
+                ...node.data,
+                onDelete: deleteNode
+              }
+            }));
+            setNodes(nodesWithDelete);
+          }
+          if (config.edges) {
+            setEdges(config.edges);
+          }
+        }
+        
+        message.success('流程图已加载');
+      } else {
+        message.error('加载流程图失败');
+      }
+    } catch (error) {
+      console.error('加载流程图失败:', error);
+      message.error('加载流程图失败');
+    }
+  };
+
   const clearFlow = () => {
     setNodes([]);
     setEdges([]);
     setFlowName('');
     setFlowDescription('');
+    setCurrentFlowId(null);
     message.success('流程图已清空');
+  };
+
+  const createAgentFromFlow = async () => {
+    if (!currentFlowId) {
+      message.error('请先保存流程图');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const flowConfig = {
+        nodes: nodes.map(node => ({
+          id: node.id,
+          type: node.data.nodeType,
+          position: node.position,
+          data: {
+            ...node.data,
+            isStartNode: node.data.isStartNode || false
+          }
+        })),
+        edges: edges.map(edge => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          type: edge.type
+        })),
+        metadata: {
+          name: flowName,
+          description: flowDescription,
+          version: '1.0.0'
+        }
+      };
+
+      const response = await fetch('/api/agents/create_from_flow', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          flow_name: flowName,
+          flow_description: flowDescription,
+          flow_config: flowConfig
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        message.success('智能体创建成功');
+        console.log('智能体创建结果:', result);
+        
+        // 重新加载智能体列表
+        try {
+          const reloadResponse = await fetch('/api/agents/reload', {
+            method: 'POST',
+          });
+          if (reloadResponse.ok) {
+            console.log('智能体重新加载成功');
+          }
+        } catch (error) {
+          console.warn('重新加载智能体失败:', error);
+        }
+        
+        // 跳转到智能体详情页
+        window.location.href = `/agents/${result.id}`;
+      } else {
+        const error = await response.json();
+        message.error(`智能体创建失败: ${error.detail || '未知错误'}`);
+      }
+    } catch (error) {
+      console.error('创建智能体失败:', error);
+      message.error('创建智能体失败');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -337,11 +696,35 @@ const FlowEditorPage: React.FC = () => {
               >
                 保存
               </Button>
-              <Button icon={<PlayCircleOutlined />}>
+              <Button icon={<PlayCircleOutlined />} onClick={testFlow}>
                 测试
               </Button>
-              <Button icon={<SettingOutlined />}>
+              <Button icon={<SettingOutlined />} onClick={openSettings}>
                 设置
+              </Button>
+              {currentFlowId && (
+                <Popconfirm
+                  title="确定要删除当前流程图吗？"
+                  description="删除后无法恢复"
+                  onConfirm={() => deleteFlow(currentFlowId)}
+                  okText="确定"
+                  cancelText="取消"
+                >
+                  <Button icon={<DeleteOutlined />} danger>
+                    删除
+                  </Button>
+                </Popconfirm>
+              )}
+              <Button icon={<DeleteOutlined />} onClick={clearFlow}>
+                清空
+              </Button>
+              <Button 
+                type="primary" 
+                icon={<RobotOutlined />} 
+                onClick={createAgentFromFlow}
+                disabled={!currentFlowId || nodes.length === 0}
+              >
+                创建智能体
               </Button>
             </Space>
           </Col>
@@ -374,31 +757,56 @@ const FlowEditorPage: React.FC = () => {
             >
               动作节点
             </Button>
-            <Button
-              icon={<ImportOutlined />}
-              block
-              onClick={() => addNode('input', { x: 100, y: 400 })}
-            >
-              输入节点
-            </Button>
-            <Button
-              icon={<ExportOutlined />}
-              block
-              onClick={() => addNode('output', { x: 100, y: 500 })}
-            >
-              输出节点
-            </Button>
           </Space>
 
           <Divider />
 
-          <Title level={4}>可用智能体</Title>
-          <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-            {agents.map((agent) => (
-              <div key={agent.id} style={{ marginBottom: '8px' }}>
-                <Tag color="blue">{agent.display_name}</Tag>
-              </div>
+          <Title level={4}>已保存的流程图</Title>
+          <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+            {flows.map((flow) => (
+              <Card
+                key={flow.id}
+                size="small"
+                style={{ marginBottom: '8px' }}
+                actions={[
+                  <Button
+                    type="link"
+                    size="small"
+                    onClick={() => loadSavedFlow(flow.id)}
+                  >
+                    加载
+                  </Button>,
+                  <Popconfirm
+                    title="确定要删除这个流程图吗？"
+                    onConfirm={() => deleteFlow(flow.id)}
+                    okText="确定"
+                    cancelText="取消"
+                  >
+                    <Button type="link" size="small" danger>
+                      删除
+                    </Button>
+                  </Popconfirm>
+                ]}
+              >
+                <Card.Meta
+                  title={flow.display_name}
+                  description={flow.description || '暂无描述'}
+                />
+              </Card>
             ))}
+          </div>
+
+          <Divider />
+
+          <Title level={4}>使用说明</Title>
+          <div style={{ fontSize: '12px', color: '#666' }}>
+            <p><strong>配置起始节点：</strong></p>
+            <ol style={{ paddingLeft: '16px' }}>
+              <li>点击任意节点打开配置对话框</li>
+              <li>勾选"设为起始节点"选项</li>
+              <li>点击确定保存配置</li>
+            </ol>
+            <p><strong>注意：</strong>每个流程图只能有一个起始节点</p>
           </div>
         </div>
 
@@ -424,15 +832,12 @@ const FlowEditorPage: React.FC = () => {
       {/* 节点配置模态框 */}
       <Modal
         title="节点配置"
-        open={nodeConfigModal}
-        onOk={saveNodeConfig}
-        onCancel={() => {
-          setNodeConfigModal(false);
-          setSelectedNode(null);
-        }}
+        open={configModalVisible}
+        onOk={() => configForm.submit()}
+        onCancel={() => setConfigModalVisible(false)}
         width={600}
       >
-        <Form form={configForm} layout="vertical">
+        <Form form={configForm} layout="vertical" onFinish={saveNodeConfig}>
           <Form.Item
             name="label"
             label="节点名称"
@@ -440,18 +845,13 @@ const FlowEditorPage: React.FC = () => {
           >
             <Input placeholder="请输入节点名称" />
           </Form.Item>
-
+          
           <Form.Item
-            name="nodeType"
-            label="节点类型"
+            name="isStartNode"
+            label="起始节点"
+            valuePropName="checked"
           >
-            <Select disabled>
-              <Option value="agent">智能体节点</Option>
-              <Option value="condition">条件节点</Option>
-              <Option value="action">动作节点</Option>
-              <Option value="input">输入节点</Option>
-              <Option value="output">输出节点</Option>
-            </Select>
+            <Checkbox>设为起始节点</Checkbox>
           </Form.Item>
 
           {/* 根据节点类型显示不同的配置项 */}
@@ -497,31 +897,12 @@ const FlowEditorPage: React.FC = () => {
             </Form.Item>
           )}
 
-          {selectedNode?.data.nodeType === 'input' && (
-            <Form.Item
-              name="prompt"
-              label="输入提示"
-              rules={[{ required: true, message: '请输入输入提示' }]}
-            >
-              <Input.TextArea
-                rows={3}
-                placeholder="例如：请输入您的问题"
-              />
-            </Form.Item>
-          )}
-
-          {selectedNode?.data.nodeType === 'output' && (
-            <Form.Item
-              name="template"
-              label="输出模板"
-              rules={[{ required: true, message: '请输入输出模板' }]}
-            >
-              <Input.TextArea
-                rows={3}
-                placeholder="例如：处理结果：{message}"
-              />
-            </Form.Item>
-          )}
+          <Form.Item
+            name="config"
+            label="高级配置"
+          >
+            <Input.TextArea rows={4} placeholder="请输入节点配置（JSON格式）" />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

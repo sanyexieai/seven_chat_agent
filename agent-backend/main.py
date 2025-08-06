@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
@@ -17,7 +18,7 @@ from api.mcp import router as mcp_router
 from api.flows import router as flows_router
 
 # 导入数据库和智能体管理器
-from database.database import engine, Base, get_db
+from database.database import engine, Base, get_db, SessionLocal
 from database.migrations import run_migrations, create_default_agents
 from agents.agent_manager import AgentManager
 from utils.log_helper import get_logger
@@ -188,22 +189,107 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         logger.error(f"WebSocket错误: {str(e)}")
         manager.disconnect(session_id)
 
-@app.post("/api/chat/stream")
-async def chat_stream(request: Dict[str, Any]):
-    """流式聊天API"""
+@app.post("/api/chat")
+async def chat(request: Dict[str, Any]):
+    """普通聊天API"""
     try:
         user_id = request.get("user_id", "anonymous")
         message = request.get("message", "")
+        agent_id = request.get("agent_id")
         agent_name = request.get("agent_name", "chat_agent")
         session_id = request.get("session_id", str(uuid.uuid4()))
         
-        logger.info(f"收到聊天请求: user_id={user_id}, agent={agent_name}")
+        logger.info(f"收到聊天请求: user_id={user_id}, agent_id={agent_id}, agent_name={agent_name}")
         
         if not agent_manager:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="智能体管理器未初始化"
             )
+        
+        # 如果提供了agent_id，优先使用agent_id查找智能体
+        if agent_id:
+            # 从数据库获取智能体信息
+            db = SessionLocal()
+            try:
+                from models.database_models import Agent
+                db_agent = db.query(Agent).filter(Agent.id == agent_id).first()
+                if db_agent:
+                    agent_name = db_agent.name
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"智能体ID {agent_id} 不存在"
+                    )
+            finally:
+                db.close()
+        
+        agent = agent_manager.get_agent(agent_name)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"智能体 {agent_name} 不存在"
+            )
+        
+        context = {
+            "session_id": session_id,
+            "user_id": user_id
+        }
+        
+        # 处理消息
+        response = await agent.process_message(user_id, message, context)
+        
+        return {
+            "content": response.content,
+            "agent_name": response.agent_name,
+            "type": response.type,
+            "metadata": response.metadata,
+            "session_id": session_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"聊天API错误: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"聊天API错误: {str(e)}"
+        )
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: Dict[str, Any]):
+    """流式聊天API"""
+    try:
+        user_id = request.get("user_id", "anonymous")
+        message = request.get("message", "")
+        agent_id = request.get("agent_id")
+        agent_name = request.get("agent_name", "chat_agent")
+        session_id = request.get("session_id", str(uuid.uuid4()))
+        
+        logger.info(f"收到聊天请求: user_id={user_id}, agent_id={agent_id}, agent_name={agent_name}")
+        
+        if not agent_manager:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="智能体管理器未初始化"
+            )
+        
+        # 如果提供了agent_id，优先使用agent_id查找智能体
+        if agent_id:
+            # 从数据库获取智能体信息
+            db = SessionLocal()
+            try:
+                from models.database_models import Agent
+                db_agent = db.query(Agent).filter(Agent.id == agent_id).first()
+                if db_agent:
+                    agent_name = db_agent.name
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"智能体ID {agent_id} 不存在"
+                    )
+            finally:
+                db.close()
         
         agent = agent_manager.get_agent(agent_name)
         if not agent:
@@ -236,7 +322,7 @@ async def chat_stream(request: Dict[str, Any]):
                 logger.error(f"生成响应失败: {str(e)}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
         
-        return generate_response()
+        return StreamingResponse(content=generate_response(), media_type="text/event-stream")
         
     except HTTPException:
         raise

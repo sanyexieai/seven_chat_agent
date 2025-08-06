@@ -72,6 +72,9 @@ def run_migrations():
         
         # 运行MCP服务器表迁移
         run_mcp_migrations()
+        
+        # 运行流程图表迁移
+        run_flow_migrations()
             
     except Exception as e:
         logger.error(f"数据库迁移失败: {str(e)}")
@@ -172,6 +175,78 @@ def run_mcp_migrations():
                 
     except Exception as e:
         logger.error(f"MCP相关表迁移失败: {str(e)}")
+        raise
+
+def run_flow_migrations():
+    """运行流程图相关的数据库迁移"""
+    logger.info("开始检查流程图表迁移...")
+    
+    try:
+        with engine.connect() as conn:
+            # 检查flows表是否存在
+            inspector = inspect(engine)
+            if 'flows' not in inspector.get_table_names():
+                logger.info("flows表不存在，创建所有流程图表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("所有流程图表创建完成")
+                return
+            
+            # 检查flow_config字段是否存在
+            if not check_column_exists('flows', 'flow_config'):
+                logger.info("添加flow_config字段到flows表...")
+                conn.execute(text("""
+                    ALTER TABLE flows 
+                    ADD COLUMN flow_config JSON;
+                """))
+                logger.info("成功添加flow_config字段到flows表")
+            else:
+                logger.info("flow_config字段已存在，跳过添加")
+            
+            # 检查其他可能缺失的字段
+            missing_flow_columns = []
+            
+            if not check_column_exists('flows', 'name'):
+                missing_flow_columns.append('name')
+            
+            if not check_column_exists('flows', 'description'):
+                missing_flow_columns.append('description')
+            
+            if not check_column_exists('flows', 'nodes'):
+                missing_flow_columns.append('nodes')
+            
+            if not check_column_exists('flows', 'edges'):
+                missing_flow_columns.append('edges')
+            
+            if not check_column_exists('flows', 'flow_schema'):
+                missing_flow_columns.append('flow_schema')
+            
+            if missing_flow_columns:
+                logger.info(f"发现缺失字段: {missing_flow_columns}")
+                for column in missing_flow_columns:
+                    if column == 'name':
+                        conn.execute(text("ALTER TABLE flows ADD COLUMN name VARCHAR(255);"))
+                        logger.info("添加 name 字段")
+                    elif column == 'description':
+                        conn.execute(text("ALTER TABLE flows ADD COLUMN description TEXT;"))
+                        logger.info("添加 description 字段")
+                    elif column == 'nodes':
+                        conn.execute(text("ALTER TABLE flows ADD COLUMN nodes JSON;"))
+                        logger.info("添加 nodes 字段")
+                    elif column == 'edges':
+                        conn.execute(text("ALTER TABLE flows ADD COLUMN edges JSON;"))
+                        logger.info("添加 edges 字段")
+                    elif column == 'flow_schema':
+                        conn.execute(text("ALTER TABLE flows ADD COLUMN flow_schema JSON;"))
+                        logger.info("添加 flow_schema 字段")
+                
+                logger.info("流程图表迁移完成")
+            else:
+                logger.info("流程图表结构已是最新版本")
+            
+            conn.commit()
+                
+    except Exception as e:
+        logger.error(f"流程图表迁移失败: {str(e)}")
         raise
 
 def create_default_agents():

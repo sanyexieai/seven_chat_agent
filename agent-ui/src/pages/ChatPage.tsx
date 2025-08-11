@@ -93,7 +93,7 @@ const ChatPage: React.FC = () => {
         const formattedMessages = messages.map((msg: any) => ({
           id: msg.id,
           content: msg.content,
-          type: msg.type === 'user' ? 'user' : 'agent',
+          type: msg.message_type === 'user' ? 'user' : 'agent',
           timestamp: new Date(msg.created_at),
           agentName: msg.agent_name
         }));
@@ -395,106 +395,10 @@ const ChatPage: React.FC = () => {
     }
   };
 
-  // 测试流式功能
-  const testStream = async () => {
-    console.log('测试流式按钮被点击了！'); // 添加这行来确认按钮被点击
+  
     
-    try {
-      // 先测试一个简单的GET请求
-      console.log('开始测试流式功能...');
-      
-      // 测试1: 简单的GET请求
-      console.log('测试1: 发送GET请求到 /api/chat/test-stream');
-      const response = await fetch(`${apiBase}/api/chat/test-stream`, { headers: { 'Accept': 'text/event-stream', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' } });
-      
-      console.log('收到响应:', response);
-      console.log('响应状态:', response.status, response.statusText);
-      console.log('响应头:', Object.fromEntries(response.headers.entries()));
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
 
-      // 测试2: 检查响应类型
-      const contentType = response.headers.get('content-type');
-      console.log('响应类型:', contentType);
-      
-      if (!contentType || !contentType.includes('text/event-stream')) {
-        console.warn('响应类型不是text/event-stream:', contentType);
-      }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('无法获取响应流');
-      }
-
-      console.log('开始读取流式数据...');
-      let fullContent = '';
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          console.log('流式读取完成');
-          break;
-        }
-
-        const chunk = decoder.decode(value);
-        console.log('收到原始数据块:', chunk);
-        buffer += chunk;
-        
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        
-        for (const line of lines) {
-          if (line.trim() && line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              console.log('解析的流式数据:', data);
-              
-              if (data.type === 'content' && data.content) {
-                fullContent += data.content;
-                console.log('累积内容:', fullContent);
-              } else if (data.type === 'done') {
-                console.log('测试流式完成');
-              }
-            } catch (e) {
-              console.error('解析测试流式数据失败:', e, line);
-            }
-          }
-        }
-      }
-      
-      console.log('测试完成，总内容:', fullContent);
-      message.success('流式测试完成！');
-    } catch (error: any) {
-      console.error('测试流式功能失败:', error);
-      // 显示错误信息给用户
-      message.error(`测试失败: ${error.message || '未知错误'}`);
-    }
-  };
-
-  // 简单测试函数：实际发起网络请求便于在Network中观察
-  const simpleTest = async () => {
-    console.log('简单测试按钮被点击了！');
-    try {
-      const resp = await fetch('/api/chat/test-stream', {
-        method: 'GET',
-        headers: { 'Accept': 'text/event-stream' },
-        cache: 'no-store'
-      });
-      console.log('简单测试响应状态:', resp.status, resp.statusText);
-      console.log('简单测试响应头:', Object.fromEntries(resp.headers.entries()));
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
-      }
-      message.success(`简单测试请求已发送，状态 ${resp.status}`);
-    } catch (e: any) {
-      console.error('简单测试请求失败:', e);
-      message.error(`简单测试失败: ${e?.message || '未知错误'}`);
-    }
-  };
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString('zh-CN', { 
@@ -556,9 +460,14 @@ const ChatPage: React.FC = () => {
                   >
                     <div className="message-content">
                       <Avatar 
-                        icon={message.type === 'user' ? <UserOutlined /> : <RobotOutlined />}
-                        size="small"
+                        icon={message.type === 'user' 
+                          ? <UserOutlined style={{ color: '#fff' }} /> 
+                          : <RobotOutlined style={{ color: '#1890ff' }} />}
+                        size={36}
                         className="message-avatar"
+                        style={message.type === 'user' 
+                          ? { backgroundColor: '#1890ff' }
+                          : { backgroundColor: '#e6f7ff', border: '1px solid #91d5ff' }}
                       />
                       <div className="message-bubble">
                         <div className="message-header">
@@ -601,22 +510,7 @@ const ChatPage: React.FC = () => {
               >
                 发送
               </Button>
-              <Button
-                type="default"
-                onClick={testStream}
-                className="test-button"
-              >
-                测试流式
-              </Button>
-              <Button
-                type="dashed"
-                onClick={simpleTest}
-                className="simple-test-button"
-              >
-                简单测试
-              </Button>
-
-            </div>
+                          </div>
           </div>
         </div>
       </div>

@@ -146,6 +146,11 @@
 
 .message-avatar {
   margin: 0 8px;
+  width: 36px !important;
+  height: 36px !important;
+  min-width: 36px !important;
+  min-height: 36px !important;
+  flex-shrink: 0;
 }
 
 /* 消息气泡 */

@@ -216,30 +216,7 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
             detail=f"处理聊天请求失败: {str(e)}"
         )
 
-@router.get("/test-stream")
-async def test_stream():
-    """测试流式响应"""
-    async def generate_test():
-        for i in range(10):
-            data_chunk = f"data: {json.dumps({'content': f'测试消息 {i+1}', 'type': 'content'}, ensure_ascii=False)}\n\n"
-            yield data_chunk
-            # 强制刷新缓冲区
-            import asyncio
-            await asyncio.sleep(0.5)  # 模拟延迟
-            await asyncio.sleep(0)  # 让出控制权
-        yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-    
-    return StreamingResponse(
-        generate_test(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Content-Type": "text/event-stream",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
+
 
 @router.get("/messages/{session_id}", response_model=List[ChatMessageResponse])
 async def get_chat_messages(session_id: str, db: Session = Depends(get_db)):

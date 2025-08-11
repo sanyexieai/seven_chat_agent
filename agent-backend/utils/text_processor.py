@@ -53,6 +53,7 @@ class TextProcessor:
         text = re.sub(r'\s+', ' ', text)
         
         # 移除特殊字符（保留中文、英文、数字和基本标点）
+        # 修复转义序列问题，使用原始字符串
         text = re.sub(r'[^\w\s\u4e00-\u9fff.,!?;:()""''\[\]{}]', '', text)
         
         return text.strip()

@@ -38,7 +38,7 @@ def init_default_llm_configs():
                     "temperature": 0.7,
                     "max_tokens": 2048
                 },
-                "is_default": True
+                "is_default": False
             },
             {
                 "name": "openai_gpt35",
@@ -73,14 +73,14 @@ def init_default_llm_configs():
                 "display_name": "Ollama Qwen 模型",
                 "description": "Ollama Qwen 模型配置",
                 "provider": "ollama",
-                "model_name": "qwen2.5:7b",
+                "model_name": "qwen3:8b",
                 "api_key": "",
                 "api_base": "http://localhost:11434",
                 "config": {
                     "temperature": 0.7,
                     "max_tokens": 2048
                 },
-                "is_default": False
+                "is_default": True
             },
             {
                 "name": "ollama_llama",

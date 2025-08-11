@@ -227,7 +227,21 @@
   outline: none;
 }
 
+.button-group {
+  display: flex;
+  gap: 8px;
+  margin-left: 12px;
+}
+
 .send-button {
+  height: 44px;
+  border-radius: 12px;
+  padding: 0 20px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+}
+
+.test-button {
   height: 44px;
   border-radius: 12px;
   padding: 0 20px;

@@ -30,14 +30,22 @@ def run_migrations():
     logger.info("开始检查数据库迁移...")
     
     try:
-        # 检查agents表是否存在
-        if not check_table_exists('agents'):
-            logger.info("agents表不存在，创建所有表...")
+        # 检查所有必需的表是否存在
+        required_tables = ['agents', 'knowledge_bases', 'documents', 'document_chunks', 'knowledge_base_queries']
+        missing_tables = []
+        
+        for table in required_tables:
+            if not check_table_exists(table):
+                missing_tables.append(table)
+        
+        if missing_tables:
+            logger.info(f"发现缺失的表: {missing_tables}")
+            logger.info("创建所有缺失的表...")
             Base.metadata.create_all(bind=engine)
             logger.info("所有表创建完成")
             return
         
-        # 检查新字段是否存在
+        # 检查agents表的新字段是否存在
         missing_columns = []
         
         if not check_column_exists('agents', 'system_prompt'):
@@ -75,6 +83,9 @@ def run_migrations():
         
         # 运行流程图表迁移
         run_flow_migrations()
+        
+        # 运行智能体LLM配置迁移
+        run_agent_llm_config_migration()
             
     except Exception as e:
         logger.error(f"数据库迁移失败: {str(e)}")
@@ -249,6 +260,30 @@ def run_flow_migrations():
         logger.error(f"流程图表迁移失败: {str(e)}")
         raise
 
+def run_agent_llm_config_migration():
+    """运行智能体LLM配置迁移"""
+    logger.info("开始检查智能体LLM配置迁移...")
+    
+    try:
+        with engine.connect() as conn:
+            # 检查llm_config_id字段是否存在
+            if not check_column_exists('agents', 'llm_config_id'):
+                logger.info("添加llm_config_id字段到agents表...")
+                conn.execute(text("""
+                    ALTER TABLE agents 
+                    ADD COLUMN llm_config_id INTEGER REFERENCES llm_configs(id);
+                """))
+                logger.info("成功添加llm_config_id字段到agents表")
+            else:
+                logger.info("llm_config_id字段已存在，跳过添加")
+            
+            conn.commit()
+            logger.info("智能体LLM配置迁移完成")
+                
+    except Exception as e:
+        logger.error(f"智能体LLM配置迁移失败: {str(e)}")
+        raise
+
 def create_default_agents():
     """创建默认智能体"""
     logger.info("检查默认智能体...")
@@ -266,40 +301,19 @@ def create_default_agents():
         # 创建默认智能体
         default_agents = [
             {
-                "name": "chat_agent",
-                "display_name": "通用聊天智能体",
-                "description": "基础的聊天对话智能体",
-                "agent_type": "chat",
-                "is_active": True
-            },
-            {
-                "name": "search_agent", 
-                "display_name": "搜索智能体",
-                "description": "搜索和信息检索智能体",
-                "agent_type": "search",
-                "is_active": True
-            },
-            {
-                "name": "report_agent",
-                "display_name": "报告智能体", 
-                "description": "报告生成智能体",
-                "agent_type": "report",
-                "is_active": True
-            },
-            {
-                "name": "prompt_agent",
-                "display_name": "提示词驱动智能体",
-                "description": "纯提示词驱动的智能体",
-                "agent_type": "prompt_driven",
+                "name": "general_agent",
+                "display_name": "通用智能体",
+                "description": "可配置提示词、工具和LLM的通用智能体",
+                "agent_type": "general",
                 "system_prompt": "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。请用简洁、准确、友好的方式回应用户的问题。",
                 "is_active": True
             },
             {
-                "name": "tool_agent",
-                "display_name": "工具驱动智能体",
-                "description": "纯工具驱动的智能体",
-                "agent_type": "tool_driven",
-                "bound_tools": ["search", "news_search"],
+                "name": "flow_agent",
+                "display_name": "流程图智能体",
+                "description": "可配置各种节点的流程图智能体",
+                "agent_type": "flow_driven",
+                "flow_config": {},
                 "is_active": True
             }
         ]

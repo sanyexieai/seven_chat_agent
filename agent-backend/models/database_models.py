@@ -15,20 +15,22 @@ class Agent(Base):
     name = Column(String(100), unique=True, index=True, nullable=False)
     display_name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
-    agent_type = Column(String(50), nullable=False)  # prompt_driven, tool_driven, flow_driven等
+    agent_type = Column(String(50), nullable=False)  # general, flow_driven
     is_active = Column(Boolean, default=True)
     config = Column(JSON, nullable=True)  # 智能体配置
     
     # 新增字段用于新智能体类型
-    system_prompt = Column(Text, nullable=True)  # 系统提示词（用于prompt_driven）
-    bound_tools = Column(JSON, nullable=True)    # 绑定的工具列表（用于tool_driven）
+    system_prompt = Column(Text, nullable=True)  # 系统提示词（用于general）
+    bound_tools = Column(JSON, nullable=True)    # 绑定的工具列表（用于general）
     flow_config = Column(JSON, nullable=True)    # 流程图配置（用于flow_driven）
+    llm_config_id = Column(Integer, ForeignKey("llm_configs.id"), nullable=True)  # 关联的LLM配置
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # 关联关系
     sessions = relationship("UserSession", back_populates="agent")
+    llm_config = relationship("LLMConfig")  # 关联LLM配置
 
 class Flow(Base):
     """流程图配置表"""
@@ -133,6 +135,8 @@ class AgentResponse(BaseModel):
     system_prompt: Optional[str] = None
     bound_tools: Optional[List[str]] = None
     flow_config: Optional[Dict[str, Any]] = None
+    llm_config_id: Optional[int] = None
+    llm_config: Optional['LLMConfigResponse'] = None
     created_at: datetime
     updated_at: datetime
     
@@ -148,6 +152,7 @@ class AgentCreate(BaseModel):
     system_prompt: Optional[str] = None
     bound_tools: Optional[List[str]] = None
     flow_config: Optional[Dict[str, Any]] = None
+    llm_config_id: Optional[int] = None
 
 class AgentUpdate(BaseModel):
     display_name: Optional[str] = None
@@ -157,6 +162,7 @@ class AgentUpdate(BaseModel):
     system_prompt: Optional[str] = None
     bound_tools: Optional[List[str]] = None
     flow_config: Optional[Dict[str, Any]] = None
+    llm_config_id: Optional[int] = None
 
 class FlowResponse(BaseModel):
     id: int
@@ -380,6 +386,178 @@ class LLMConfigResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# 知识库相关模型
+class KnowledgeBase(Base):
+    """知识库表"""
+    __tablename__ = "knowledge_bases"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True, nullable=False)
+    display_name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(String(100), nullable=True)  # 所有者ID
+    is_public = Column(Boolean, default=False)  # 是否公开
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # 关联关系
+    documents = relationship("Document", back_populates="knowledge_base")
+
+class Document(Base):
+    """文档表"""
+    __tablename__ = "documents"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False)
+    file_type = Column(String(50), nullable=False)  # pdf, txt, docx等
+    content = Column(Text, nullable=True)  # 文档内容
+    document_metadata = Column(JSON, nullable=True)  # 元数据
+    knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)
+    status = Column(String(50), default="pending")  # 文档状态：pending, processing, completed, failed
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # 关联关系
+    knowledge_base = relationship("KnowledgeBase", back_populates="documents")
+    chunks = relationship("DocumentChunk", back_populates="document")
+
+class DocumentChunk(Base):
+    """文档分块表"""
+    __tablename__ = "document_chunks"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)  # 添加知识库ID
+    content = Column(Text, nullable=False)  # 分块内容
+    chunk_index = Column(Integer, nullable=False)  # 分块索引
+    embedding = Column(JSON, nullable=True)  # 向量嵌入
+    chunk_metadata = Column(JSON, nullable=True)  # 元数据
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # 关联关系
+    document = relationship("Document", back_populates="chunks")
+    knowledge_base = relationship("KnowledgeBase")
+
+# 知识库Pydantic模型
+class KnowledgeBaseCreate(BaseModel):
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    owner_id: Optional[str] = None
+    is_public: bool = False
+
+class KnowledgeBaseUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    is_public: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+class KnowledgeBaseResponse(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    owner_id: Optional[str] = None
+    is_public: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class DocumentCreate(BaseModel):
+    name: str
+    file_type: str
+    content: Optional[str] = None
+    document_metadata: Optional[Dict[str, Any]] = None
+    knowledge_base_id: int
+
+class DocumentUpdate(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
+    document_metadata: Optional[Dict[str, Any]] = None
+
+class DocumentResponse(BaseModel):
+    id: int
+    name: str
+    file_type: str
+    content: Optional[str] = None
+    document_metadata: Optional[Dict[str, Any]] = None
+    knowledge_base_id: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class DocumentChunkResponse(BaseModel):
+    id: int
+    document_id: int
+    knowledge_base_id: int
+    content: str
+    chunk_index: int
+    embedding: Optional[List[float]] = None
+    chunk_metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class QueryRequest(BaseModel):
+    query: str
+    user_id: str
+    top_k: int = 5
+    max_results: int = 5
+    similarity_threshold: float = 0.7
+
+class QueryResponse(BaseModel):
+    query: str
+    results: List[DocumentChunkResponse]
+    total_results: int
+
+# 知识库查询历史模型
+class KnowledgeBaseQuery(Base):
+    """知识库查询历史表"""
+    __tablename__ = "knowledge_base_queries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)
+    user_id = Column(String(100), nullable=False)
+    query = Column(Text, nullable=False)  # 查询内容
+    response = Column(Text, nullable=True)  # 响应内容
+    sources = Column(JSON, nullable=True)  # 来源信息
+    query_metadata = Column(JSON, nullable=True)  # 查询元数据
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # 关联关系
+    knowledge_base = relationship("KnowledgeBase")
+
+# 知识库查询历史Pydantic模型
+class KnowledgeBaseQueryCreate(BaseModel):
+    knowledge_base_id: int
+    user_id: str
+    query: str
+    response: Optional[str] = None
+    sources: Optional[List[Dict[str, Any]]] = None
+    query_metadata: Optional[Dict[str, Any]] = None
+
+class KnowledgeBaseQueryResponse(BaseModel):
+    id: int
+    knowledge_base_id: int
+    user_id: str
+    query: str
+    response: Optional[str] = None
+    sources: Optional[List[Dict[str, Any]]] = None
+    query_metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
     
     class Config:
         from_attributes = True 

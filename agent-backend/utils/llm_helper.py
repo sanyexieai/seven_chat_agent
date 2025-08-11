@@ -34,33 +34,48 @@ class LLMHelper:
             self._ollama_base_url = None
             self._initialized = True
 
-    def setup(self, **kwargs) -> 'LLMHelper':
+    def setup(self, llm_config: Optional[Dict[str, Any]] = None, **kwargs) -> 'LLMHelper':
         """
         配置并初始化大模型
-        """
-        # 从数据库配置管理器获取配置
-        db_config = llm_config_manager.get_default_config()
         
-        if db_config:
-            # 使用数据库配置
+        Args:
+            llm_config: 可选的LLM配置字典，包含provider, model_name, api_key, api_base等
+            **kwargs: 其他配置参数
+        """
+        if llm_config:
+            # 使用传入的LLM配置
             self._config = {
-                'model': db_config.model_name,
-                'model_provider': db_config.provider,
-                'temperature': db_config.config.get('temperature', 0.7) if db_config.config else 0.7,
-                'base_url': db_config.api_base,
-                'api_key': db_config.api_key
+                'model': llm_config.get('model_name', ''),
+                'model_provider': llm_config.get('provider', ''),
+                'temperature': llm_config.get('config', {}).get('temperature', 0.7),
+                'base_url': llm_config.get('api_base', ''),
+                'api_key': llm_config.get('api_key', '')
             }
-            logger.info(f"使用数据库LLM配置: {db_config.display_name}")
+            logger.info(f"使用传入的LLM配置: {llm_config.get('provider')} - {llm_config.get('model_name')}")
         else:
-            # 使用环境变量配置作为fallback
-            self._config = dict(
-                model=MODEL, 
-                model_provider=MODEL_PROVIDER, 
-                temperature=TEMPERATURE, 
-                base_url=BASE_URL, 
-                api_key=API_KEY
-            )
-            logger.info("使用环境变量LLM配置")
+            # 从数据库配置管理器获取配置
+            db_config = llm_config_manager.get_default_config()
+            
+            if db_config:
+                # 使用数据库配置
+                self._config = {
+                    'model': db_config.model_name,
+                    'model_provider': db_config.provider,
+                    'temperature': db_config.config.get('temperature', 0.7) if db_config.config else 0.7,
+                    'base_url': db_config.api_base,
+                    'api_key': db_config.api_key
+                }
+                logger.info(f"使用数据库LLM配置: {db_config.display_name}")
+            else:
+                # 使用环境变量配置作为fallback
+                self._config = dict(
+                    model=MODEL, 
+                    model_provider=MODEL_PROVIDER, 
+                    temperature=TEMPERATURE, 
+                    base_url=BASE_URL, 
+                    api_key=API_KEY
+                )
+                logger.info("使用环境变量LLM配置")
         
         self._config.update(kwargs)
         
@@ -222,32 +237,79 @@ class LLMHelper:
                 raise Exception("Ollama客户端未初始化")
             
             # 构建请求数据
+            max_tokens = kwargs.get('max_tokens', 512)
+            max_tokens = max(64, min(int(max_tokens), 512))
             data = {
-                "model": self._config.get('model', 'llama2'),
+                "model": self._config.get('model', 'qwen3:8b'),
                 "messages": messages,
                 "stream": False,
+                "keep_alive": "5m",
                 "options": {
                     "temperature": self._config.get('temperature', 0.7),
-                    "num_predict": kwargs.get('max_tokens', 1000),
+                    "num_predict": max_tokens,
                     **kwargs.get('options', {})
                 }
             }
             
-            # 发送请求
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
+            logger.info(f"Ollama请求URL: {self._ollama_base_url}/api/chat")
+            safe_preview = json.dumps({**data, 'messages': '[omitted for brevity]'}, ensure_ascii=False)
+            logger.info(f"Ollama请求数据(简要): {safe_preview}")
+            logger.info(f"Ollama配置: {self._config}")
+            
+            # 直接使用同步requests库，避免异步问题
+            import time
+            import requests
+            start_time = time.time()
+            
+            logger.info("使用同步requests发送Ollama请求...")
+            
+            try:
+                response = requests.post(
                     f"{self._ollama_base_url}/api/chat",
                     json=data,
-                    timeout=60
+                    headers={"Content-Type": "application/json"},
+                    timeout=30
                 )
+                
+                end_time = time.time()
+                logger.info(f"请求完成时间: {end_time}")
+                logger.info(f"请求耗时: {end_time - start_time:.2f}秒")
+                logger.info(f"Ollama响应状态码: {response.status_code}")
+                logger.info(f"Ollama响应头: {dict(response.headers)}")
+                
                 response.raise_for_status()
                 
                 result = response.json()
-                return result.get('message', {}).get('content', '')
+                logger.info(f"Ollama响应内容: {json.dumps(result, ensure_ascii=False, indent=2)}")
                 
+                content = result.get('message', {}).get('content', '')
+                logger.info(f"提取的内容: {content}")
+                return content
+                
+            except requests.exceptions.Timeout:
+                logger.error("同步请求超时")
+                raise
+            except requests.exceptions.RequestException as e:
+                logger.error(f"同步请求失败: {str(e)}")
+                raise
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Ollama HTTP错误: {e.response.status_code} - {e.response.text}")
+            raise
+        except httpx.RequestError as e:
+            logger.error(f"Ollama请求错误: {str(e)}")
+            raise
+        except json.JSONDecodeError as e:
+            logger.error(f"Ollama响应JSON解析错误: {str(e)}")
+            logger.error(f"响应内容: {response.text if 'response' in locals() else 'N/A'}")
+            raise
         except Exception as e:
             logger.error(f"Ollama调用失败: {str(e)}")
-            raise
+            logger.error(f"错误类型: {type(e).__name__}")
+            logger.error(f"错误详情: {str(e)}")
+            
+            # 同步请求已经失败，记录错误
+            logger.error("同步请求失败，无法获取Ollama响应")
 
     async def call_stream(self, messages, **kwargs) -> AsyncGenerator[str, None]:
         """
@@ -381,38 +443,78 @@ class LLMHelper:
                 raise Exception("Ollama客户端未初始化")
             
             # 构建请求数据
+            max_tokens = kwargs.get('max_tokens', 512)
+            max_tokens = max(64, min(int(max_tokens), 512))
             data = {
-                "model": self._config.get('model', 'llama2'),
+                "model": self._config.get('model', 'qwen3:8b'),
                 "messages": messages,
                 "stream": True,
+                "keep_alive": "5m",
                 "options": {
                     "temperature": self._config.get('temperature', 0.7),
-                    "num_predict": kwargs.get('max_tokens', 1000),
+                    "num_predict": max_tokens,
                     **kwargs.get('options', {})
                 }
             }
             
-            # 发送流式请求
-            async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    "POST",
+            logger.info(f"Ollama流式请求URL: {self._ollama_base_url}/api/chat")
+            safe_preview = json.dumps({**data, 'messages': '[omitted for brevity]'}, ensure_ascii=False)
+            logger.info(f"Ollama流式请求数据(简要): {safe_preview}")
+            
+            # 使用同步requests进行流式请求，避免异步问题
+            import requests
+            logger.info("使用同步requests发送Ollama流式请求...")
+            
+            try:
+                response = requests.post(
                     f"{self._ollama_base_url}/api/chat",
                     json=data,
-                    timeout=60
-                ) as response:
-                    response.raise_for_status()
-                    
-                    async for line in response.aiter_lines():
-                        if line.strip():
-                            try:
-                                chunk_data = json.loads(line)
+                    headers={"Content-Type": "application/json"},
+                    timeout=30,
+                    stream=True
+                )
+                
+                logger.info(f"Ollama流式响应状态码: {response.status_code}")
+                logger.info(f"Ollama流式响应头: {dict(response.headers)}")
+                
+                response.raise_for_status()
+                
+                # 处理流式响应
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            line_text = line.decode('utf-8').strip()
+                            if line_text:
+                                logger.debug(f"收到流式数据行: {line_text}")
+                                chunk_data = json.loads(line_text)
                                 if 'message' in chunk_data and 'content' in chunk_data['message']:
-                                    yield chunk_data['message']['content']
-                            except json.JSONDecodeError:
-                                continue
+                                    content = chunk_data['message']['content']
+                                    logger.debug(f"流式内容片段: {content}")
+                                    yield content
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"流式数据JSON解析失败: {str(e)}, 数据行: {line_text}")
+                            continue
+                        except Exception as e:
+                            logger.warning(f"处理流式数据失败: {str(e)}")
+                            continue
+                            
+            except requests.exceptions.Timeout:
+                logger.error("同步流式请求超时")
+                raise
+            except requests.exceptions.RequestException as e:
+                logger.error(f"同步流式请求失败: {str(e)}")
+                raise
                                 
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Ollama流式HTTP错误: {e.response.status_code} - {e.response.text}")
+            raise
+        except httpx.RequestError as e:
+            logger.error(f"Ollama流式请求错误: {str(e)}")
+            raise
         except Exception as e:
             logger.error(f"Ollama流式调用失败: {str(e)}")
+            logger.error(f"错误类型: {type(e).__name__}")
+            logger.error(f"错误详情: {str(e)}")
             raise
 
     async def _call_deepseek(self, messages: List[Dict], **kwargs) -> str:
@@ -543,9 +645,14 @@ class LLMHelper:
         return filtered_text
 
 # 获取单例
-def get_llm_helper():
+def get_llm_helper(llm_config: Optional[Dict[str, Any]] = None):
+    """获取LLM助手实例
+    
+    Args:
+        llm_config: 可选的LLM配置字典
+    """
     llm_helper = LLMHelper()
-    llm_helper.setup()
+    llm_helper.setup(llm_config=llm_config)
     return llm_helper
 
 def get_llm(model: str = None, **kwargs):

@@ -36,12 +36,13 @@ export const useChat = () => {
     }
   };
 
-  const sendMessage = async (message: string, agentType?: string): Promise<ChatResponse> => {
+  const sendMessage = async (message: string, agentName?: string): Promise<ChatResponse> => {
     try {
       const request: ChatRequest = {
         user_id: userId,
         message,
         context: {},
+        agent_type: agentName,
         stream: false,
       };
 
@@ -63,14 +64,14 @@ export const useChat = () => {
     onChunk: (chunk: any) => void,
     onComplete: () => void,
     onError: (error: any) => void,
-    agentType?: string
+    agentName?: string
   ) => {
     try {
       const request: ChatRequest = {
         user_id: userId,
         message,
         context: {},
-        agent_type: agentType,
+        agent_type: agentName,
         stream: true,
       };
 

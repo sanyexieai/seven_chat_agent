@@ -39,11 +39,16 @@ def init_db():
     os.makedirs(documents_dir, exist_ok=True)
     
     # 导入所有模型以确保表被创建
-    from models.database_models import Agent, UserSession, MCPServer, MCPTool, LLMConfig, Flow
+    from models.database_models import Agent, UserSession, MCPServer, MCPTool, LLMConfig, Flow, KnowledgeBase, Document, DocumentChunk, KnowledgeBaseQuery
     
     # 运行数据库迁移
     from database.migrations import init_database
     init_database()
+    
+    # 创建默认数据
+    create_default_agents()
+    create_default_llm_configs()
+    create_default_knowledge_bases()
 
 def create_default_agents():
     """创建默认智能体"""
@@ -59,10 +64,11 @@ def create_default_agents():
         # 创建默认智能体
         default_agents = [
             {
-                "name": "chat_agent",
-                "display_name": "通用聊天",
-                "description": "通用聊天智能体，可以进行日常对话和问答",
-                "agent_type": "chat",
+                "name": "general_agent",
+                "display_name": "通用智能体",
+                "description": "可配置提示词、工具和LLM的通用智能体",
+                "agent_type": "general",
+                "system_prompt": "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。请用简洁、准确、友好的方式回应用户的问题。",
                 "config": {
                     "model": "qwen3:32b",
                     "temperature": 0.7,
@@ -70,27 +76,15 @@ def create_default_agents():
                 }
             },
             {
-                "name": "search_agent",
-                "display_name": "搜索助手",
-                "description": "搜索和信息检索智能体，可以搜索网络信息",
-                "agent_type": "search",
+                "name": "flow_agent",
+                "display_name": "流程图智能体",
+                "description": "可配置各种节点的流程图智能体",
+                "agent_type": "flow_driven",
+                "flow_config": {},
                 "config": {
                     "model": "qwen3:32b",
                     "temperature": 0.5,
-                    "max_tokens": 2048,
-                    "enable_web_search": True
-                }
-            },
-            {
-                "name": "report_agent",
-                "display_name": "报告生成",
-                "description": "报告生成智能体，可以生成各种类型的报告",
-                "agent_type": "report",
-                "config": {
-                    "model": "qwen3:32b",
-                    "temperature": 0.3,
-                    "max_tokens": 4096,
-                    "enable_analysis": True
+                    "max_tokens": 2048
                 }
             }
         ]
@@ -222,5 +216,51 @@ def create_default_llm_configs():
         
     except Exception as e:
         print(f"创建默认LLM配置失败: {str(e)}")
+    finally:
+        db.close()
+
+def create_default_knowledge_bases():
+    """创建默认知识库"""
+    from models.database_models import KnowledgeBase, KnowledgeBaseCreate
+    from services.knowledge_base_service import KnowledgeBaseService
+    
+    db = SessionLocal()
+    try:
+        # 检查是否已有知识库
+        existing_kbs = db.query(KnowledgeBase).count()
+        if existing_kbs > 0:
+            return
+        
+        # 创建默认知识库
+        default_kbs = [
+            {
+                "name": "general_kb",
+                "display_name": "通用知识库",
+                "description": "包含通用知识和信息的知识库",
+                "owner_id": "system",
+                "is_public": True
+            },
+            {
+                "name": "tech_kb",
+                "display_name": "技术知识库",
+                "description": "包含技术文档和知识的知识库",
+                "owner_id": "system",
+                "is_public": True
+            }
+        ]
+        
+        kb_service = KnowledgeBaseService()
+        for kb_data in default_kbs:
+            try:
+                kb_create = KnowledgeBaseCreate(**kb_data)
+                kb = kb_service.create_knowledge_base(db, kb_create)
+                print(f"创建知识库: {kb.display_name}")
+            except Exception as e:
+                print(f"创建知识库失败 {kb_data['name']}: {str(e)}")
+        
+        print("默认知识库创建完成")
+        
+    except Exception as e:
+        print(f"创建默认知识库失败: {str(e)}")
     finally:
         db.close() 

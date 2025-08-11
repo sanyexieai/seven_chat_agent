@@ -158,8 +158,6 @@ async def reload_llm_config():
     try:
         from config.llm_config_manager import llm_config_manager
         from utils.llm_helper import get_llm_helper
-        from agents.agent_manager import agent_manager
-        
         # 重新初始化配置管理器
         llm_config_manager._initialized = False
         llm_config_manager.initialize()
@@ -170,8 +168,12 @@ async def reload_llm_config():
         llm_helper.setup()
         
         # 重新初始化所有智能体的LLM助手
-        if agent_manager:
-            await agent_manager.reload_agents_llm()
+        try:
+            from main import agent_manager
+            if agent_manager:
+                await agent_manager.reload_agents_llm()
+        except ImportError:
+            logger.warning("无法导入agent_manager，跳过智能体LLM重新加载")
         
         logger.info("LLM配置重新加载成功")
         return {"message": "LLM配置重新加载成功"}

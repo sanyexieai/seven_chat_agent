@@ -27,13 +27,30 @@ import {
   FileTextOutlined,
   MessageOutlined,
   ToolOutlined,
-  BranchesOutlined
+  BranchesOutlined,
+  SettingOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
 
 const { TextArea } = Input;
 const { Option } = Select;
 const { Title, Paragraph, Text } = Typography;
+
+interface LLMConfig {
+  id: number;
+  name: string;
+  display_name: string;
+  description?: string;
+  provider: string;
+  model_name: string;
+  api_key?: string;
+  api_base?: string;
+  config?: any;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
 
 interface Agent {
   id: number;
@@ -45,6 +62,8 @@ interface Agent {
   system_prompt?: string;
   bound_tools?: string[];
   flow_config?: any;
+  llm_config_id?: number;
+  llm_config?: LLMConfig;
   created_at: string;
   updated_at: string;
 }
@@ -58,6 +77,7 @@ interface AgentFormData {
   system_prompt?: string;
   bound_tools?: string[];
   flow_config?: any;
+  llm_config_id?: number;
 }
 
 interface MCPTool {
@@ -103,11 +123,13 @@ const AgentsPage: React.FC = () => {
   const [availableTools, setAvailableTools] = useState<string[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [toolTreeData, setToolTreeData] = useState<any[]>([]);
+  const [llmConfigs, setLlmConfigs] = useState<LLMConfig[]>([]);
 
   useEffect(() => {
     fetchAgents();
     fetchAvailableTools();
     fetchMCPServers();
+    fetchLLMConfigs();
   }, []);
 
   const fetchAgents = async () => {
@@ -184,6 +206,16 @@ const AgentsPage: React.FC = () => {
     }
   };
 
+  const fetchLLMConfigs = async () => {
+    try {
+      const response = await axios.get('/api/llm-config/');
+      setLlmConfigs(response.data || []);
+    } catch (error) {
+      console.error('获取LLM配置失败:', error);
+      message.error('获取LLM配置失败');
+    }
+  };
+
   // 将树选择的值转换为工具名称数组
   const convertTreeValuesToToolNames = (treeValues: string[]): string[] => {
     const toolNames: string[] = [];
@@ -224,16 +256,8 @@ const AgentsPage: React.FC = () => {
 
   const getAgentIcon = (agentType: string) => {
     switch (agentType) {
-      case 'chat':
-        return <MessageOutlined />;
-      case 'search':
-        return <SearchOutlined />;
-      case 'report':
-        return <FileTextOutlined />;
-      case 'prompt_driven':
+      case 'general':
         return <RobotOutlined />;
-      case 'tool_driven':
-        return <ToolOutlined />;
       case 'flow_driven':
         return <BranchesOutlined />;
       default:
@@ -243,18 +267,10 @@ const AgentsPage: React.FC = () => {
 
   const getAgentTypeLabel = (agentType: string) => {
     switch (agentType) {
-      case 'chat':
-        return '聊天智能体';
-      case 'search':
-        return '搜索智能体';
-      case 'report':
-        return '报告智能体';
-      case 'prompt_driven':
-        return '提示词驱动';
-      case 'tool_driven':
-        return '工具驱动';
+      case 'general':
+        return '通用智能体';
       case 'flow_driven':
-        return '流程图驱动';
+        return '流程图智能体';
       default:
         return agentType;
     }
@@ -262,18 +278,10 @@ const AgentsPage: React.FC = () => {
 
   const getAgentTypeColor = (agentType: string) => {
     switch (agentType) {
-      case 'chat':
+      case 'general':
         return 'blue';
-      case 'search':
-        return 'green';
-      case 'report':
-        return 'orange';
-      case 'prompt_driven':
-        return 'cyan';
-      case 'tool_driven':
-        return 'purple';
       case 'flow_driven':
-        return 'magenta';
+        return 'purple';
       default:
         return 'default';
     }
@@ -281,8 +289,8 @@ const AgentsPage: React.FC = () => {
 
   const handleCreateAgent = async (values: AgentFormData) => {
     try {
-      // 如果是工具驱动智能体，需要转换树选择的值
-      if (values.agent_type === 'tool_driven' && values.bound_tools) {
+      // 如果是通用智能体，需要转换树选择的值
+      if (values.agent_type === 'general' && values.bound_tools) {
         values.bound_tools = convertTreeValuesToToolNames(values.bound_tools);
       }
       
@@ -301,8 +309,8 @@ const AgentsPage: React.FC = () => {
     if (!selectedAgent) return;
 
     try {
-      // 如果是工具驱动智能体，需要转换树选择的值
-      if (values.agent_type === 'tool_driven' && values.bound_tools) {
+      // 如果是通用智能体，需要转换树选择的值
+      if (values.agent_type === 'general' && values.bound_tools) {
         values.bound_tools = convertTreeValuesToToolNames(values.bound_tools);
       }
       
@@ -331,9 +339,9 @@ const AgentsPage: React.FC = () => {
   const handleEditClick = (agent: Agent) => {
     setSelectedAgent(agent);
     
-    // 如果是工具驱动智能体，需要转换工具名称为树选择的值
+    // 如果是通用智能体，需要转换工具名称为树选择的值
     let boundTools = agent.bound_tools;
-    if (agent.agent_type === 'tool_driven' && agent.bound_tools) {
+    if (agent.agent_type === 'general' && agent.bound_tools) {
       boundTools = convertToolNamesToTreeValues(agent.bound_tools);
     }
     
@@ -345,7 +353,8 @@ const AgentsPage: React.FC = () => {
       is_active: agent.is_active,
       system_prompt: agent.system_prompt,
       bound_tools: boundTools,
-      flow_config: agent.flow_config
+      flow_config: agent.flow_config,
+      llm_config_id: agent.llm_config_id
     });
     setEditModalVisible(true);
   };
@@ -386,12 +395,8 @@ const AgentsPage: React.FC = () => {
         rules={[{ required: true, message: '请选择智能体类型' }]}
       >
         <Select placeholder="选择智能体类型">
-          <Option value="chat">聊天智能体</Option>
-          <Option value="search">搜索智能体</Option>
-          <Option value="report">报告智能体</Option>
-          <Option value="prompt_driven">提示词驱动</Option>
-          <Option value="tool_driven">工具驱动</Option>
-          <Option value="flow_driven">流程图驱动</Option>
+          <Option value="general">通用智能体</Option>
+          <Option value="flow_driven">流程图智能体</Option>
         </Select>
       </Form.Item>
 
@@ -404,6 +409,25 @@ const AgentsPage: React.FC = () => {
       </Form.Item>
 
       <Form.Item
+        name="llm_config_id"
+        label="LLM配置"
+        extra="选择智能体使用的LLM配置，如果不选择则使用全局默认配置"
+      >
+        <Select placeholder="选择LLM配置（可选）" allowClear>
+          {llmConfigs.map(config => (
+                          <Option key={config.id} value={config.id}>
+                <Space>
+                  {config.display_name}
+                  <Tag color="blue">{config.provider}</Tag>
+                  <Tag color="green">{config.model_name}</Tag>
+                  {config.is_default && <Tag color="orange">默认</Tag>}
+                </Space>
+              </Option>
+          ))}
+        </Select>
+      </Form.Item>
+
+      <Form.Item
         noStyle
         shouldUpdate={(prevValues, currentValues) => prevValues.agent_type !== currentValues.agent_type}
       >
@@ -412,45 +436,46 @@ const AgentsPage: React.FC = () => {
 
           return (
             <>
-              {agentType === 'prompt_driven' && (
-                <Form.Item
-                  name="system_prompt"
-                  label="系统提示词"
-                  rules={[{ required: true, message: '请输入系统提示词' }]}
-                >
-                  <TextArea
-                    rows={6}
-                    placeholder="输入系统提示词，定义智能体的行为和能力..."
-                  />
-                </Form.Item>
-              )}
+              {agentType === 'general' && (
+                <>
+                  <Form.Item
+                    name="system_prompt"
+                    label="系统提示词"
+                    rules={[{ required: true, message: '请输入系统提示词' }]}
+                  >
+                    <TextArea
+                      rows={6}
+                      placeholder="输入系统提示词，定义智能体的行为和能力..."
+                    />
+                  </Form.Item>
 
-              {agentType === 'tool_driven' && (
-                <Form.Item
-                  name="bound_tools"
-                  label="绑定工具"
-                  rules={[{ required: true, message: '请选择要绑定的工具' }]}
-                >
-                  <TreeSelect
-                    treeData={toolTreeData}
-                    placeholder="选择要绑定的工具"
-                    treeCheckable={true}
-                    showCheckedStrategy={TreeSelect.SHOW_CHILD}
-                    allowClear={true}
-                    style={{ width: '100%' }}
-                    dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
-                    treeDefaultExpandAll={true}
-                    onChange={(value) => {
-                      console.log('TreeSelect onChange:', value);
-                    }}
-                  />
-                </Form.Item>
+                  <Form.Item
+                    name="bound_tools"
+                    label="绑定工具"
+                    extra="选择智能体可以使用的工具（可选）"
+                  >
+                    <TreeSelect
+                      treeData={toolTreeData}
+                      placeholder="选择要绑定的工具"
+                      treeCheckable={true}
+                      showCheckedStrategy={TreeSelect.SHOW_CHILD}
+                      allowClear={true}
+                      style={{ width: '100%' }}
+                      dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+                      treeDefaultExpandAll={true}
+                      onChange={(value) => {
+                        console.log('TreeSelect onChange:', value);
+                      }}
+                    />
+                  </Form.Item>
+                </>
               )}
 
               {agentType === 'flow_driven' && (
                 <Form.Item
                   name="flow_config"
                   label="流程图配置"
+                  extra="配置流程图的节点和连接关系"
                 >
                   <TextArea
                     rows={6}
@@ -471,16 +496,24 @@ const AgentsPage: React.FC = () => {
         <div>
           <Title level={2}>智能体管理</Title>
           <Paragraph>
-            管理和配置各种AI智能体，支持不同类型的智能体创建和配置。
+            管理和配置AI智能体，支持通用智能体（可配置提示词、工具、LLM）和流程图智能体（可配置各种节点）。
           </Paragraph>
         </div>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => setCreateModalVisible(true)}
-        >
-          创建智能体
-        </Button>
+        <Space>
+          <Button
+            icon={<SettingOutlined />}
+            onClick={() => window.location.href = '/llm-config'}
+          >
+            LLM配置管理
+          </Button>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setCreateModalVisible(true)}
+          >
+            创建智能体
+          </Button>
+        </Space>
       </div>
 
       <Row gutter={[24, 24]}>
@@ -526,6 +559,14 @@ const AgentsPage: React.FC = () => {
               <div style={{ marginTop: 16 }}>
                 <Text type="secondary">名称: {agent.name}</Text>
                 <br />
+                {agent.llm_config && (
+                  <>
+                    <Text type="secondary">LLM: {agent.llm_config.display_name}</Text>
+                    <br />
+                    <Text type="secondary">模型: {agent.llm_config.provider}/{agent.llm_config.model_name}</Text>
+                    <br />
+                  </>
+                )}
                 <Text type="secondary">创建时间: {new Date(agent.created_at).toLocaleString()}</Text>
               </div>
             </Card>

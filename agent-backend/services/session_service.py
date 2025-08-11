@@ -10,82 +10,134 @@ logger = get_logger("session_service")
 class SessionService:
     """会话服务"""
     
-    def __init__(self, db: Session):
-        self.db = db
-    
-    def create_session(self, user_id: str, agent_id: int) -> UserSession:
+    @staticmethod
+    def create_session(db: Session, session_data: SessionCreate) -> UserSession:
         """创建会话"""
         session_id = str(uuid.uuid4())
         session = UserSession(
             session_id=session_id,
-            user_id=user_id,
-            agent_id=agent_id,
+            user_id=session_data.user_id,
+            agent_id=session_data.agent_id,
             is_active=True
         )
-        self.db.add(session)
-        self.db.commit()
-        self.db.refresh(session)
+        db.add(session)
+        db.commit()
+        db.refresh(session)
         logger.info(f"创建会话: {session_id}")
         return session
     
-    def get_session(self, session_id: str) -> Optional[UserSession]:
-        """获取会话"""
-        return self.db.query(UserSession).filter(
-            UserSession.session_id == session_id,
+    @staticmethod
+    def get_session_by_id(db: Session, session_id: int) -> Optional[UserSession]:
+        """根据ID获取会话"""
+        return db.query(UserSession).filter(
+            UserSession.id == session_id,
             UserSession.is_active == True
         ).first()
     
-    def get_user_sessions(self, user_id: str) -> List[UserSession]:
+    @staticmethod
+    def get_user_sessions(db: Session, user_id: str) -> List[UserSession]:
         """获取用户的所有会话"""
-        return self.db.query(UserSession).filter(
+        return db.query(UserSession).filter(
             UserSession.user_id == user_id,
             UserSession.is_active == True
         ).all()
     
-    def deactivate_session(self, session_id: str) -> bool:
-        """停用会话"""
-        session = self.get_session(session_id)
+    @staticmethod
+    def update_session_title(db: Session, session_id: int, title: str) -> Optional[UserSession]:
+        """更新会话标题"""
+        session = db.query(UserSession).filter(UserSession.id == session_id).first()
+        if session:
+            session.title = title
+            db.commit()
+            db.refresh(session)
+            logger.info(f"更新会话标题: {session_id}")
+            return session
+        return None
+    
+    @staticmethod
+    def delete_session(db: Session, session_id: int) -> bool:
+        """删除会话"""
+        session = db.query(UserSession).filter(UserSession.id == session_id).first()
         if session:
             session.is_active = False
-            self.db.commit()
-            logger.info(f"停用会话: {session_id}")
+            db.commit()
+            logger.info(f"删除会话: {session_id}")
             return True
         return False
 
 class MessageService:
     """消息服务"""
     
-    def __init__(self, db: Session):
-        self.db = db
-    
-    def create_message(self, session_id: str, user_id: str, message_type: str, 
-                      content: str, agent_name: Optional[str] = None, 
-                      metadata: Optional[dict] = None) -> ChatMessage:
+    @staticmethod
+    def create_message(db: Session, message_data: MessageCreate) -> 'MessageResponse':
         """创建消息"""
         message_id = str(uuid.uuid4())
         message = ChatMessage(
             message_id=message_id,
-            session_id=session_id,
-            user_id=user_id,
-            message_type=message_type,
-            content=content,
-            agent_name=agent_name,
-            message_metadata=metadata
+            session_id=message_data.session_id,
+            user_id=message_data.user_id,
+            message_type=message_data.message_type,
+            content=message_data.content,
+            agent_name=message_data.agent_name,
+            message_metadata=message_data.metadata
         )
-        self.db.add(message)
-        self.db.commit()
-        self.db.refresh(message)
+        db.add(message)
+        db.commit()
+        db.refresh(message)
         logger.info(f"创建消息: {message_id}")
-        return message
+        
+        # 返回Pydantic模型而不是数据库模型
+        from models.database_models import MessageResponse
+        return MessageResponse(
+            id=message.id,
+            message_id=message.message_id,
+            session_id=message.session_id,
+            user_id=message.user_id,
+            message_type=message.message_type,
+            content=message.content,
+            agent_name=message.agent_name,
+            metadata=message.message_metadata,
+            created_at=message.created_at
+        )
     
-    def get_session_messages(self, session_id: str) -> List[ChatMessage]:
+    @staticmethod
+    def get_session_messages(db: Session, session_id: int, limit: int = 100) -> List['MessageResponse']:
         """获取会话的所有消息"""
-        return self.db.query(ChatMessage).filter(
+        messages = db.query(ChatMessage).filter(
             ChatMessage.session_id == session_id
-        ).order_by(ChatMessage.created_at).all()
+        ).order_by(ChatMessage.created_at).limit(limit).all()
+        
+        # 转换为Pydantic模型
+        from models.database_models import MessageResponse
+        result = []
+        for message in messages:
+            result.append(MessageResponse(
+                id=message.id,
+                message_id=message.message_id,
+                session_id=message.session_id,
+                user_id=message.user_id,
+                message_type=message.message_type,
+                content=message.content,
+                agent_name=message.agent_name,
+                metadata=message.message_metadata,
+                created_at=message.created_at
+            ))
+        return result
     
-    def get_message(self, message_id: str) -> Optional[ChatMessage]:
+    @staticmethod
+    def get_message(db: Session, message_id: str) -> Optional[ChatMessage]:
         """获取消息"""
-        return self.db.query(ChatMessage).filter(
+        return db.query(ChatMessage).filter(
             ChatMessage.message_id == message_id
-        ).first() 
+        ).first()
+    
+    @staticmethod
+    def delete_message(db: Session, message_id: str) -> bool:
+        """删除消息"""
+        message = db.query(ChatMessage).filter(ChatMessage.message_id == message_id).first()
+        if message:
+            db.delete(message)
+            db.commit()
+            logger.info(f"删除消息: {message_id}")
+            return True
+        return False 

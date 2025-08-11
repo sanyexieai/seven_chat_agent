@@ -16,6 +16,9 @@ from api.sessions import router as sessions_router
 from api.chat import router as chat_router
 from api.mcp import router as mcp_router
 from api.flows import router as flows_router
+from api.llm_config import router as llm_config_router
+from api.knowledge_base import router as knowledge_base_router
+from api.tools import router as tools_router
 
 # 导入数据库和智能体管理器
 from database.database import engine, Base, get_db, SessionLocal
@@ -79,6 +82,9 @@ app.include_router(sessions_router)
 app.include_router(chat_router)
 app.include_router(mcp_router)
 app.include_router(flows_router)
+app.include_router(llm_config_router)
+app.include_router(knowledge_base_router)
+app.include_router(tools_router)
 
 @app.get("/")
 async def root():

@@ -38,8 +38,11 @@ const ChatPage: React.FC = () => {
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(false);
   const [sessionCreated, setSessionCreated] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
+  // 在开发环境下绕过前端代理，直接连后端，避免SSE被代理缓存/缓冲
+  const apiBase = (window.location.port === '3000') ? 'http://localhost:8000' : '';
 
   // 处理sessionId变化
   useEffect(() => {
@@ -52,9 +55,9 @@ const ChatPage: React.FC = () => {
         title: '新对话',
         agent: {
           id: 1,
-          name: 'chat_agent',
+          name: 'general_agent',
           display_name: 'AI助手',
-          description: '通用聊天智能体'
+          description: '通用智能体'
         }
       });
       setMessages([]);
@@ -135,7 +138,7 @@ const ChatPage: React.FC = () => {
         },
         body: JSON.stringify({
           user_id: 'default',
-          agent_id: currentSession?.agent.id || 1,
+          agent_id: currentSession?.agent?.id || 1,
           title: title,
         }),
       });
@@ -150,7 +153,7 @@ const ChatPage: React.FC = () => {
         } : null);
         setSessionCreated(true);
         // 更新URL以反映新的会话ID
-        navigate(`/chat/${session.id}`);
+        navigate(`/chat/${session.id}`, { replace: true });
         return session;
       }
     } catch (error) {
@@ -187,52 +190,191 @@ const ChatPage: React.FC = () => {
       if (!sessionCreated && !sessionId) {
         const title = extractTitleFromMessage(inputValue);
         const session = await createSession(title);
-        sessionId = session?.id;
+        if (session) {
+          sessionId = session.id;
+          // 更新当前会话信息
+          setCurrentSession(prev => prev ? {
+            ...prev,
+            id: session.id,
+            session_id: session.session_id,
+            created_at: session.created_at
+          } : null);
+        }
       }
 
       // 保存用户消息到数据库
       if (sessionId) {
-        await fetch(`/api/sessions/${sessionId}/messages`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            session_id: sessionId,
-            type: 'user',
+        try {
+          await fetch(`/api/sessions/${sessionId}/messages`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+                      body: JSON.stringify({
+            session_id: sessionId.toString(),
+            user_id: 'default',
+            message_type: 'user',
             content: inputValue,
           }),
-        });
+          });
+        } catch (error) {
+          console.error('保存用户消息失败:', error);
+        }
       }
 
-      // 发送消息给智能体
-      const response = await sendMessage(inputValue, currentSession?.agent.name || 'chat_agent');
-      
+      // 创建智能体消息占位符
+      const agentMessageId = (Date.now() + 1).toString();
       const agentMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: response.message,
+        id: agentMessageId,
+        content: '正在思考...',  // 添加初始内容
         type: 'agent',
         timestamp: new Date(),
-        agentName: currentSession?.agent.display_name
+        agentName: currentSession?.agent?.display_name || 'AI助手'
       };
 
-      // 保存智能体消息到数据库
-      if (sessionId) {
-        await fetch(`/api/sessions/${sessionId}/messages`, {
+      console.log('创建智能体消息:', agentMessage);
+      setMessages(prev => {
+        const newMessages = [...prev, agentMessage];
+        console.log('添加消息后的消息列表:', newMessages);
+        return newMessages;
+      });
+
+      // 使用流式API获取响应
+      const agentName = currentSession?.agent?.name || 'general_agent';
+      try {
+        console.log('开始流式请求...');
+        const response = await fetch(`${apiBase}/api/chat/stream`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
           },
           body: JSON.stringify({
-            session_id: sessionId,
-            type: 'agent',
-            content: response.message,
-            agent_name: currentSession?.agent.name,
+            user_id: 'default',
+            message: inputValue,
+            agent_type: agentName,
+            context: {}
           }),
         });
-      }
 
-      setMessages(prev => [...prev, agentMessage]);
+        console.log('流式响应状态:', response.status, response.statusText);
+        console.log('响应头:', Object.fromEntries(response.headers.entries()));
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('无法获取响应流');
+        }
+
+        let fullContent = '';
+        const decoder = new TextDecoder(undefined, { fatal: false });
+
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          buffer += chunk;
+          
+          // 处理完整的行
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // 保留最后一个不完整的行
+          
+          for (const line of lines) {
+            if (line.trim() && line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                console.log('收到流式数据:', data); // 调试日志
+                
+                if (data.type === 'content' && data.content) {
+                  fullContent += data.content;
+                  console.log('收到内容块:', data.content, '累积内容:', fullContent);
+                  
+                  // 实时更新消息内容 - 使用函数式更新确保状态正确
+                  setMessages(prev => {
+                    const newMessages = prev.map(msg => 
+                      msg.id === agentMessageId 
+                        ? { ...msg, content: fullContent }
+                        : msg
+                    );
+                    console.log('更新后的消息列表:', newMessages);
+                    return newMessages;
+                  });
+                  
+                  // 立即滚动到底部，显示最新内容（关闭平滑滚动以减少抖动）
+                  if (messagesEndRef.current) {
+                    messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
+                  }
+                  
+                  // 去掉提示弹窗，减少抖动
+                  // console.info('AI开始回复...');
+                  
+                  // console.log('实时更新内容完成，当前长度:', fullContent.length);
+                  
+                } else if (data.type === 'done') {
+                  // 流式响应完成
+                  // console.log('流式响应完成，使用的工具:', data.tools_used);
+                  // 去掉成功弹窗，减少抖动
+                  
+                } else if (data.error) {
+                  // 处理错误
+                  setMessages(prev => prev.map(msg => 
+                    msg.id === agentMessageId 
+                      ? { ...msg, content: `错误: ${data.error}` }
+                      : msg
+                  ));
+                  // 保留错误，但不弹窗
+                  console.error('流式响应错误:', data.error);
+                }
+              } catch (e) {
+                console.error('解析流式数据失败:', e, line);
+              }
+            }
+          }
+        }
+
+        // 保存完整的智能体消息到数据库
+        if (sessionId && fullContent) {
+          await fetch(`/api/sessions/${sessionId}/messages`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              session_id: sessionId.toString(),
+              user_id: 'default',
+              message_type: 'agent',
+              content: fullContent,
+              agent_name: currentSession?.agent?.name || 'general_agent',
+            }),
+          });
+        }
+
+      } catch (error) {
+        console.error('流式请求失败:', error);
+        // 如果流式请求失败，回退到普通请求
+        try {
+          const response = await sendMessage(inputValue, agentName);
+          setMessages(prev => prev.map(msg => 
+            msg.id === agentMessageId 
+              ? { ...msg, content: response.message }
+              : msg
+          ));
+        } catch (fallbackError) {
+          console.error('回退请求也失败:', fallbackError);
+          setMessages(prev => prev.map(msg => 
+            msg.id === agentMessageId 
+              ? { ...msg, content: '抱歉，处理您的消息时出现了问题，请稍后重试。' }
+              : msg
+          ));
+        }
+      }
     } catch (error) {
       console.error('发送消息失败:', error);
       const errorMessage: Message = {
@@ -250,6 +392,107 @@ const ChatPage: React.FC = () => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  };
+
+  // 测试流式功能
+  const testStream = async () => {
+    console.log('测试流式按钮被点击了！'); // 添加这行来确认按钮被点击
+    
+    try {
+      // 先测试一个简单的GET请求
+      console.log('开始测试流式功能...');
+      
+      // 测试1: 简单的GET请求
+      console.log('测试1: 发送GET请求到 /api/chat/test-stream');
+      const response = await fetch(`${apiBase}/api/chat/test-stream`, { headers: { 'Accept': 'text/event-stream', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' } });
+      
+      console.log('收到响应:', response);
+      console.log('响应状态:', response.status, response.statusText);
+      console.log('响应头:', Object.fromEntries(response.headers.entries()));
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      // 测试2: 检查响应类型
+      const contentType = response.headers.get('content-type');
+      console.log('响应类型:', contentType);
+      
+      if (!contentType || !contentType.includes('text/event-stream')) {
+        console.warn('响应类型不是text/event-stream:', contentType);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('无法获取响应流');
+      }
+
+      console.log('开始读取流式数据...');
+      let fullContent = '';
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          console.log('流式读取完成');
+          break;
+        }
+
+        const chunk = decoder.decode(value);
+        console.log('收到原始数据块:', chunk);
+        buffer += chunk;
+        
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          if (line.trim() && line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              console.log('解析的流式数据:', data);
+              
+              if (data.type === 'content' && data.content) {
+                fullContent += data.content;
+                console.log('累积内容:', fullContent);
+              } else if (data.type === 'done') {
+                console.log('测试流式完成');
+              }
+            } catch (e) {
+              console.error('解析测试流式数据失败:', e, line);
+            }
+          }
+        }
+      }
+      
+      console.log('测试完成，总内容:', fullContent);
+      message.success('流式测试完成！');
+    } catch (error: any) {
+      console.error('测试流式功能失败:', error);
+      // 显示错误信息给用户
+      message.error(`测试失败: ${error.message || '未知错误'}`);
+    }
+  };
+
+  // 简单测试函数：实际发起网络请求便于在Network中观察
+  const simpleTest = async () => {
+    console.log('简单测试按钮被点击了！');
+    try {
+      const resp = await fetch('/api/chat/test-stream', {
+        method: 'GET',
+        headers: { 'Accept': 'text/event-stream' },
+        cache: 'no-store'
+      });
+      console.log('简单测试响应状态:', resp.status, resp.statusText);
+      console.log('简单测试响应头:', Object.fromEntries(resp.headers.entries()));
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      message.success(`简单测试请求已发送，状态 ${resp.status}`);
+    } catch (e: any) {
+      console.error('简单测试请求失败:', e);
+      message.error(`简单测试失败: ${e?.message || '未知错误'}`);
     }
   };
 
@@ -271,7 +514,7 @@ const ChatPage: React.FC = () => {
           <div className="header-left">
             <Avatar icon={<RobotOutlined />} />
             <div className="header-info">
-              <Text strong>{currentSession?.agent.display_name || 'AI助手'}</Text>
+              <Text strong>{currentSession?.agent?.display_name || 'AI助手'}</Text>
               <Text type="secondary" className="status-text">
                 {currentSession?.title || '新对话'} • {isConnected ? '在线' : '离线'}
               </Text>
@@ -348,15 +591,32 @@ const ChatPage: React.FC = () => {
               autoSize={{ minRows: 1, maxRows: 4 }}
               className="message-input"
             />
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              onClick={handleSend}
-              disabled={!inputValue.trim()}
-              className="send-button"
-            >
-              发送
-            </Button>
+            <div className="button-group">
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                onClick={handleSend}
+                disabled={!inputValue.trim()}
+                className="send-button"
+              >
+                发送
+              </Button>
+              <Button
+                type="default"
+                onClick={testStream}
+                className="test-button"
+              >
+                测试流式
+              </Button>
+              <Button
+                type="dashed"
+                onClick={simpleTest}
+                className="simple-test-button"
+              >
+                简单测试
+              </Button>
+
+            </div>
           </div>
         </div>
       </div>

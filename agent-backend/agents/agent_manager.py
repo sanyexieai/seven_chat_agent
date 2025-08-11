@@ -325,53 +325,46 @@ class AgentManager:
             
             for db_agent in db_agents:
                 # 根据智能体类型创建相应的智能体实例
-                if db_agent.agent_type == "chat":
-                    agent = ChatAgent(db_agent.name, db_agent.display_name)
-                elif db_agent.agent_type == "search":
-                    agent = SearchAgent(db_agent.name, db_agent.display_name)
-                elif db_agent.agent_type == "report":
-                    agent = ReportAgent(db_agent.name, db_agent.display_name)
-                elif db_agent.agent_type == "prompt_driven":
-                    # 纯提示词驱动智能体
+                if db_agent.agent_type == "general":
+                    # 通用智能体（可配置提示词、工具、LLM）
                     system_prompt = db_agent.system_prompt
-                    logger.info(f"加载提示词驱动智能体 {db_agent.name}，系统提示词: {system_prompt}")
-                    agent = PromptDrivenAgent(db_agent.name, db_agent.display_name, system_prompt)
-                elif db_agent.agent_type == "tool_driven":
-                    # 纯工具驱动智能体
-                    bound_tools = db_agent.bound_tools or []
-                    logger.info(f"创建工具驱动智能体 {db_agent.name}，绑定工具: {bound_tools}")
-                    logger.info(f"绑定工具类型: {type(bound_tools)}")
-                    logger.info(f"绑定工具原始值: {db_agent.bound_tools}")
-                    if bound_tools:
-                        logger.info(f"绑定工具列表长度: {len(bound_tools)}")
-                        for i, tool in enumerate(bound_tools):
-                            logger.info(f"  工具 {i+1}: {tool} (类型: {type(tool)})")
-                    agent = ToolDrivenAgent(db_agent.name, db_agent.display_name, bound_tools)
+                    logger.info(f"加载通用智能体 {db_agent.name}，系统提示词: {system_prompt}")
+                    
+                    # 获取智能体的LLM配置
+                    llm_config = None
+                    if db_agent.llm_config_id:
+                        from services.agent_service import AgentService
+                        llm_config = AgentService.get_agent_llm_config(db, db_agent.id)
+                        logger.info(f"智能体 {db_agent.name} 使用特定LLM配置: {llm_config.get('provider') if llm_config else 'None'}")
+                    else:
+                        logger.info(f"智能体 {db_agent.name} 使用默认LLM配置")
+                    
+                    agent = PromptDrivenAgent(db_agent.name, db_agent.display_name, system_prompt, llm_config)
                 elif db_agent.agent_type == "flow_driven":
                     # 流程图驱动智能体
                     logger.info(f"加载流程图驱动智能体 {db_agent.name}，流程图: {db_agent.flow_config}")
                     agent = FlowDrivenAgent(db_agent.name, db_agent.display_name, db_agent.flow_config)
                 else:
-                    # 默认使用聊天智能体
-                    agent = ChatAgent(db_agent.name, db_agent.display_name)
+                    # 默认使用通用智能体
+                    agent = PromptDrivenAgent(db_agent.name, db_agent.display_name, "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")
                 
                 # 设置智能体配置
                 if db_agent.config:
                     agent.config = db_agent.config
                 
-                # 设置MCP助手（只对需要MCP的智能体）
+                # 设置MCP助手（通用智能体可以绑定工具，需要MCP助手）
                 if self.mcp_helper:
-                    if db_agent.agent_type == "tool_driven":
-                        # 工具驱动智能体需要MCP助手
+                    if db_agent.agent_type == "general" and db_agent.bound_tools:
+                        # 通用智能体如果绑定了工具，需要MCP助手
                         agent.mcp_helper = self.mcp_helper
-                        logger.info(f"工具驱动智能体 {db_agent.name} 设置MCP助手")
-                    elif db_agent.agent_type in ["chat", "search", "report"]:
-                        # 传统智能体也需要MCP助手（向后兼容）
+                        logger.info(f"通用智能体 {db_agent.name} 绑定了工具，设置MCP助手")
+                    elif db_agent.agent_type == "flow_driven":
+                        # 流程图智能体可能需要MCP助手
                         agent.mcp_helper = self.mcp_helper
-                        logger.info(f"传统智能体 {db_agent.name} 设置MCP助手")
+                        logger.info(f"流程图智能体 {db_agent.name} 设置MCP助手")
                     else:
-                        # 提示词驱动智能体不需要MCP助手
-                        logger.info(f"提示词驱动智能体 {db_agent.name} 不设置MCP助手")
+                        # 其他情况不设置MCP助手
+                        logger.info(f"智能体 {db_agent.name} 不设置MCP助手")
                 
                 self.agents[db_agent.name] = agent
                 logger.info(f"加载智能体: {db_agent.name} ({db_agent.display_name}) - 类型: {db_agent.agent_type}")
@@ -387,28 +380,19 @@ class AgentManager:
     
     async def _create_fallback_agents(self):
         """创建默认智能体（备用方案）"""
-        # 聊天智能体
-        chat_agent = ChatAgent("chat_agent", "通用聊天智能体")
+        # 通用智能体
+        general_agent = PromptDrivenAgent("general_agent", "通用智能体", "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")
         if self.mcp_helper:
-            chat_agent.mcp_helper = self.mcp_helper
-        self.agents["chat_agent"] = chat_agent
+            general_agent.mcp_helper = self.mcp_helper
+        self.agents["general_agent"] = general_agent
         
-        # 搜索智能体
-        search_agent = SearchAgent("search_agent", "搜索和信息检索智能体")
+        # 流程图智能体
+        flow_agent = FlowDrivenAgent("flow_agent", "流程图智能体", {})
         if self.mcp_helper:
-            search_agent.mcp_helper = self.mcp_helper
-        self.agents["search_agent"] = search_agent
+            flow_agent.mcp_helper = self.mcp_helper
+        self.agents["flow_agent"] = flow_agent
         
-        # 报告智能体
-        report_agent = ReportAgent("report_agent", "报告生成智能体")
-        if self.mcp_helper:
-            report_agent.mcp_helper = self.mcp_helper
-        self.agents["report_agent"] = report_agent
-        
-        # 提示词驱动智能体（不需要MCP助手）
-        prompt_agent = PromptDrivenAgent("prompt_agent", "提示词驱动智能体")
-        self.agents["prompt_agent"] = prompt_agent
-        logger.info("创建提示词驱动智能体，不设置MCP助手")
+        logger.info("创建默认智能体完成")
         
         # 工具驱动智能体（需要MCP助手）
         tool_agent = ToolDrivenAgent("tool_agent", "工具驱动智能体", ["web_search", "file_search"])
@@ -774,4 +758,24 @@ class AgentManager:
                 except Exception as e:
                     logger.error(f"重新初始化智能体 {agent_name} 的LLM助手失败: {str(e)}")
         
-        logger.info("所有智能体的LLM配置重新加载完成") 
+        logger.info("所有智能体的LLM配置重新加载完成")
+    
+    def get_agent_llm_config(self, agent_name: str) -> Optional[Dict[str, Any]]:
+        """获取智能体的LLM配置"""
+        from services.agent_service import AgentService
+        
+        db = SessionLocal()
+        try:
+            # 获取智能体
+            agent = self.get_agent_by_name(agent_name)
+            if not agent:
+                return None
+            
+            # 获取智能体的LLM配置
+            llm_config = AgentService.get_agent_llm_config(db, agent.id)
+            return llm_config
+        except Exception as e:
+            logger.error(f"获取智能体 {agent_name} 的LLM配置失败: {str(e)}")
+            return None
+        finally:
+            db.close() 

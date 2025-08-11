@@ -56,28 +56,21 @@ async def create_agent(
             from main import agent_manager
             if agent_manager:
                 # 根据智能体类型创建相应的智能体实例
-                if agent_data.agent_type == "chat":
-                    from agents.chat_agent import ChatAgent
-                    chat_agent = ChatAgent(agent.name, agent.display_name)
-                    agent_manager.agents[agent.name] = chat_agent
-                elif agent_data.agent_type == "search":
-                    from agents.search_agent import SearchAgent
-                    search_agent = SearchAgent(agent.name, agent.display_name)
-                    agent_manager.agents[agent.name] = search_agent
-                elif agent_data.agent_type == "report":
-                    from agents.report_agent import ReportAgent
-                    report_agent = ReportAgent(agent.name, agent.display_name)
-                    agent_manager.agents[agent.name] = report_agent
-                elif agent_data.agent_type == "prompt_driven":
+                if agent_data.agent_type == "general":
                     from agents.prompt_driven_agent import PromptDrivenAgent
                     system_prompt = agent_data.system_prompt or ""
-                    prompt_agent = PromptDrivenAgent(agent.name, agent.display_name, system_prompt)
+                    
+                    # 获取智能体的LLM配置
+                    llm_config = None
+                    if agent_data.llm_config_id:
+                        from services.agent_service import AgentService
+                        llm_config = AgentService.get_agent_llm_config(db, agent.id)
+                        logger.info(f"智能体 {agent.name} 使用特定LLM配置: {llm_config.get('provider') if llm_config else 'None'}")
+                    else:
+                        logger.info(f"智能体 {agent.name} 使用默认LLM配置")
+                    
+                    prompt_agent = PromptDrivenAgent(agent.name, agent.display_name, system_prompt, llm_config)
                     agent_manager.agents[agent.name] = prompt_agent
-                elif agent_data.agent_type == "tool_driven":
-                    from agents.tool_driven_agent import ToolDrivenAgent
-                    bound_tools = agent_data.bound_tools or []
-                    tool_agent = ToolDrivenAgent(agent.name, agent.display_name, bound_tools)
-                    agent_manager.agents[agent.name] = tool_agent
                 elif agent_data.agent_type == "flow_driven":
                     from agents.flow_driven_agent import FlowDrivenAgent
                     flow_config = agent_data.flow_config or {}
@@ -233,4 +226,21 @@ async def reload_agents():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"重新加载智能体失败: {str(e)}"
-        ) 
+        )
+
+@router.get("/{agent_id}/llm-config")
+async def get_agent_llm_config(
+    agent_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取智能体的LLM配置"""
+    try:
+        llm_config = AgentService.get_agent_llm_config(db, agent_id)
+        if not llm_config:
+            raise HTTPException(status_code=404, detail="智能体LLM配置不存在")
+        return llm_config
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取智能体LLM配置失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取智能体LLM配置失败") 

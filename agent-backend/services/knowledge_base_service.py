@@ -130,17 +130,15 @@ class KnowledgeBaseService:
             doc_id = str(uuid.uuid4())
             
             # 保存文件到本地（如果有文件内容）
-            file_path = None
             if doc_data.content:
-                file_path = self._save_document_file(doc_data)
+                self._save_document_file(doc_data)
             
             doc = Document(
                 knowledge_base_id=doc_data.knowledge_base_id,
                 name=doc_data.name,
-                file_path=file_path,
                 file_type=doc_data.file_type,
                 content=doc_data.content,
-                doc_metadata=doc_data.doc_metadata,
+                document_metadata=doc_data.document_metadata,
                 status="pending"
             )
             
@@ -201,10 +199,6 @@ class KnowledgeBaseService:
             if not doc:
                 return False
             
-            # 删除文件
-            if doc.file_path and os.path.exists(doc.file_path):
-                os.remove(doc.file_path)
-            
             # 删除分块
             db.query(DocumentChunk).filter(DocumentChunk.document_id == doc_id).delete()
             
@@ -249,7 +243,8 @@ class KnowledgeBaseService:
             similarities = []
             for chunk in chunks:
                 if chunk.embedding:
-                    chunk_embedding = json.loads(chunk.embedding)
+                    # embedding字段已经是列表格式，不需要json.loads
+                    chunk_embedding = chunk.embedding if isinstance(chunk.embedding, list) else json.loads(chunk.embedding)
                     similarity = self.embedding_service.calculate_similarity(
                         query_embedding, chunk_embedding
                     )
@@ -334,7 +329,7 @@ class KnowledgeBaseService:
                     document_id=doc.id,
                     chunk_index=i,
                     content=chunk_content,
-                    embedding=json.dumps(embedding),
+                    embedding=embedding,
                     chunk_metadata={"chunk_size": len(chunk_content)}
                 )
                 db.add(chunk)

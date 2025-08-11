@@ -1,5 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, List, Avatar, Typography, Button, Modal, Form, Input, Select, Divider, Drawer } from 'antd';
+import { 
+  Layout, 
+  Menu, 
+  List, 
+  Avatar, 
+  Typography, 
+  Button, 
+  Modal, 
+  Form, 
+  Input, 
+  Select, 
+  Divider, 
+  Drawer
+} from 'antd';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   MessageOutlined,
@@ -12,6 +25,8 @@ import {
   SearchOutlined,
   MenuOutlined,
   ApiOutlined,
+  ToolOutlined,
+  BranchesOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -209,21 +224,38 @@ const Sidebar: React.FC = () => {
             right: '16px',
             backgroundColor: '#001529'
           }}>
-            <Button
-              type="text"
-              icon={<SettingOutlined />}
-              style={{ 
-                color: 'white', 
-                width: '100%',
-                textAlign: 'left',
-                height: '40px',
-                border: '1px solid #303030',
-                borderRadius: '4px'
-              }}
-              onClick={() => setIsSettingsDrawerVisible(true)}
-            >
-              设置
-            </Button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+              <Button
+                type="text"
+                icon={<MessageOutlined />}
+                style={{ 
+                  color: 'white', 
+                  width: '100%',
+                  textAlign: 'left',
+                  height: '40px',
+                  border: '1px solid #303030',
+                  borderRadius: '4px'
+                }}
+                onClick={() => navigate('/chat')}
+              >
+                开始聊天
+              </Button>
+              <Button
+                type="text"
+                icon={<SettingOutlined />}
+                style={{ 
+                  color: 'white', 
+                  width: '100%',
+                  textAlign: 'left',
+                  height: '40px',
+                  border: '1px solid #303030',
+                  borderRadius: '4px'
+                }}
+                onClick={() => setIsSettingsDrawerVisible(true)}
+              >
+                设置
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -271,7 +303,7 @@ const Sidebar: React.FC = () => {
       {/* 设置抽屉 */}
       <Drawer
         title="设置"
-        placement="left"
+        placement="right"
         onClose={() => setIsSettingsDrawerVisible(false)}
         open={isSettingsDrawerVisible}
         width={300}
@@ -281,7 +313,7 @@ const Sidebar: React.FC = () => {
           onClick={({ key }) => handleSettingsMenuClick(key)}
           selectedKeys={[location.pathname]}
         >
-          <Menu.Item key="/agents" icon={<SettingOutlined />}>
+          <Menu.Item key="/agent-management" icon={<SettingOutlined />}>
             智能体管理
           </Menu.Item>
           <Menu.Item key="/agent-test" icon={<ExperimentOutlined />}>
@@ -298,6 +330,12 @@ const Sidebar: React.FC = () => {
           </Menu.Item>
           <Menu.Item key="/knowledge-query" icon={<SearchOutlined />}>
             知识库查询
+          </Menu.Item>
+          <Menu.Item key="/tools" icon={<ToolOutlined />}>
+            工具管理
+          </Menu.Item>
+          <Menu.Item key="/flow-editor" icon={<BranchesOutlined />}>
+            流程图编辑器
           </Menu.Item>
         </Menu>
       </Drawer>

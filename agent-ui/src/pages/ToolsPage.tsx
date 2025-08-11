@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Row, Col, Tag, Button, Modal, Descriptions, Select } from 'antd';
+import { Card, Row, Col, Tag, Button, Modal, Descriptions, Select, Typography, Space } from 'antd';
 import { ToolOutlined, SearchOutlined, FileTextOutlined, FileOutlined } from '@ant-design/icons';
 import axios from 'axios';
+
+const { Title, Paragraph } = Typography;
 
 const { Option } = Select;
 
@@ -129,16 +131,28 @@ const ToolsPage: React.FC = () => {
   const categories = ['all', 'search', 'report', 'file'];
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+    <div style={{ padding: '24px' }}>
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
+        marginBottom: '24px',
+        padding: '16px',
+        backgroundColor: '#fff',
+        borderRadius: '8px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+      }}>
         <div>
-          <h2>工具管理</h2>
-          <p>查看和管理可用的工具</p>
+          <Title level={2} style={{ margin: 0 }}>工具管理</Title>
+          <Paragraph style={{ margin: '8px 0 0 0', color: '#666' }}>
+            查看和管理可用的工具
+          </Paragraph>
         </div>
         <Select
           value={selectedCategory}
           onChange={setSelectedCategory}
           style={{ width: 120 }}
+          placeholder="选择类别"
         >
           <Option value="all">全部</Option>
           {categories.filter(cat => cat !== 'all').map(category => (
@@ -149,28 +163,71 @@ const ToolsPage: React.FC = () => {
         </Select>
       </div>
       
-      <Row gutter={[16, 16]} className="tools-grid">
+      <Row gutter={[24, 24]}>
         {filteredTools.map((tool) => (
-          <Col xs={24} sm={12} lg={8} key={tool.name}>
+          <Col xs={24} sm={12} lg={8} xl={6} key={tool.name}>
             <Card
               hoverable
-              className="tool-card"
+              style={{
+                height: '100%',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease',
+                border: '1px solid #f0f0f0'
+              }}
+              bodyStyle={{
+                padding: '20px',
+                textAlign: 'center',
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between'
+              }}
               onClick={() => handleToolClick(tool)}
             >
-              <div style={{ textAlign: 'center', marginBottom: '12px' }}>
+              <div style={{ marginBottom: '16px' }}>
                 <div
-                  className="tool-icon"
-                  style={{ color: getCategoryColor(tool.category) }}
+                  style={{
+                    fontSize: '32px',
+                    color: getCategoryColor(tool.category),
+                    marginBottom: '12px'
+                  }}
                 >
                   {getToolIcon(tool.category)}
                 </div>
+                
+                <div style={{
+                  fontSize: '16px',
+                  fontWeight: 'bold',
+                  color: '#262626',
+                  marginBottom: '8px'
+                }}>
+                  {tool.name}
+                </div>
+                
+                <div style={{
+                  fontSize: '14px',
+                  color: '#666',
+                  lineHeight: '1.5',
+                  marginBottom: '12px'
+                }}>
+                  {tool.description}
+                </div>
               </div>
               
-              <div className="tool-title">{tool.name}</div>
-              <div className="tool-description">{tool.description}</div>
-              
-              <div className="tool-category">
-                {getCategoryName(tool.category)}
+              <div style={{
+                display: 'flex',
+                justifyContent: 'center'
+              }}>
+                <Tag 
+                  color={getCategoryColor(tool.category)}
+                  style={{
+                    fontSize: '12px',
+                    padding: '4px 8px',
+                    borderRadius: '12px'
+                  }}
+                >
+                  {getCategoryName(tool.category)}
+                </Tag>
               </div>
             </Card>
           </Col>
@@ -178,7 +235,12 @@ const ToolsPage: React.FC = () => {
       </Row>
 
       <Modal
-        title="工具详情"
+        title={
+          <Space>
+            <ToolOutlined style={{ color: '#1890ff' }} />
+            工具详情
+          </Space>
+        }
         open={modalVisible}
         onCancel={handleModalClose}
         footer={[
@@ -192,17 +254,31 @@ const ToolsPage: React.FC = () => {
         width={600}
       >
         {selectedTool && (
-          <Descriptions column={1}>
-            <Descriptions.Item label="名称">{selectedTool.name}</Descriptions.Item>
-            <Descriptions.Item label="描述">{selectedTool.description}</Descriptions.Item>
-            <Descriptions.Item label="类别">
+          <Descriptions column={1} bordered>
+            <Descriptions.Item label="名称" span={1}>
+              <strong>{selectedTool.name}</strong>
+            </Descriptions.Item>
+            <Descriptions.Item label="描述" span={1}>
+              {selectedTool.description}
+            </Descriptions.Item>
+            <Descriptions.Item label="类别" span={1}>
               <Tag color={getCategoryColor(selectedTool.category)}>
                 {getCategoryName(selectedTool.category)}
               </Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="参数">
+            <Descriptions.Item label="参数" span={1}>
               {Object.keys(selectedTool.parameters).length > 0 
-                ? JSON.stringify(selectedTool.parameters, null, 2)
+                ? (
+                  <pre style={{
+                    backgroundColor: '#f5f5f5',
+                    padding: '8px',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                    overflow: 'auto'
+                  }}>
+                    {JSON.stringify(selectedTool.parameters, null, 2)}
+                  </pre>
+                )
                 : '无参数'
               }
             </Descriptions.Item>

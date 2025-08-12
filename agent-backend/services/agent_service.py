@@ -5,6 +5,45 @@ from utils.log_helper import get_logger
 
 logger = get_logger("agent_service")
 
+
+def _normalize_bound_tools_for_storage(bound_tools: Optional[List[Any]]) -> Optional[List[Dict[str, Any]]]:
+    """将传入的 bound_tools 统一为对象形式 [{ 'server_name': str, 'name': str }]
+    - 接受 ['server_tool', ...] 或 [{...}] 两种形式
+    - 跳过无效项
+    """
+    if not bound_tools:
+        return bound_tools
+    normalized: List[Dict[str, Any]] = []
+    for item in bound_tools:
+        if isinstance(item, str):
+            if '_' in item:
+                server_name, tool_name = item.split('_', 1)
+                normalized.append({"server_name": server_name, "name": tool_name})
+        elif isinstance(item, dict):
+            server = item.get("server_name") or item.get("server")
+            name = item.get("name") or item.get("tool_name")
+            if server and name:
+                normalized.append({"server_name": server, "name": name})
+        # 其他格式忽略
+    return normalized
+
+
+def _map_bound_tools_for_response(bound_tools: Optional[List[Any]]) -> Optional[List[str]]:
+    """将存储的对象形式映射为 ['server_tool', ...] 字符串数组，兼容旧前端"""
+    if not bound_tools:
+        return bound_tools
+    result: List[str] = []
+    for item in bound_tools:
+        if isinstance(item, dict):
+            server = item.get("server_name") or item.get("server")
+            name = item.get("name") or item.get("tool_name")
+            if server and name:
+                result.append(f"{server}_{name}")
+        elif isinstance(item, str):
+            result.append(item)
+    return result
+
+
 class AgentService:
     """智能体服务"""
     
@@ -16,29 +55,64 @@ class AgentService:
             query = query.filter(Agent.is_active == True)
         
         agents = query.all()
-        return [AgentResponse.model_validate(agent) for agent in agents]
+        responses: List[AgentResponse] = []
+        for agent in agents:
+            resp = AgentResponse.model_validate(agent)
+            # 映射 bound_tools 为字符串列表供前端显示
+            try:
+                mapped = _map_bound_tools_for_response(agent.bound_tools)
+                object.__setattr__(resp, 'bound_tools', mapped)
+            except Exception:
+                pass
+            responses.append(resp)
+        return responses
     
     @staticmethod
     def get_agent_by_id(db: Session, agent_id: int) -> Optional[AgentResponse]:
         """根据ID获取智能体"""
         agent = db.query(Agent).options(joinedload(Agent.llm_config)).filter(Agent.id == agent_id).first()
-        return AgentResponse.model_validate(agent) if agent else None
+        if not agent:
+            return None
+        resp = AgentResponse.model_validate(agent)
+        try:
+            mapped = _map_bound_tools_for_response(agent.bound_tools)
+            object.__setattr__(resp, 'bound_tools', mapped)
+        except Exception:
+            pass
+        return resp
     
     @staticmethod
     def get_agent_by_name(db: Session, name: str) -> Optional[AgentResponse]:
         """根据名称获取智能体"""
         agent = db.query(Agent).options(joinedload(Agent.llm_config)).filter(Agent.name == name).first()
-        return AgentResponse.model_validate(agent) if agent else None
+        if not agent:
+            return None
+        resp = AgentResponse.model_validate(agent)
+        try:
+            mapped = _map_bound_tools_for_response(agent.bound_tools)
+            object.__setattr__(resp, 'bound_tools', mapped)
+        except Exception:
+            pass
+        return resp
     
     @staticmethod
     def create_agent(db: Session, agent_data: AgentCreate) -> AgentResponse:
         """创建智能体"""
-        agent = Agent(**agent_data.dict())
+        payload = agent_data.dict()
+        # 规范化 bound_tools 为对象
+        payload['bound_tools'] = _normalize_bound_tools_for_storage(payload.get('bound_tools'))
+        agent = Agent(**payload)
         db.add(agent)
         db.commit()
         db.refresh(agent)
         logger.info(f"创建智能体: {agent.name}")
-        return AgentResponse.model_validate(agent)
+        resp = AgentResponse.model_validate(agent)
+        try:
+            mapped = _map_bound_tools_for_response(agent.bound_tools)
+            object.__setattr__(resp, 'bound_tools', mapped)
+        except Exception:
+            pass
+        return resp
     
     @staticmethod
     def update_agent(db: Session, agent_id: int, agent_data: AgentUpdate) -> Optional[AgentResponse]:
@@ -46,15 +120,21 @@ class AgentService:
         agent = db.query(Agent).filter(Agent.id == agent_id).first()
         if not agent:
             return None
-        
         update_data = agent_data.dict(exclude_unset=True)
+        if 'bound_tools' in update_data:
+            update_data['bound_tools'] = _normalize_bound_tools_for_storage(update_data.get('bound_tools'))
         for field, value in update_data.items():
             setattr(agent, field, value)
-        
         db.commit()
         db.refresh(agent)
         logger.info(f"更新智能体: {agent.name}")
-        return AgentResponse.model_validate(agent)
+        resp = AgentResponse.model_validate(agent)
+        try:
+            mapped = _map_bound_tools_for_response(agent.bound_tools)
+            object.__setattr__(resp, 'bound_tools', mapped)
+        except Exception:
+            pass
+        return resp
     
     @staticmethod
     def delete_agent(db: Session, agent_id: int) -> bool:

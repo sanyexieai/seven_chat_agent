@@ -63,7 +63,6 @@ async def create_agent(
                     # 获取智能体的LLM配置
                     llm_config = None
                     if agent_data.llm_config_id:
-                        from services.agent_service import AgentService
                         llm_config = AgentService.get_agent_llm_config(db, agent.id)
                         logger.info(f"智能体 {agent.name} 使用特定LLM配置: {llm_config.get('provider') if llm_config else 'None'}")
                     else:
@@ -110,7 +109,6 @@ async def update_agent(
                     # 获取智能体的LLM配置
                     llm_config = None
                     if agent_data.llm_config_id:
-                        from services.agent_service import AgentService
                         llm_config = AgentService.get_agent_llm_config(db, agent.id)
                         logger.info(f"智能体 {agent.name} 使用特定LLM配置: {llm_config.get('provider') if llm_config else 'None'}")
                     else:

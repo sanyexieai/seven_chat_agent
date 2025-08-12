@@ -217,18 +217,15 @@ const AgentsPage: React.FC = () => {
     }
   };
 
-  // 将树选择的值转换为工具名称数组
+  // 将树选择的值转换为工具名称数组（保持服务器名_工具名格式）
   const convertTreeValuesToToolNames = (treeValues: string[]): string[] => {
     const toolNames: string[] = [];
     console.log('转换树选择值:', treeValues);
     
     for (const value of treeValues) {
       if (value.includes('_')) {
-        const parts = value.split('_');
-        if (parts.length >= 2) {
-          const toolName = parts.slice(1).join('_'); // 处理工具名中可能包含下划线的情况
-          toolNames.push(toolName);
-        }
+        // 保持完整的服务器名_工具名格式
+        toolNames.push(value);
       }
     }
     
@@ -241,13 +238,10 @@ const AgentsPage: React.FC = () => {
     const treeValues: string[] = [];
     console.log('转换工具名称为树值:', toolNames);
     
-    for (const server of mcpServers) {
-      if (server.tools) {
-        for (const tool of server.tools) {
-          if (toolNames.includes(tool.name)) {
-            treeValues.push(`${server.name}_${tool.name}`);
-          }
-        }
+    // 如果工具名称已经是服务器名_工具名格式，直接返回
+    for (const toolName of toolNames) {
+      if (toolName.includes('_')) {
+        treeValues.push(toolName);
       }
     }
     

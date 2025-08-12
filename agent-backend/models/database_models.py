@@ -133,7 +133,7 @@ class AgentResponse(BaseModel):
     is_active: bool
     config: Optional[Dict[str, Any]] = None
     system_prompt: Optional[str] = None
-    bound_tools: Optional[List[str]] = None
+    bound_tools: Optional[List[Any]] = None
     flow_config: Optional[Dict[str, Any]] = None
     llm_config_id: Optional[int] = None
     llm_config: Optional['LLMConfigResponse'] = None
@@ -150,7 +150,7 @@ class AgentCreate(BaseModel):
     agent_type: str
     config: Optional[Dict[str, Any]] = None
     system_prompt: Optional[str] = None
-    bound_tools: Optional[List[str]] = None
+    bound_tools: Optional[List[Any]] = None
     flow_config: Optional[Dict[str, Any]] = None
     llm_config_id: Optional[int] = None
 
@@ -160,7 +160,7 @@ class AgentUpdate(BaseModel):
     agent_type: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
     system_prompt: Optional[str] = None
-    bound_tools: Optional[List[str]] = None
+    bound_tools: Optional[List[Any]] = None
     flow_config: Optional[Dict[str, Any]] = None
     llm_config_id: Optional[int] = None
 

@@ -283,6 +283,7 @@ const FlowEditorPage: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentFlowId, setCurrentFlowId] = useState<number | null>(null);
+  const [currentMode, setCurrentMode] = useState<'create' | 'edit'>('create');
   const [flows, setFlows] = useState<any[]>([]);
   const [configForm] = Form.useForm();
   const [isStartNode, setIsStartNode] = useState(false);
@@ -291,6 +292,31 @@ const FlowEditorPage: React.FC = () => {
   useEffect(() => {
     fetchAgents();
     fetchFlows(); // 组件加载时获取已保存的流程图
+    
+    // 检查URL参数，如果是编辑模式，加载智能体信息
+    const urlParams = new URLSearchParams(window.location.search);
+    const mode = urlParams.get('mode');
+    const agentInfo = urlParams.get('agent_info');
+    
+    console.log('URL参数检查:', { mode, agentInfo });
+    
+    if (mode === 'edit' && agentInfo) {
+      try {
+        console.log('开始解析智能体信息...');
+        const agent = JSON.parse(decodeURIComponent(agentInfo));
+        console.log('解析后的智能体信息:', agent);
+        setCurrentMode('edit');
+        loadAgentInfo(agent);
+      } catch (error) {
+        console.error('解析智能体信息失败:', error);
+        message.error('加载智能体信息失败');
+      }
+    } else if (mode === 'create') {
+      console.log('设置为创建模式');
+      setCurrentMode('create');
+    } else {
+      console.log('未找到有效的模式参数');
+    }
   }, []);
 
   const fetchAgents = async () => {
@@ -311,6 +337,98 @@ const FlowEditorPage: React.FC = () => {
       console.error('获取流程图失败:', error);
       message.error('获取流程图失败');
     }
+  };
+
+  const loadAgentInfo = (agent: any) => {
+    console.log('开始加载智能体信息:', agent);
+    
+    // 设置智能体基本信息
+    setFlowName(agent.display_name || agent.name);
+    setFlowDescription(agent.description || '');
+    
+    console.log('设置基本信息完成:', {
+      name: agent.display_name || agent.name,
+      description: agent.description || ''
+    });
+    
+    // 如果有流程图配置，加载节点和边
+    if (agent.flow_config) {
+      const config = agent.flow_config;
+      console.log('发现流程图配置:', config);
+      console.log('流程图配置类型:', typeof config);
+      console.log('流程图配置内容:', JSON.stringify(config, null, 2));
+      
+      // 尝试不同的配置格式
+      let nodes = null;
+      let edges = null;
+      
+      // 检查是否是直接的配置对象
+      if (config.nodes && Array.isArray(config.nodes)) {
+        console.log('使用直接的节点配置');
+        nodes = config.nodes;
+        edges = config.edges;
+      }
+      // 检查是否在metadata中
+      else if (config.metadata && config.metadata.nodes && Array.isArray(config.metadata.nodes)) {
+        console.log('使用metadata中的节点配置');
+        nodes = config.metadata.nodes;
+        edges = config.metadata.edges;
+      }
+      // 检查是否是字符串格式（需要解析）
+      else if (typeof config === 'string') {
+        console.log('尝试解析字符串格式的配置');
+        try {
+          const parsedConfig = JSON.parse(config);
+          console.log('解析后的配置:', parsedConfig);
+          if (parsedConfig.nodes && Array.isArray(parsedConfig.nodes)) {
+            nodes = parsedConfig.nodes;
+            edges = parsedConfig.edges;
+          }
+        } catch (e) {
+          console.error('解析流程图配置字符串失败:', e);
+        }
+      }
+      
+      // 加载节点
+      if (nodes && Array.isArray(nodes)) {
+        console.log('加载节点:', nodes);
+        const nodesWithDelete = nodes.map((node: any) => ({
+          ...node,
+          data: {
+            ...node.data,
+            onDelete: (nodeId: string) => {
+              setNodes((nds: Node[]) => nds.filter((node: Node) => node.id !== nodeId));
+              setEdges((eds: Edge[]) => eds.filter((edge: Edge) => edge.source !== nodeId && edge.target !== nodeId));
+              message.success('节点已删除');
+            }
+          }
+        }));
+        setNodes(nodesWithDelete);
+        console.log('节点设置完成:', nodesWithDelete);
+      } else {
+        console.log('没有找到有效的节点配置');
+        console.log('nodes变量:', nodes);
+      }
+      
+      // 加载边
+      if (edges && Array.isArray(edges)) {
+        console.log('加载边:', edges);
+        setEdges(edges);
+        console.log('边设置完成');
+      } else {
+        console.log('没有找到有效的边配置');
+        console.log('edges变量:', edges);
+      }
+    } else {
+      console.log('没有找到流程图配置');
+      console.log('agent.flow_config:', agent.flow_config);
+    }
+    
+    // 设置当前智能体ID（用于后续保存）
+    setCurrentFlowId(agent.id);
+    console.log('设置当前智能体ID:', agent.id);
+    
+    message.success(`已加载智能体: ${agent.display_name || agent.name}`);
   };
 
   const onConnect = useCallback(
@@ -445,28 +563,51 @@ const FlowEditorPage: React.FC = () => {
         }
       };
 
-      // 调用后端API保存流程图
-      const response = await fetch('/api/flows', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: flowName,
-          display_name: flowName,
-          description: flowDescription,
-          flow_config: flowConfig
-        }),
-      });
+      // 如果有当前智能体ID，说明是编辑模式，更新智能体
+      if (currentFlowId) {
+        const response = await fetch(`/api/agents/${currentFlowId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            display_name: flowName,
+            description: flowDescription,
+            flow_config: flowConfig
+          }),
+        });
 
-      if (response.ok) {
-        const result = await response.json();
-        setCurrentFlowId(result.id);
-        message.success('流程图已保存');
-        console.log('保存结果:', result);
+        if (response.ok) {
+          message.success('智能体已更新');
+          console.log('更新结果:', response);
+        } else {
+          const error = await response.json();
+          message.error(`更新失败: ${error.detail || '未知错误'}`);
+        }
       } else {
-        const error = await response.json();
-        message.error(`保存失败: ${error.detail || '未知错误'}`);
+        // 否则创建新的流程图
+        const response = await fetch('/api/flows', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: flowName,
+            display_name: flowName,
+            description: flowDescription,
+            flow_config: flowConfig
+          }),
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          setCurrentFlowId(result.id);
+          message.success('流程图已保存');
+          console.log('保存结果:', result);
+        } else {
+          const error = await response.json();
+          message.error(`保存失败: ${error.detail || '未知错误'}`);
+        }
       }
     } catch (error) {
       console.error('保存流程图失败:', error);
@@ -678,24 +819,41 @@ const FlowEditorPage: React.FC = () => {
       <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0', background: '#fff' }}>
         <Row justify="space-between" align="middle">
           <Col>
-            <Title level={3} style={{ margin: 0 }}>流程图编辑器</Title>
+            <Title level={3} style={{ margin: 0 }}>
+              {currentMode === 'edit' ? '编辑流程图智能体' : '流程图编辑器'}
+            </Title>
           </Col>
           <Col>
-            <Space>
-              <Input
-                placeholder="流程图名称"
-                value={flowName}
-                onChange={(e) => setFlowName(e.target.value)}
-                style={{ width: 200 }}
-              />
-              <Button
+            <Space direction="vertical" size="small" style={{ width: '100%' }}>
+              <Space>
+                <Input
+                  placeholder="流程图名称"
+                  value={flowName}
+                  onChange={(e) => setFlowName(e.target.value)}
+                  style={{ width: 200 }}
+                />
+                              <Button
                 type="primary"
                 icon={<SaveOutlined />}
                 onClick={saveFlow}
                 loading={loading}
               >
-                保存
+                {currentMode === 'edit' ? '更新智能体' : '保存流程图'}
               </Button>
+              </Space>
+              <Input.TextArea
+                placeholder="流程图描述（可选）"
+                value={flowDescription}
+                onChange={(e) => setFlowDescription(e.target.value)}
+                style={{ width: 400 }}
+                rows={2}
+                maxLength={200}
+                showCount
+              />
+            </Space>
+          </Col>
+          <Col>
+            <Space>
               <Button icon={<PlayCircleOutlined />} onClick={testFlow}>
                 测试
               </Button>
@@ -725,6 +883,21 @@ const FlowEditorPage: React.FC = () => {
                 disabled={!currentFlowId || nodes.length === 0}
               >
                 创建智能体
+              </Button>
+              <Button 
+                icon={<SettingOutlined />} 
+                onClick={() => {
+                  console.log('当前状态:', {
+                    flowName,
+                    flowDescription,
+                    currentFlowId,
+                    currentMode,
+                    nodes: nodes.length,
+                    edges: edges.length
+                  });
+                }}
+              >
+                调试
               </Button>
             </Space>
           </Col>

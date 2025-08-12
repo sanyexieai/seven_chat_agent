@@ -117,6 +117,7 @@ const AgentsPage: React.FC = () => {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [createModalVisible, setCreateModalVisible] = useState(false);
+
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
@@ -296,7 +297,9 @@ const AgentsPage: React.FC = () => {
       
       await axios.post('/api/agents', values);
       message.success('智能体创建成功');
+      
       setCreateModalVisible(false);
+      
       form.resetFields();
       fetchAgents();
     } catch (error) {
@@ -337,6 +340,23 @@ const AgentsPage: React.FC = () => {
   };
 
   const handleEditClick = (agent: Agent) => {
+    // 如果是流程图智能体，直接跳转到流程图编辑器
+    if (agent.agent_type === 'flow_driven') {
+      // 将智能体信息编码到URL中，方便流程图编辑器加载
+      const agentInfo = encodeURIComponent(JSON.stringify({
+        id: agent.id,
+        name: agent.name,
+        display_name: agent.display_name,
+        description: agent.description,
+        flow_config: agent.flow_config,
+        is_active: agent.is_active,
+        llm_config_id: agent.llm_config_id
+      }));
+      window.location.href = `/flow-editor?mode=edit&agent_info=${agentInfo}`;
+      return;
+    }
+    
+    // 通用智能体的编辑逻辑
     setSelectedAgent(agent);
     
     // 如果是通用智能体，需要转换工具名称为树选择的值
@@ -356,14 +376,16 @@ const AgentsPage: React.FC = () => {
       flow_config: agent.flow_config,
       llm_config_id: agent.llm_config_id
     });
+    
     setEditModalVisible(true);
   };
 
-  const renderAgentForm = (formInstance: any, isEdit = false) => (
+  const renderGeneralAgentForm = (formInstance: any, isEdit = false) => (
     <Form
       form={formInstance}
       layout="vertical"
       onFinish={isEdit ? handleEditAgent : handleCreateAgent}
+      initialValues={{ agent_type: 'general' }}
     >
       <Form.Item
         name="name"
@@ -394,9 +416,8 @@ const AgentsPage: React.FC = () => {
         label="智能体类型"
         rules={[{ required: true, message: '请选择智能体类型' }]}
       >
-        <Select placeholder="选择智能体类型">
+        <Select placeholder="选择智能体类型" disabled={isEdit}>
           <Option value="general">通用智能体</Option>
-          <Option value="flow_driven">流程图智能体</Option>
         </Select>
       </Form.Item>
 
@@ -428,67 +449,39 @@ const AgentsPage: React.FC = () => {
       </Form.Item>
 
       <Form.Item
-        noStyle
-        shouldUpdate={(prevValues, currentValues) => prevValues.agent_type !== currentValues.agent_type}
+        name="system_prompt"
+        label="系统提示词"
+        rules={[{ required: true, message: '请输入系统提示词' }]}
       >
-        {({ getFieldValue }) => {
-          const agentType = getFieldValue('agent_type');
+        <TextArea
+          rows={6}
+          placeholder="输入系统提示词，定义智能体的行为和能力..."
+        />
+      </Form.Item>
 
-          return (
-            <>
-              {agentType === 'general' && (
-                <>
-                  <Form.Item
-                    name="system_prompt"
-                    label="系统提示词"
-                    rules={[{ required: true, message: '请输入系统提示词' }]}
-                  >
-                    <TextArea
-                      rows={6}
-                      placeholder="输入系统提示词，定义智能体的行为和能力..."
-                    />
-                  </Form.Item>
-
-                  <Form.Item
-                    name="bound_tools"
-                    label="绑定工具"
-                    extra="选择智能体可以使用的工具（可选）"
-                  >
-                    <TreeSelect
-                      treeData={toolTreeData}
-                      placeholder="选择要绑定的工具"
-                      treeCheckable={true}
-                      showCheckedStrategy={TreeSelect.SHOW_CHILD}
-                      allowClear={true}
-                      style={{ width: '100%' }}
-                      dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
-                      treeDefaultExpandAll={true}
-                      onChange={(value) => {
-                        console.log('TreeSelect onChange:', value);
-                      }}
-                    />
-                  </Form.Item>
-                </>
-              )}
-
-              {agentType === 'flow_driven' && (
-                <Form.Item
-                  name="flow_config"
-                  label="流程图配置"
-                  extra="配置流程图的节点和连接关系"
-                >
-                  <TextArea
-                    rows={6}
-                    placeholder="流程图配置（JSON格式）..."
-                  />
-                </Form.Item>
-              )}
-            </>
-          );
-        }}
+      <Form.Item
+        name="bound_tools"
+        label="绑定工具"
+        extra="选择智能体可以使用的工具（可选）"
+      >
+        <TreeSelect
+          treeData={toolTreeData}
+          placeholder="选择要绑定的工具"
+          treeCheckable={true}
+          showCheckedStrategy={TreeSelect.SHOW_CHILD}
+          allowClear={true}
+          style={{ width: '100%' }}
+          dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+          treeDefaultExpandAll={true}
+          onChange={(value) => {
+            console.log('TreeSelect onChange:', value);
+          }}
+        />
       </Form.Item>
     </Form>
   );
+
+
 
   return (
     <div style={{ padding: '24px' }}>
@@ -511,7 +504,14 @@ const AgentsPage: React.FC = () => {
             icon={<PlusOutlined />}
             onClick={() => setCreateModalVisible(true)}
           >
-            创建智能体
+            创建普通智能体
+          </Button>
+          <Button
+            type="primary"
+            icon={<BranchesOutlined />}
+            onClick={() => window.location.href = '/flow-editor?mode=create'}
+          >
+            创建流程图智能体
           </Button>
         </Space>
       </div>
@@ -529,7 +529,7 @@ const AgentsPage: React.FC = () => {
                   icon={<EditOutlined />}
                   onClick={() => handleEditClick(agent)}
                 >
-                  编辑
+                  {agent.agent_type === 'flow_driven' ? '编辑流程图' : '编辑'}
                 </Button>,
                 <Popconfirm
                   title="确定要删除这个智能体吗？"
@@ -603,8 +603,10 @@ const AgentsPage: React.FC = () => {
         ]}
         width={600}
       >
-        {renderAgentForm(form)}
+        {renderGeneralAgentForm(form)}
       </Modal>
+
+
 
       {/* 编辑智能体模态框 */}
       <Modal
@@ -621,7 +623,7 @@ const AgentsPage: React.FC = () => {
         ]}
         width={600}
       >
-        {renderAgentForm(editForm, true)}
+        {renderGeneralAgentForm(editForm, true)}
       </Modal>
     </div>
   );

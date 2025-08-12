@@ -49,7 +49,10 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                     # 调用智能体处理消息
                     if hasattr(agent, 'process_message'):
                         # 如果智能体有process_message方法，直接调用
-                        result = await agent.process_message(request.user_id, request.message, request.context)
+                        # 在context中添加数据库会话，以便智能体查询知识库
+                        enhanced_context = request.context.copy() if request.context else {}
+                        enhanced_context['db_session'] = db
+                        result = await agent.process_message(request.user_id, request.message, enhanced_context)
                         response_message = result.content
                         tools_used = []
                     else:

@@ -54,6 +54,9 @@ def run_migrations():
         if not check_column_exists('agents', 'bound_tools'):
             missing_columns.append('bound_tools')
         
+        if not check_column_exists('agents', 'bound_knowledge_bases'):
+            missing_columns.append('bound_knowledge_bases')
+        
         if not check_column_exists('agents', 'flow_config'):
             missing_columns.append('flow_config')
         
@@ -69,6 +72,9 @@ def run_migrations():
                     elif column == 'bound_tools':
                         conn.execute(text("ALTER TABLE agents ADD COLUMN bound_tools JSON;"))
                         logger.info("添加 bound_tools 字段")
+                    elif column == 'bound_knowledge_bases':
+                        conn.execute(text("ALTER TABLE agents ADD COLUMN bound_knowledge_bases JSON;"))
+                        logger.info("添加 bound_knowledge_bases 字段")
                     elif column == 'flow_config':
                         conn.execute(text("ALTER TABLE agents ADD COLUMN flow_config JSON;"))
                         logger.info("添加 flow_config 字段")

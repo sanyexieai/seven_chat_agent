@@ -61,6 +61,7 @@ interface Agent {
   is_active: boolean;
   system_prompt?: string;
   bound_tools?: string[];
+  bound_knowledge_bases?: number[];  // 绑定的知识库ID列表
   flow_config?: any;
   llm_config_id?: number;
   llm_config?: LLMConfig;
@@ -76,6 +77,7 @@ interface AgentFormData {
   is_active: boolean;
   system_prompt?: string;
   bound_tools?: string[];
+  bound_knowledge_bases?: number[];  // 绑定的知识库ID列表
   flow_config?: any;
   llm_config_id?: number;
 }
@@ -111,26 +113,34 @@ interface MCPServer {
   tools?: MCPTool[];
 }
 
+interface KnowledgeBase {
+  id: number;
+  name: string;
+  display_name: string;
+  description?: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 const AgentsPage: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
-  const [modalVisible, setModalVisible] = useState(false);
   const [createModalVisible, setCreateModalVisible] = useState(false);
-
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
-  const [availableTools, setAvailableTools] = useState<string[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [toolTreeData, setToolTreeData] = useState<any[]>([]);
   const [llmConfigs, setLlmConfigs] = useState<LLMConfig[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);  // 知识库列表
 
   useEffect(() => {
     fetchAgents();
-    fetchAvailableTools();
     fetchMCPServers();
     fetchLLMConfigs();
+    fetchKnowledgeBases(); // 添加获取知识库的函数
   }, []);
 
   const fetchAgents = async () => {
@@ -145,19 +155,7 @@ const AgentsPage: React.FC = () => {
     }
   };
 
-  const fetchAvailableTools = async () => {
-    try {
-      const response = await axios.get('/api/mcp/tools');
-      console.log('工具API响应:', response.data);
-      // API直接返回工具数组，不需要.tools属性
-      const tools = response.data || [];
-      setAvailableTools(tools.map((tool: any) => tool.name));
-    } catch (error) {
-      console.error('获取工具列表失败:', error);
-      // 如果API失败，使用默认工具列表
-      setAvailableTools(['search', 'news_search', 'fetch_content']);
-    }
-  };
+
 
   const fetchMCPServers = async () => {
     try {
@@ -214,6 +212,16 @@ const AgentsPage: React.FC = () => {
     } catch (error) {
       console.error('获取LLM配置失败:', error);
       message.error('获取LLM配置失败');
+    }
+  };
+
+  const fetchKnowledgeBases = async () => {
+    try {
+      const response = await axios.get('/api/knowledge-base/');
+      setKnowledgeBases(response.data || []);
+    } catch (error) {
+      console.error('获取知识库失败:', error);
+      message.error('获取知识库失败');
     }
   };
 
@@ -367,6 +375,7 @@ const AgentsPage: React.FC = () => {
       is_active: agent.is_active,
       system_prompt: agent.system_prompt,
       bound_tools: boundTools,
+      bound_knowledge_bases: agent.bound_knowledge_bases || [],
       flow_config: agent.flow_config,
       llm_config_id: agent.llm_config_id
     });
@@ -379,7 +388,10 @@ const AgentsPage: React.FC = () => {
       form={formInstance}
       layout="vertical"
       onFinish={isEdit ? handleEditAgent : handleCreateAgent}
-      initialValues={{ agent_type: 'general' }}
+      initialValues={{ 
+        agent_type: 'general',
+        bound_knowledge_bases: []
+      }}
     >
       <Form.Item
         name="name"
@@ -471,6 +483,28 @@ const AgentsPage: React.FC = () => {
             console.log('TreeSelect onChange:', value);
           }}
         />
+      </Form.Item>
+
+      <Form.Item
+        name="bound_knowledge_bases"
+        label="绑定知识库"
+        extra="选择智能体可以查询的知识库（可选）"
+      >
+        <Select
+          mode="multiple"
+          placeholder="选择要绑定的知识库"
+          allowClear={true}
+          style={{ width: '100%' }}
+          optionFilterProp="children"
+        >
+          {knowledgeBases
+            .filter(kb => kb.is_active)
+            .map(kb => (
+              <Option key={kb.id} value={kb.id}>
+                {kb.display_name || kb.name}
+              </Option>
+            ))}
+        </Select>
       </Form.Item>
     </Form>
   );
@@ -572,6 +606,12 @@ const AgentsPage: React.FC = () => {
                     {agent.bound_tools && agent.bound_tools.length > 0 && (
                       <>
                         <Text type="secondary">绑定工具: {agent.bound_tools.join(', ')}</Text>
+                        <br />
+                      </>
+                    )}
+                    {agent.bound_knowledge_bases && agent.bound_knowledge_bases.length > 0 && (
+                      <>
+                        <Text type="secondary">绑定知识库: {agent.bound_knowledge_bases.length} 个</Text>
                         <br />
                       </>
                     )}

@@ -368,6 +368,41 @@ class AgentManager:
                         # 其他情况不设置MCP助手
                         logger.info(f"智能体 {db_agent.name} 不设置MCP助手")
                 
+                # 设置知识库绑定（通用智能体）
+                if db_agent.agent_type == "general" and db_agent.bound_knowledge_bases:
+                    try:
+                        # 获取知识库详细信息
+                        from services.knowledge_base_service import KnowledgeBaseService
+                        kb_service = KnowledgeBaseService()
+                        knowledge_bases = []
+                        
+                        for kb_info in db_agent.bound_knowledge_bases:
+                            if isinstance(kb_info, dict):
+                                kb_id = kb_info.get('id') or kb_info.get('knowledge_base_id')
+                                if kb_id:
+                                    kb = kb_service.get_knowledge_base(db, kb_id)
+                                    if kb:
+                                        knowledge_bases.append({
+                                            'id': kb.id,
+                                            'name': kb.name,
+                                            'description': kb.description
+                                        })
+                            elif isinstance(kb_info, int):
+                                # 如果只是ID
+                                kb = kb_service.get_knowledge_base(db, kb_info)
+                                if kb:
+                                    knowledge_bases.append({
+                                        'id': kb.id,
+                                        'name': kb.name,
+                                        'description': kb.description
+                                    })
+                        
+                        if knowledge_bases:
+                            agent.set_knowledge_bases(knowledge_bases)
+                            logger.info(f"通用智能体 {db_agent.name} 绑定了 {len(knowledge_bases)} 个知识库")
+                    except Exception as e:
+                        logger.warning(f"绑定知识库失败: {str(e)}")
+                
                 self.agents[db_agent.name] = agent
                 logger.info(f"加载智能体: {db_agent.name} ({db_agent.display_name}) - 类型: {db_agent.agent_type}")
             

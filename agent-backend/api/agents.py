@@ -237,4 +237,58 @@ async def unbind_tools_from_agent(
         raise
     except Exception as e:
         logger.error(f"解绑工具失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="解绑工具失败") 
+        raise HTTPException(status_code=500, detail="解绑工具失败")
+
+@router.get("/{agent_id}/knowledge-bases")
+async def get_agent_knowledge_bases(
+    agent_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取智能体绑定的知识库"""
+    try:
+        agent = AgentService.get_agent_by_id(db, agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="智能体不存在")
+        
+        knowledge_bases = agent.bound_knowledge_bases or []
+        return {"knowledge_bases": knowledge_bases}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取智能体知识库失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取智能体知识库失败")
+
+@router.post("/{agent_id}/knowledge-bases")
+async def bind_knowledge_bases_to_agent(
+    agent_id: int,
+    knowledge_bases: List[int],
+    db: Session = Depends(get_db)
+):
+    """绑定知识库到智能体"""
+    try:
+        success = AgentService.bind_knowledge_bases_to_agent(db, agent_id, knowledge_bases)
+        if not success:
+            raise HTTPException(status_code=404, detail="智能体不存在")
+        return {"message": "知识库绑定成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"绑定知识库失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="绑定知识库失败")
+
+@router.delete("/{agent_id}/knowledge-bases")
+async def unbind_knowledge_bases_from_agent(
+    agent_id: int,
+    db: Session = Depends(get_db)
+):
+    """从智能体解绑知识库"""
+    try:
+        success = AgentService.unbind_knowledge_bases_from_agent(db, agent_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="智能体不存在")
+        return {"message": "知识库解绑成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"解绑知识库失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="解绑知识库失败") 

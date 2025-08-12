@@ -22,6 +22,7 @@ class Agent(Base):
     # 新增字段用于新智能体类型
     system_prompt = Column(Text, nullable=True)  # 系统提示词（用于general）
     bound_tools = Column(JSON, nullable=True)    # 绑定的工具列表（用于general）
+    bound_knowledge_bases = Column(JSON, nullable=True)  # 绑定的知识库列表（用于general）
     flow_config = Column(JSON, nullable=True)    # 流程图配置（用于flow_driven）
     llm_config_id = Column(Integer, ForeignKey("llm_configs.id"), nullable=True)  # 关联的LLM配置
     
@@ -134,6 +135,7 @@ class AgentResponse(BaseModel):
     config: Optional[Dict[str, Any]] = None
     system_prompt: Optional[str] = None
     bound_tools: Optional[List[Any]] = None
+    bound_knowledge_bases: Optional[List[Any]] = None
     flow_config: Optional[Dict[str, Any]] = None
     llm_config_id: Optional[int] = None
     llm_config: Optional['LLMConfigResponse'] = None
@@ -151,6 +153,7 @@ class AgentCreate(BaseModel):
     config: Optional[Dict[str, Any]] = None
     system_prompt: Optional[str] = None
     bound_tools: Optional[List[Any]] = None
+    bound_knowledge_bases: Optional[List[Any]] = None
     flow_config: Optional[Dict[str, Any]] = None
     llm_config_id: Optional[int] = None
 
@@ -161,6 +164,7 @@ class AgentUpdate(BaseModel):
     config: Optional[Dict[str, Any]] = None
     system_prompt: Optional[str] = None
     bound_tools: Optional[List[Any]] = None
+    bound_knowledge_bases: Optional[List[Any]] = None
     flow_config: Optional[Dict[str, Any]] = None
     llm_config_id: Optional[int] = None
 

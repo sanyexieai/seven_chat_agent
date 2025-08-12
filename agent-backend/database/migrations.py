@@ -332,6 +332,53 @@ def create_default_agents():
     finally:
         db.close()
 
+def create_default_mcp_servers():
+    """创建默认MCP服务器"""
+    logger.info("检查默认MCP服务器...")
+    
+    db = SessionLocal()
+    try:
+        from models.database_models import MCPServer
+        
+        # 检查是否已有MCP服务器
+        existing_servers = db.query(MCPServer).count()
+        if existing_servers > 0:
+            logger.info(f"数据库中已有 {existing_servers} 个MCP服务器，跳过创建默认MCP服务器")
+            return
+        
+        # 创建默认的ddg MCP服务器
+        default_servers = [
+            {
+                "name": "ddg",
+                "display_name": "DuckDuckGo搜索服务",
+                "description": "提供网络搜索功能的MCP服务器",
+                "transport": "stdio",
+                "command": "uvx",
+                "args": ["duckduckgo-mcp-server"],
+                "env": {},
+                "is_active": True,
+                "config": {
+                    "command": "uvx",
+                    "args": ["duckduckgo-mcp-server"],
+                    "env": {}
+                }
+            }
+        ]
+        
+        for server_data in default_servers:
+            server = MCPServer(**server_data)
+            db.add(server)
+        
+        db.commit()
+        logger.info(f"创建了 {len(default_servers)} 个默认MCP服务器")
+        
+    except Exception as e:
+        logger.error(f"创建默认MCP服务器失败: {str(e)}")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
 def init_database():
     """初始化数据库"""
     logger.info("开始初始化数据库...")
@@ -341,6 +388,9 @@ def init_database():
     
     # 创建默认智能体
     create_default_agents()
+    
+    # 创建默认MCP服务器
+    create_default_mcp_servers()
     
     # 创建默认LLM配置
     from database.database import create_default_llm_configs

@@ -7,10 +7,10 @@ import asyncio
 import json
 import uuid
 
-logger = get_logger("prompt_driven_agent")
+logger = get_logger("general_agent")
 
-class PromptDrivenAgent(BaseAgent):
-    """纯提示词驱动智能体
+class GeneralAgent(BaseAgent):
+    """通用智能体
     
     通过数据库配置的系统提示词来实现不同的功能。
     这种智能体完全依赖提示词来定义行为，不需要特定的工具。
@@ -34,11 +34,11 @@ class PromptDrivenAgent(BaseAgent):
             if llm_config:
                 # 使用智能体特定的LLM配置
                 self.llm_helper = get_llm_helper(llm_config)
-                logger.info(f"提示词驱动智能体 {name} 使用特定LLM配置初始化成功")
+                logger.info(f"通用智能体 {name} 使用特定LLM配置初始化成功")
             else:
                 # 使用默认LLM配置
                 self.llm_helper = get_llm_helper()
-                logger.info(f"提示词驱动智能体 {name} 使用默认LLM配置初始化成功")
+                logger.info(f"通用智能体 {name} 使用默认LLM配置初始化成功")
         except Exception as e:
             logger.error(f"LLM初始化失败: {str(e)}")
             raise
@@ -78,7 +78,7 @@ class PromptDrivenAgent(BaseAgent):
             conversation_history.append({"role": "user", "content": message})
             
             # 调用LLM生成响应
-            logger.info(f"提示词驱动智能体 {self.name} 使用系统提示词: {self.system_prompt}")
+            logger.info(f"通用智能体 {self.name} 使用系统提示词: {self.system_prompt}")
             
             # 临时禁用LLM调用，返回模拟响应（用于测试）
             try:
@@ -103,11 +103,11 @@ class PromptDrivenAgent(BaseAgent):
             agent_context.messages.append(response)
             self.update_context(user_id, agent_context)
             
-            logger.info(f"提示词驱动智能体 {self.name} 处理消息完成")
+            logger.info(f"通用智能体 {self.name} 处理消息完成")
             return response
             
         except Exception as e:
-            logger.error(f"提示词驱动智能体处理消息失败: {str(e)}")
+            logger.error(f"通用智能体处理消息失败: {str(e)}")
             error_response = self.create_message(
                 content=f"抱歉，处理您的消息时出现了错误: {str(e)}",
                 message_type=MessageType.AGENT,
@@ -141,7 +141,7 @@ class PromptDrivenAgent(BaseAgent):
             conversation_history.append({"role": "user", "content": message})
             
             # 流式调用LLM
-            logger.info(f"提示词驱动智能体 {self.name} 流式调用使用系统提示词: {self.system_prompt}")
+            logger.info(f"通用智能体 {self.name} 流式调用使用系统提示词: {self.system_prompt}")
             full_response = ""
             async for chunk in self.llm_helper.call_stream(
                 messages=[
@@ -171,10 +171,10 @@ class PromptDrivenAgent(BaseAgent):
             agent_context.messages.append(response)
             self.update_context(user_id, agent_context)
             
-            logger.info(f"提示词驱动智能体 {self.name} 流式处理消息完成")
+            logger.info(f"通用智能体 {self.name} 流式处理消息完成")
             
         except Exception as e:
-            logger.error(f"提示词驱动智能体流式处理消息失败: {str(e)}")
+            logger.error(f"通用智能体流式处理消息失败: {str(e)}")
             yield StreamChunk(
                 type="error",
                 content=f"抱歉，处理您的消息时出现了错误: {str(e)}"

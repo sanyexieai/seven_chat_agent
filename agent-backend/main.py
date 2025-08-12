@@ -139,7 +139,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             # 处理消息
             user_id = message_data.get("user_id", "anonymous")
             message = message_data.get("message", "")
-            agent_name = message_data.get("agent_name", "chat_agent")
+            agent_name = message_data.get("agent_name", "general_agent")
             
             logger.info(f"收到WebSocket消息: session_id={session_id}, user_id={user_id}, agent={agent_name}")
             
@@ -200,7 +200,7 @@ async def chat(request: Dict[str, Any]):
         user_id = request.get("user_id", "anonymous")
         message = request.get("message", "")
         agent_id = request.get("agent_id")
-        agent_name = request.get("agent_name", "chat_agent")
+        agent_name = request.get("agent_name", "general_agent")
         session_id = request.get("session_id", str(uuid.uuid4()))
         
         logger.info(f"收到聊天请求: user_id={user_id}, agent_id={agent_id}, agent_name={agent_name}")
@@ -222,7 +222,7 @@ async def chat(request: Dict[str, Any]):
                     agent_name = db_agent.name
                 else:
                     raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
+                        status_code=status.HTP_404_NOT_FOUND,
                         detail=f"智能体ID {agent_id} 不存在"
                     )
             finally:
@@ -267,7 +267,7 @@ async def chat_stream(request: Dict[str, Any]):
         user_id = request.get("user_id", "anonymous")
         message = request.get("message", "")
         agent_id = request.get("agent_id")
-        agent_name = request.get("agent_name", "chat_agent")
+        agent_name = request.get("agent_name", "general_agent")
         session_id = request.get("session_id", str(uuid.uuid4()))
         
         logger.info(f"收到聊天请求: user_id={user_id}, agent_id={agent_id}, agent_name={agent_name}")

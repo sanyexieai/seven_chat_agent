@@ -170,12 +170,16 @@ class LLMHelper:
             if not self._openai_client:
                 raise Exception("OpenAI客户端未初始化")
             
+            # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
+            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            max_tokens = kwargs.get('max_tokens') or db_max_tokens or 1000
+            
             # 合并配置参数
             params = {
                 "model": self._config.get('model', 'gpt-3.5-turbo'),
                 "messages": messages,
                 "temperature": self._config.get('temperature', 0.7),
-                "max_tokens": kwargs.get('max_tokens', 1000),
+                "max_tokens": max_tokens,
                 **kwargs
             }
             
@@ -208,10 +212,14 @@ class LLMHelper:
             # 合并用户消息
             user_content = "\n".join(user_messages)
             
+            # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
+            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            max_tokens = kwargs.get('max_tokens') or db_max_tokens or 1000
+            
             # 调用API
             params = {
                 "model": self._config.get('model', 'claude-3-sonnet-20240229'),
-                "max_tokens": kwargs.get('max_tokens', 1000),
+                "max_tokens": max_tokens,
                 "temperature": self._config.get('temperature', 0.7),
                 **kwargs
             }
@@ -236,8 +244,9 @@ class LLMHelper:
             if not self._ollama_base_url:
                 raise Exception("Ollama客户端未初始化")
             
-            # 构建请求数据
-            max_tokens = kwargs.get('max_tokens', 512)
+            # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
+            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            max_tokens = kwargs.get('max_tokens') or db_max_tokens or 512
             max_tokens = max(64, min(int(max_tokens), 512))
             data = {
                 "model": self._config.get('model', 'qwen3:8b'),
@@ -373,11 +382,15 @@ class LLMHelper:
             if not self._openai_client:
                 raise Exception("OpenAI客户端未初始化")
             
+            # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
+            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            max_tokens = kwargs.get('max_tokens') or db_max_tokens or 1000
+            
             params = {
                 "model": self._config.get('model', 'gpt-3.5-turbo'),
                 "messages": messages,
                 "temperature": self._config.get('temperature', 0.7),
-                "max_tokens": kwargs.get('max_tokens', 1000),
+                "max_tokens": max_tokens,
                 "stream": True,
                 **kwargs
             }
@@ -412,9 +425,13 @@ class LLMHelper:
             
             user_content = "\n".join(user_messages)
             
+            # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
+            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            max_tokens = kwargs.get('max_tokens') or db_max_tokens or 1000
+            
             params = {
                 "model": self._config.get('model', 'claude-3-sonnet-20240229'),
-                "max_tokens": kwargs.get('max_tokens', 1000),
+                "max_tokens": max_tokens,
                 "temperature": self._config.get('temperature', 0.7),
                 **kwargs
             }
@@ -442,8 +459,9 @@ class LLMHelper:
             if not self._ollama_base_url:
                 raise Exception("Ollama客户端未初始化")
             
-            # 构建请求数据
-            max_tokens = kwargs.get('max_tokens', 512)
+            # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
+            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            max_tokens = kwargs.get('max_tokens') or db_max_tokens or 512
             max_tokens = max(64, min(int(max_tokens), 512))
             data = {
                 "model": self._config.get('model', 'qwen3:8b'),

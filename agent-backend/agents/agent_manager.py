@@ -1,10 +1,6 @@
 from typing import Dict, Optional, AsyncGenerator, Any
 from agents.base_agent import BaseAgent
-from agents.chat_agent import ChatAgent
-from agents.search_agent import SearchAgent
-from agents.report_agent import ReportAgent
-from agents.prompt_driven_agent import PromptDrivenAgent
-from agents.tool_driven_agent import ToolDrivenAgent
+from agents.general_agent import GeneralAgent
 from agents.flow_driven_agent import FlowDrivenAgent
 from models.chat_models import AgentMessage, StreamChunk, AgentContext
 from utils.log_helper import get_logger
@@ -345,14 +341,14 @@ class AgentManager:
                     else:
                         logger.info(f"智能体 {db_agent.name} 使用默认LLM配置")
                     
-                    agent = PromptDrivenAgent(db_agent.name, db_agent.display_name, system_prompt, llm_config)
+                    agent = GeneralAgent(db_agent.name, db_agent.display_name, system_prompt, llm_config)
                 elif db_agent.agent_type == "flow_driven":
                     # 流程图驱动智能体
                     logger.info(f"加载流程图驱动智能体 {db_agent.name}，流程图: {db_agent.flow_config}")
                     agent = FlowDrivenAgent(db_agent.name, db_agent.display_name, db_agent.flow_config)
                 else:
                     # 默认使用通用智能体
-                    agent = PromptDrivenAgent(db_agent.name, db_agent.display_name, "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")
+                    agent = GeneralAgent(db_agent.name, db_agent.display_name, "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")
                 
                 # 设置智能体配置
                 if db_agent.config:
@@ -387,7 +383,7 @@ class AgentManager:
     async def _create_fallback_agents(self):
         """创建默认智能体（备用方案）"""
         # 通用智能体
-        general_agent = PromptDrivenAgent("general_agent", "通用智能体", "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")
+        general_agent = GeneralAgent("general_agent", "通用智能体", "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")
         if self.mcp_helper:
             general_agent.mcp_helper = self.mcp_helper
         self.agents["general_agent"] = general_agent
@@ -401,7 +397,7 @@ class AgentManager:
         logger.info("创建默认智能体完成")
         
         # 工具驱动智能体（需要MCP助手）
-        tool_agent = ToolDrivenAgent("tool_agent", "工具驱动智能体", ["web_search", "file_search"])
+        tool_agent = GeneralAgent("tool_agent", "工具驱动智能体", "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")
         if self.mcp_helper:
             tool_agent.mcp_helper = self.mcp_helper
             logger.info("工具驱动智能体设置MCP助手")
@@ -511,11 +507,11 @@ class AgentManager:
         message_lower = message.lower()
         
         if any(keyword in message_lower for keyword in ['搜索', '查找', '查询', 'search', 'find']):
-            if 'search_agent' in self.agents:
-                return self.agents['search_agent']
-        elif any(keyword in message_lower for keyword in ['报告', '总结', '分析', 'report', 'summary']):
-            if 'report_agent' in self.agents:
-                return self.agents['report_agent']
+            if 'web_search' in self.mcp_configs: # Changed from search_agent to web_search
+                return GeneralAgent("web_search", "网络搜索", "你是一个网络搜索工具，能够帮助用户在互联网上查找信息。")
+        elif any(keyword in message_lower for keyword in ['文件', '本地', 'file', 'local']):
+            if 'file_search' in self.mcp_configs: # Changed from file_search to file_search
+                return GeneralAgent("file_search", "文件搜索", "你是一个本地文件搜索工具，能够帮助用户在本地文件系统中查找文件。")
         elif any(keyword in message_lower for keyword in ['工具', '使用', 'tool', 'use']):
             if 'tool_agent' in self.agents:
                 return self.agents['tool_agent']
@@ -526,8 +522,8 @@ class AgentManager:
             if 'flow_agent' in self.agents:
                 return self.agents['flow_agent']
         
-        # 默认返回聊天智能体
-        return self.agents.get('chat_agent', list(self.agents.values())[0])
+        # 默认返回通用智能体
+        return self.agents.get('general_agent', list(self.agents.values())[0])
     
     def get_agent(self, agent_name: str) -> Optional[BaseAgent]:
         """根据名称获取智能体"""

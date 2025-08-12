@@ -52,7 +52,7 @@ ENABLE_DOCUMENT_SEARCH = os.getenv("ENABLE_DOCUMENT_SEARCH", "True").lower() == 
 ENABLE_FILE_OPERATIONS = os.getenv("ENABLE_FILE_OPERATIONS", "True").lower() == "true"
 
 # 智能体配置
-DEFAULT_AGENT = os.getenv("DEFAULT_AGENT", "chat_agent")
+DEFAULT_AGENT = os.getenv("DEFAULT_AGENT", "general_agent")
 ENABLE_AGENT_SELECTION = os.getenv("ENABLE_AGENT_SELECTION", "True").lower() == "true"
 
 # 流式响应配置

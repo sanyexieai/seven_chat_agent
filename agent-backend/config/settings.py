@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     WS_HEARTBEAT_INTERVAL: int = 30
     
     # 智能体配置
-    DEFAULT_AGENT: str = "chat_agent"
+    DEFAULT_AGENT: str = "general_agent"
     AUTO_SELECT_AGENT: bool = True
     
     # 工具配置

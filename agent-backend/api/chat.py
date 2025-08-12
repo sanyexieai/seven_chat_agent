@@ -280,7 +280,6 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                                 
                         except Exception as llm_error:
                             logger.error(f"非流式端点流式LLM调用失败: {str(llm_error)}")
-                            # 保持原有的模拟响应
                     
                     # 保存聊天消息到数据库
                     if request.session_id:

@@ -57,7 +57,7 @@ async def create_agent(
             if agent_manager:
                 # 根据智能体类型创建相应的智能体实例
                 if agent_data.agent_type == "general":
-                    from agents.prompt_driven_agent import PromptDrivenAgent
+                    from agents.general_agent import GeneralAgent
                     system_prompt = agent_data.system_prompt or ""
                     
                     # 获取智能体的LLM配置
@@ -68,7 +68,7 @@ async def create_agent(
                     else:
                         logger.info(f"智能体 {agent.name} 使用默认LLM配置")
                     
-                    prompt_agent = PromptDrivenAgent(agent.name, agent.display_name, system_prompt, llm_config)
+                    prompt_agent = GeneralAgent(agent.name, agent.display_name, system_prompt, llm_config)
                     agent_manager.agents[agent.name] = prompt_agent
                 elif agent_data.agent_type == "flow_driven":
                     from agents.flow_driven_agent import FlowDrivenAgent
@@ -103,7 +103,7 @@ async def update_agent(
             if agent_manager:
                 # 根据智能体类型创建相应的智能体实例
                 if agent_data.agent_type == "general":
-                    from agents.prompt_driven_agent import PromptDrivenAgent
+                    from agents.general_agent import GeneralAgent
                     system_prompt = agent_data.system_prompt or ""
                     
                     # 获取智能体的LLM配置
@@ -114,7 +114,7 @@ async def update_agent(
                     else:
                         logger.info(f"智能体 {agent.name} 使用默认LLM配置")
                     
-                    prompt_agent = PromptDrivenAgent(agent.name, agent.display_name, system_prompt, llm_config)
+                    prompt_agent = GeneralAgent(agent.name, agent.display_name, system_prompt, llm_config)
                     agent_manager.agents[agent.name] = prompt_agent
                     logger.info(f"智能体 {agent.name} 已重新加载到agent_manager")
                 elif agent_data.agent_type == "flow_driven":
@@ -185,92 +185,56 @@ async def deactivate_agent(
         logger.error(f"停用智能体失败: {str(e)}")
         raise HTTPException(status_code=500, detail="停用智能体失败")
 
-@router.post("/create_from_flow", response_model=AgentResponse)
-async def create_agent_from_flow(
-    flow_data: Dict[str, Any],
-    db: Session = Depends(get_db)
-):
-    """从流程图创建智能体"""
-    try:
-        flow_name = flow_data.get('flow_name', '未命名流程图')
-        flow_description = flow_data.get('flow_description', '')
-        flow_config = flow_data.get('flow_config', {})
-
-        # 生成智能体名称
-        agent_name = f"flow_agent_{flow_name.lower().replace(' ', '_')}_{int(time.time())}"
-        agent_display_name = f"{flow_name} 智能体"
-
-        # 创建智能体
-        agent = Agent(
-            name=agent_name,
-            display_name=agent_display_name,
-            description=f"基于流程图 '{flow_name}' 创建的智能体。{flow_description}",
-            agent_type="flow_driven",
-            flow_config=flow_config,
-            is_active=True
-        )
-
-        db.add(agent)
-        db.commit()
-        db.refresh(agent)
-
-        logger.info(f"从流程图创建智能体: {agent.name}")
-        
-        # 重新加载智能体到agent_manager
-        try:
-            from main import agent_manager
-            if agent_manager:
-                # 创建FlowDrivenAgent实例
-                from agents.flow_driven_agent import FlowDrivenAgent
-                flow_agent = FlowDrivenAgent(agent.name, agent.display_name, agent.flow_config)
-                agent_manager.agents[agent.name] = flow_agent
-                logger.info(f"智能体 {agent.name} 已加载到agent_manager")
-        except Exception as e:
-            logger.warning(f"重新加载智能体到agent_manager失败: {str(e)}")
-        
-        return agent
-    except Exception as e:
-        logger.error(f"从流程图创建智能体失败: {str(e)}")
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"从流程图创建智能体失败: {str(e)}"
-        ) 
-
-@router.post("/reload")
-async def reload_agents():
-    """重新加载所有智能体"""
-    try:
-        from main import agent_manager
-        if agent_manager:
-            await agent_manager._create_default_agents()
-            logger.info("智能体重新加载完成")
-            return {"message": "智能体重新加载完成"}
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="智能体管理器未初始化"
-            )
-    except Exception as e:
-        logger.error(f"重新加载智能体失败: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"重新加载智能体失败: {str(e)}"
-        )
-
-@router.get("/{agent_id}/llm-config")
-async def get_agent_llm_config(
+@router.get("/{agent_id}/tools")
+async def get_agent_tools(
     agent_id: int,
     db: Session = Depends(get_db)
 ):
-    """获取智能体的LLM配置"""
+    """获取智能体绑定的工具"""
     try:
-        llm_config = AgentService.get_agent_llm_config(db, agent_id)
-        if not llm_config:
-            raise HTTPException(status_code=404, detail="智能体LLM配置不存在")
-        return llm_config
+        agent = AgentService.get_agent_by_id(db, agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="智能体不存在")
+        
+        tools = agent.bound_tools or []
+        return {"tools": tools}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取智能体LLM配置失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="获取智能体LLM配置失败") 
+        logger.error(f"获取智能体工具失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取智能体工具失败")
+
+@router.post("/{agent_id}/tools")
+async def bind_tools_to_agent(
+    agent_id: int,
+    tools: List[str],
+    db: Session = Depends(get_db)
+):
+    """绑定工具到智能体"""
+    try:
+        success = AgentService.bind_tools_to_agent(db, agent_id, tools)
+        if not success:
+            raise HTTPException(status_code=404, detail="智能体不存在")
+        return {"message": "工具绑定成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"绑定工具失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="绑定工具失败")
+
+@router.delete("/{agent_id}/tools")
+async def unbind_tools_from_agent(
+    agent_id: int,
+    db: Session = Depends(get_db)
+):
+    """从智能体解绑工具"""
+    try:
+        success = AgentService.unbind_tools_from_agent(db, agent_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="智能体不存在")
+        return {"message": "工具解绑成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"解绑工具失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="解绑工具失败") 

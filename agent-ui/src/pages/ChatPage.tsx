@@ -50,19 +50,54 @@ const ChatPage: React.FC = () => {
       // 加载指定会话
       loadSession(parseInt(sessionId));
     } else {
-      // 设置默认会话
-      setCurrentSession({
-        title: '新对话',
-        agent: {
-          id: 1,
-          name: 'general_agent',
-          display_name: 'AI助手',
-          description: '通用智能体'
-        }
-      });
-      setMessages([]);
+      // 创建新会话
+      createNewSession();
     }
   }, [sessionId]);
+
+  // 创建新会话
+  const createNewSession = async () => {
+    try {
+      const response = await fetch(`${apiBase}/api/chat/sessions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: 'default_user', // 这里应该使用真实的用户ID
+          session_name: '新对话',
+          agent_type: 'general'
+        })
+      });
+      
+      if (response.ok) {
+        const sessionData = await response.json();
+        const newSession = {
+          id: sessionData.session_id,
+          session_id: sessionData.session_id,
+          title: sessionData.session_name,
+          agent: {
+            id: 1,
+            name: 'general_agent',
+            display_name: 'AI助手',
+            description: '通用智能体'
+          }
+        };
+        setCurrentSession(newSession);
+        setMessages([]);
+        setSessionCreated(true);
+        
+        // 更新URL，但不重新加载页面
+        navigate(`/chat/${sessionData.session_id}`, { replace: true });
+      } else {
+        console.error('创建会话失败');
+        message.error('创建会话失败');
+      }
+    } catch (error) {
+      console.error('创建会话失败:', error);
+      message.error('创建会话失败');
+    }
+  };
 
   // 加载会话信息
   const loadSession = async (sessionId: number) => {
@@ -202,23 +237,95 @@ const ChatPage: React.FC = () => {
         }
       }
 
-      // 保存用户消息到数据库
+      // 发送消息到智能体
       if (sessionId) {
         try {
-          await fetch(`/api/sessions/${sessionId}/messages`, {
+          const response = await fetch(`${apiBase}/api/chat/stream`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
             },
-                      body: JSON.stringify({
-            session_id: sessionId.toString(),
-            user_id: 'default',
-            message_type: 'user',
-            content: inputValue,
-          }),
+            body: JSON.stringify({
+              user_id: 'default_user',
+              message: inputValue,
+              session_id: sessionId.toString(),
+              agent_type: 'general'
+            })
           });
+
+          if (response.ok) {
+            const reader = response.body?.getReader();
+            if (reader) {
+              const decoder = new TextDecoder();
+              let buffer = '';
+              
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                
+                for (const line of lines) {
+                  if (line.startsWith('data: ')) {
+                    try {
+                      const data = JSON.parse(line.slice(6));
+                      
+                      if (data.type === 'content') {
+                        // 添加或更新助手消息
+                        setMessages(prev => {
+                          const lastMessage = prev[prev.length - 1];
+                          if (lastMessage && lastMessage.type === 'agent') {
+                            // 更新现有消息
+                            return prev.map((msg, index) => 
+                              index === prev.length - 1 
+                                ? { ...msg, content: msg.content + data.content }
+                                : msg
+                            );
+                          } else {
+                            // 创建新消息
+                            const agentMessage: Message = {
+                              id: Date.now().toString(),
+                              content: data.content,
+                              type: 'agent',
+                              timestamp: new Date(),
+                              agentName: currentSession?.agent?.display_name
+                            };
+                            return [...prev, agentMessage];
+                          }
+                        });
+                      } else if (data.type === 'tool_result') {
+                        // 添加工具执行结果
+                        setMessages(prev => {
+                          const lastMessage = prev[prev.length - 1];
+                          if (lastMessage && lastMessage.type === 'agent') {
+                            return prev.map((msg, index) => 
+                              index === prev.length - 1 
+                                ? { ...msg, content: msg.content + data.content }
+                                : msg
+                            );
+                          }
+                          return prev;
+                        });
+                      } else if (data.type === 'done') {
+                        // 消息完成
+                        console.log('聊天完成，使用的工具:', data.tools_used);
+                      }
+                    } catch (e) {
+                      console.error('解析SSE数据失败:', e);
+                    }
+                  }
+                }
+              }
+            }
+          } else {
+            console.error('发送消息失败');
+            message.error('发送消息失败');
+          }
         } catch (error) {
-          console.error('保存用户消息失败:', error);
+          console.error('发送消息失败:', error);
+          message.error('发送消息失败');
         }
       }
 
@@ -252,8 +359,9 @@ const ChatPage: React.FC = () => {
             'Pragma': 'no-cache'
           },
           body: JSON.stringify({
-            user_id: 'default',
+            user_id: 'default_user',
             message: inputValue,
+            session_id: sessionId?.toString(),
             agent_type: agentName,
             context: {}
           }),

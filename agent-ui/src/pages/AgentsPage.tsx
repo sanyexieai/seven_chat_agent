@@ -575,6 +575,12 @@ const AgentsPage: React.FC = () => {
                         <br />
                       </>
                     )}
+                    {agent.bound_tools && agent.bound_tools.length > 0 && (
+                      <>
+                        <Text type="secondary">绑定工具: {agent.bound_tools.join(', ')}</Text>
+                        <br />
+                      </>
+                    )}
                   </div>
                   <div style={{ marginTop: 'auto', paddingTop: 8 }}>
                     <Text type="secondary" style={{ fontSize: '12px' }}>

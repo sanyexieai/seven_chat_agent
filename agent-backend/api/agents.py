@@ -97,6 +97,38 @@ async def update_agent(
         agent = AgentService.update_agent(db, agent_id, agent_data)
         if not agent:
             raise HTTPException(status_code=404, detail="智能体不存在")
+        
+        # 重新加载智能体到agent_manager
+        try:
+            from main import agent_manager
+            if agent_manager:
+                # 根据智能体类型创建相应的智能体实例
+                if agent_data.agent_type == "general":
+                    from agents.prompt_driven_agent import PromptDrivenAgent
+                    system_prompt = agent_data.system_prompt or ""
+                    
+                    # 获取智能体的LLM配置
+                    llm_config = None
+                    if agent_data.llm_config_id:
+                        from services.agent_service import AgentService
+                        llm_config = AgentService.get_agent_llm_config(db, agent.id)
+                        logger.info(f"智能体 {agent.name} 使用特定LLM配置: {llm_config.get('provider') if llm_config else 'None'}")
+                    else:
+                        logger.info(f"智能体 {agent.name} 使用默认LLM配置")
+                    
+                    prompt_agent = PromptDrivenAgent(agent.name, agent.display_name, system_prompt, llm_config)
+                    agent_manager.agents[agent.name] = prompt_agent
+                    logger.info(f"智能体 {agent.name} 已重新加载到agent_manager")
+                elif agent_data.agent_type == "flow_driven":
+                    from agents.flow_driven_agent import FlowDrivenAgent
+                    flow_config = agent_data.flow_config or {}
+                    flow_agent = FlowDrivenAgent(agent.name, agent.display_name, flow_config)
+                    agent_manager.agents[agent.name] = flow_agent
+                    logger.info(f"智能体 {agent.name} 已重新加载到agent_manager")
+                
+        except Exception as e:
+            logger.warning(f"重新加载智能体到agent_manager失败: {str(e)}")
+        
         return agent
     except HTTPException:
         raise

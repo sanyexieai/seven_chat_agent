@@ -516,11 +516,13 @@ const AgentsPage: React.FC = () => {
         </Space>
       </div>
 
-      <Row gutter={[24, 24]}>
+      <Row gutter={[24, 24]} style={{ alignItems: 'stretch' }}>
         {agents.map((agent) => (
           <Col xs={24} sm={12} lg={8} key={agent.id}>
             <Card
               hoverable
+              style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+              bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column' }}
               actions={[
                 <Button
                   type="link"
@@ -541,33 +543,45 @@ const AgentsPage: React.FC = () => {
                 </Popconfirm>
               ]}
             >
-              <Card.Meta
-                avatar={getAgentIcon(agent.agent_type)}
-                title={
-                  <Space>
-                    {agent.display_name}
-                    <Tag color={getAgentTypeColor(agent.agent_type)}>
-                      {getAgentTypeLabel(agent.agent_type)}
-                    </Tag>
-                    <Tag color={agent.is_active ? 'green' : 'red'}>
-                      {agent.is_active ? '活跃' : '非活跃'}
-                    </Tag>
-                  </Space>
-                }
-                description={agent.description}
-              />
-              <div style={{ marginTop: 16 }}>
-                <Text type="secondary">名称: {agent.name}</Text>
-                <br />
-                {agent.llm_config && (
-                  <>
-                    <Text type="secondary">LLM: {agent.llm_config.display_name}</Text>
+              <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                <Card.Meta
+                  avatar={getAgentIcon(agent.agent_type)}
+                  title={
+                    <Space>
+                      {agent.display_name}
+                      <Tag color={getAgentTypeColor(agent.agent_type)}>
+                        {getAgentTypeLabel(agent.agent_type)}
+                      </Tag>
+                      <Tag color={agent.is_active ? 'green' : 'red'}>
+                        {agent.is_active ? '活跃' : '非活跃'}
+                      </Tag>
+                    </Space>
+                  }
+                  description={
+                    <div style={{ minHeight: '40px' }}>
+                      {agent.description || '暂无描述'}
+                    </div>
+                  }
+                />
+                <div style={{ marginTop: 16, flex: 1, display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ flex: 1 }}>
+                    <Text type="secondary">名称: {agent.name}</Text>
                     <br />
-                    <Text type="secondary">模型: {agent.llm_config.provider}/{agent.llm_config.model_name}</Text>
-                    <br />
-                  </>
-                )}
-                <Text type="secondary">创建时间: {new Date(agent.created_at).toLocaleString()}</Text>
+                    {agent.llm_config && (
+                      <>
+                        <Text type="secondary">LLM: {agent.llm_config.display_name}</Text>
+                        <br />
+                        <Text type="secondary">模型: {agent.llm_config.provider}/{agent.llm_config.model_name}</Text>
+                        <br />
+                      </>
+                    )}
+                  </div>
+                  <div style={{ marginTop: 'auto', paddingTop: 8 }}>
+                    <Text type="secondary" style={{ fontSize: '12px' }}>
+                      创建时间: {new Date(agent.created_at).toLocaleString()}
+                    </Text>
+                  </div>
+                </div>
               </div>
             </Card>
           </Col>

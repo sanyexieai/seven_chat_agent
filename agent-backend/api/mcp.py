@@ -296,15 +296,41 @@ async def sync_mcp_tools(
 ):
     """同步MCP服务器工具"""
     try:
+        logger.info(f"开始同步MCP服务器 {server_name} 的工具...")
+        
+        # 检查MCP助手是否可用
+        if not agent_manager.mcp_helper:
+            raise HTTPException(
+                status_code=503, 
+                detail="MCP助手未初始化，请检查MCP配置"
+            )
+        
         success = await agent_manager.sync_mcp_tools(server_name)
         if not success:
-            raise HTTPException(status_code=500, detail="同步MCP工具失败")
-        return {"message": "MCP工具同步成功"}
+            raise HTTPException(
+                status_code=500, 
+                detail=f"同步MCP服务器 {server_name} 的工具失败"
+            )
+        
+        # 获取同步后的工具数量
+        configs = await agent_manager.get_mcp_configs()
+        server_config = configs.get(server_name, {})
+        tools_count = len(server_config.get('tools', []))
+        
+        logger.info(f"MCP服务器 {server_name} 工具同步成功，共 {tools_count} 个工具")
+        return {
+            "message": "MCP工具同步成功",
+            "server_name": server_name,
+            "tools_count": tools_count
+        }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"同步MCP工具失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="同步MCP工具失败")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"同步MCP工具失败: {str(e)}"
+        )
 
 @router.get("/config")
 async def get_mcp_config(
@@ -316,4 +342,33 @@ async def get_mcp_config(
         return {"configs": configs}
     except Exception as e:
         logger.error(f"获取MCP配置失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="获取MCP配置失败") 
+        raise HTTPException(status_code=500, detail="获取MCP配置失败")
+
+@router.get("/servers/{server_name}/status")
+async def get_mcp_server_status(
+    server_name: str,
+    agent_manager: AgentManager = Depends(get_agent_manager)
+):
+    """获取MCP服务器状态和工具信息"""
+    try:
+        configs = await agent_manager.get_mcp_configs()
+        server_config = configs.get(server_name)
+        
+        if not server_config:
+            raise HTTPException(status_code=404, detail="MCP服务器不存在")
+        
+        # 检查MCP助手是否可用
+        mcp_helper_available = agent_manager.mcp_helper is not None
+        
+        return {
+            "server_name": server_name,
+            "config": server_config,
+            "mcp_helper_available": mcp_helper_available,
+            "tools_count": len(server_config.get('tools', [])),
+            "status": "active" if server_config.get('is_active') else "inactive"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取MCP服务器状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取MCP服务器状态失败") 

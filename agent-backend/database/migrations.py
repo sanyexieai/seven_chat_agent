@@ -31,7 +31,7 @@ def run_migrations():
     
     try:
         # 检查所有必需的表是否存在
-        required_tables = ['agents', 'knowledge_bases', 'documents', 'document_chunks', 'knowledge_base_queries']
+        required_tables = ['agents']
         missing_tables = []
         
         for table in required_tables:

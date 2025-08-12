@@ -1,0 +1,11 @@
+{
+  "api": {
+    "backend_port": 8000,
+    "frontend_port": 3000,
+    "host": "localhost"
+  },
+  "app": {
+    "name": "Seven Chat Agent",
+    "version": "1.0.0"
+  }
+} 

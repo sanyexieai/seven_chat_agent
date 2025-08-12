@@ -6,7 +6,9 @@ import {
   ApiOutlined,
   BranchesOutlined,
   ExperimentOutlined,
-  MessageOutlined
+  MessageOutlined,
+  BookOutlined,
+  SearchOutlined
 } from '@ant-design/icons';
 
 const { Title, Paragraph } = Typography;
@@ -19,7 +21,7 @@ const HomePage: React.FC = () => {
       title: '智能体管理',
       description: '创建和管理不同类型的智能体，包括提示词驱动、工具驱动和流程图驱动智能体',
       icon: <RobotOutlined style={{ fontSize: '48px', color: '#1890ff' }} />,
-      path: '/agents'
+      path: '/agent-management'
     },
     {
       title: 'MCP管理',
@@ -38,6 +40,18 @@ const HomePage: React.FC = () => {
       description: '测试智能体的功能和性能，支持实时对话和调试',
       icon: <ExperimentOutlined style={{ fontSize: '48px', color: '#722ed1' }} />,
       path: '/agent-test'
+    },
+    {
+      title: '知识库管理',
+      description: '管理和配置知识库，支持文档上传、存储和检索',
+      icon: <BookOutlined style={{ fontSize: '48px', color: '#13c2c2' }} />,
+      path: '/knowledge-base'
+    },
+    {
+      title: '知识库查询',
+      description: '查询和检索知识库中的信息，支持语义搜索',
+      icon: <SearchOutlined style={{ fontSize: '48px', color: '#eb2f96' }} />,
+      path: '/knowledge-query'
     }
   ];
 
@@ -106,6 +120,15 @@ const HomePage: React.FC = () => {
                 title="流程图"
                 value={2}
                 prefix={<BranchesOutlined />}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={6}>
+            <Card>
+              <Statistic
+                title="知识库"
+                value={3}
+                prefix={<BookOutlined />}
               />
             </Card>
           </Col>

@@ -331,9 +331,7 @@ const Sidebar: React.FC = () => {
           <Menu.Item key="/knowledge-query" icon={<SearchOutlined />}>
             知识库查询
           </Menu.Item>
-          <Menu.Item key="/tools" icon={<ToolOutlined />}>
-            工具管理
-          </Menu.Item>
+
           <Menu.Item key="/flow-editor" icon={<BranchesOutlined />}>
             流程图编辑器
           </Menu.Item>

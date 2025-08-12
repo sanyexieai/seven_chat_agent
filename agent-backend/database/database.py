@@ -48,7 +48,7 @@ def init_db():
     # 创建默认数据
     create_default_agents()
     create_default_llm_configs()
-    create_default_knowledge_bases()
+
 
 def create_default_agents():
     """创建默认智能体"""
@@ -219,48 +219,4 @@ def create_default_llm_configs():
     finally:
         db.close()
 
-def create_default_knowledge_bases():
-    """创建默认知识库"""
-    from models.database_models import KnowledgeBase, KnowledgeBaseCreate
-    from services.knowledge_base_service import KnowledgeBaseService
-    
-    db = SessionLocal()
-    try:
-        # 检查是否已有知识库
-        existing_kbs = db.query(KnowledgeBase).count()
-        if existing_kbs > 0:
-            return
-        
-        # 创建默认知识库
-        default_kbs = [
-            {
-                "name": "general_kb",
-                "display_name": "通用知识库",
-                "description": "包含通用知识和信息的知识库",
-                "owner_id": "system",
-                "is_public": True
-            },
-            {
-                "name": "tech_kb",
-                "display_name": "技术知识库",
-                "description": "包含技术文档和知识的知识库",
-                "owner_id": "system",
-                "is_public": True
-            }
-        ]
-        
-        kb_service = KnowledgeBaseService()
-        for kb_data in default_kbs:
-            try:
-                kb_create = KnowledgeBaseCreate(**kb_data)
-                kb = kb_service.create_knowledge_base(db, kb_create)
-                print(f"创建知识库: {kb.display_name}")
-            except Exception as e:
-                print(f"创建知识库失败 {kb_data['name']}: {str(e)}")
-        
-        print("默认知识库创建完成")
-        
-    except Exception as e:
-        print(f"创建默认知识库失败: {str(e)}")
-    finally:
-        db.close() 
+ 

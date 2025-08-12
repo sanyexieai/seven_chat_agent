@@ -267,46 +267,52 @@ class AgentManager:
                 
                 # 测试连接和工具加载
                 logger.info("开始测试MCP服务器连接...")
-                available_services = await self.mcp_helper.get_available_services()
-                logger.info(f"可用的MCP服务: {available_services}")
-                
-                # 为每个可用服务加载工具
-                for service_name in available_services:
-                    try:
-                        logger.info(f"正在从服务器 {service_name} 加载工具...")
-                        tools = await self.mcp_helper.get_tools(server_name=service_name)
-                        logger.info(f"服务器 {service_name} 加载了 {len(tools)} 个工具")
-                        
-                        # 更新数据库中的工具信息
-                        if service_name in self.mcp_configs:
-                            self.mcp_configs[service_name]['tools'] = []
-                            for tool in tools:
-                                if isinstance(tool, dict):
-                                    tool_info = {
-                                        'name': tool.get('name', ''),
-                                        'display_name': tool.get('displayName', ''),
-                                        'description': tool.get('description', ''),
-                                        'tool_type': tool.get('type', 'tool'),
-                                        'input_schema': tool.get('inputSchema', {}),
-                                        'output_schema': tool.get('outputSchema', {}),
-                                        'examples': tool.get('examples', [])
-                                    }
-                                else:
-                                    tool_info = {
-                                        'name': getattr(tool, 'name', ''),
-                                        'display_name': getattr(tool, 'display_name', ''),
-                                        'description': getattr(tool, 'description', ''),
-                                        'tool_type': getattr(tool, 'type', 'tool'),
-                                        'input_schema': getattr(tool, 'input_schema', {}),
-                                        'output_schema': getattr(tool, 'output_schema', {}),
-                                        'examples': getattr(tool, 'examples', [])
-                                    }
-                                self.mcp_configs[service_name]['tools'].append(tool_info)
-                                logger.info(f"  工具: {tool_info['name']} - {tool_info['description']}")
-                    except Exception as e:
-                        logger.error(f"从服务器 {service_name} 加载工具失败: {str(e)}")
-                        import traceback
-                        logger.error(f"错误堆栈: {traceback.format_exc()}")
+                try:
+                    available_services = await self.mcp_helper.get_available_services()
+                    logger.info(f"可用的MCP服务: {available_services}")
+                    
+                    # 为每个可用服务加载工具
+                    for service_name in available_services:
+                        try:
+                            logger.info(f"正在从服务器 {service_name} 加载工具...")
+                            tools = await self.mcp_helper.get_tools(server_name=service_name)
+                            logger.info(f"服务器 {service_name} 加载了 {len(tools)} 个工具")
+                            
+                            # 更新内存配置中的工具信息
+                            if service_name in self.mcp_configs:
+                                self.mcp_configs[service_name]['tools'] = []
+                                for tool in tools:
+                                    if isinstance(tool, dict):
+                                        tool_info = {
+                                            'name': tool.get('name', ''),
+                                            'display_name': tool.get('displayName', ''),
+                                            'description': tool.get('description', ''),
+                                            'tool_type': tool.get('type', 'tool'),
+                                            'input_schema': tool.get('inputSchema', {}),
+                                            'output_schema': tool.get('outputSchema', {}),
+                                            'examples': tool.get('examples', [])
+                                        }
+                                    else:
+                                        tool_info = {
+                                            'name': getattr(tool, 'name', ''),
+                                            'display_name': getattr(tool, 'display_name', ''),
+                                            'description': getattr(tool, 'description', ''),
+                                            'tool_type': getattr(tool, 'type', 'tool'),
+                                            'input_schema': getattr(tool, 'input_schema', {}),
+                                            'output_schema': getattr(tool, 'output_schema', {}),
+                                            'examples': getattr(tool, 'examples', [])
+                                        }
+                                    self.mcp_configs[service_name]['tools'].append(tool_info)
+                                    logger.info(f"  工具: {tool_info['name']} - {tool_info['description']}")
+                        except Exception as e:
+                            logger.error(f"从服务器 {service_name} 加载工具失败: {str(e)}")
+                            import traceback
+                            logger.error(f"错误堆栈: {traceback.format_exc()}")
+                            # 继续处理其他服务器，不中断整个流程
+                            continue
+                except Exception as e:
+                    logger.error(f"MCP服务连接测试失败: {str(e)}")
+                    logger.warning("MCP工具加载失败，但系统将继续运行")
                 
             else:
                 logger.warning("没有MCP配置，跳过MCP助手初始化")
@@ -635,9 +641,47 @@ class AgentManager:
                 logger.error(f"MCP服务器 {server_name} 配置不存在")
                 return False
             
-            # 获取工具列表（这里需要实际连接到MCP服务器获取工具）
-            # 暂时使用配置中的工具
-            tools = server_config.get('tools', [])
+            # 真正连接到MCP服务器获取工具
+            if not self.mcp_helper:
+                logger.error("MCP助手未初始化，无法同步工具")
+                return False
+            
+            try:
+                logger.info(f"正在从MCP服务器 {server_name} 获取工具...")
+                tools = await self.mcp_helper.get_tools(server_name=server_name)
+                logger.info(f"从MCP服务器 {server_name} 获取到 {len(tools)} 个工具")
+                
+                # 更新内存配置
+                self.mcp_configs[server_name]['tools'] = []
+                for tool in tools:
+                    if isinstance(tool, dict):
+                        tool_info = {
+                            'name': tool.get('name', ''),
+                            'display_name': tool.get('displayName', ''),
+                            'description': tool.get('description', ''),
+                            'tool_type': tool.get('type', 'tool'),
+                            'input_schema': tool.get('inputSchema', {}),
+                            'output_schema': tool.get('outputSchema', {}),
+                            'examples': tool.get('examples', [])
+                        }
+                    else:
+                        tool_info = {
+                            'name': getattr(tool, 'name', ''),
+                            'display_name': getattr(tool, 'display_name', ''),
+                            'description': getattr(tool, 'description', ''),
+                            'tool_type': getattr(tool, 'type', 'tool'),
+                            'input_schema': getattr(tool, 'input_schema', {}),
+                            'output_schema': getattr(tool, 'output_schema', {}),
+                            'examples': getattr(tool, 'examples', [])
+                        }
+                    self.mcp_configs[server_name]['tools'].append(tool_info)
+                    logger.info(f"  工具: {tool_info['name']} - {tool_info['description']}")
+                
+            except Exception as e:
+                logger.error(f"从MCP服务器 {server_name} 获取工具失败: {str(e)}")
+                # 如果获取失败，使用配置中的工具作为备用
+                tools = server_config.get('tools', [])
+                logger.warning(f"使用备用工具配置，共 {len(tools)} 个工具")
             
             # 清除现有工具
             db.query(DBMCPTool).filter(DBMCPTool.server_id == db_server.id).delete()

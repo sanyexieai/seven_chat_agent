@@ -19,6 +19,7 @@ import {
   LoadingOutlined
 } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
+import { apiConfigManager, getApiUrl } from '../utils/apiConfig';
 
 const { TextArea } = Input;
 const { Title, Paragraph } = Typography;
@@ -49,6 +50,11 @@ const AgentTestPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
 
+  // 初始化API配置
+  useEffect(() => {
+    apiConfigManager.initialize();
+  }, []);
+
   useEffect(() => {
     fetchAgents();
     // 从URL参数获取智能体ID
@@ -60,7 +66,7 @@ const AgentTestPage: React.FC = () => {
 
   const fetchAgents = async () => {
     try {
-      const response = await fetch('/api/agents');
+      const response = await fetch(getApiUrl('/api/agents'));
       if (response.ok) {
         const data = await response.json();
         setAgents(data);
@@ -71,6 +77,13 @@ const AgentTestPage: React.FC = () => {
       console.error('获取智能体列表失败:', error);
       message.error('获取智能体列表失败');
     }
+  };
+
+  // 根据选中的智能体ID获取智能体名称
+  const getSelectedAgentName = (): string => {
+    if (!selectedAgentId) return 'general_agent';
+    const agent = agents.find(a => a.id === selectedAgentId);
+    return agent ? agent.name : 'general_agent';
   };
 
   const handleSendMessage = async () => {
@@ -90,7 +103,7 @@ const AgentTestPage: React.FC = () => {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch(getApiUrl('/api/chat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -98,7 +111,8 @@ const AgentTestPage: React.FC = () => {
         body: JSON.stringify({
           user_id: 'test_user',
           message: userMessage.content,
-          agent_id: selectedAgentId
+          agent_type: getSelectedAgentName(),
+          context: {}
         }),
       });
 
@@ -107,7 +121,7 @@ const AgentTestPage: React.FC = () => {
         const agentMessage: Message = {
           id: (Date.now() + 1).toString(),
           type: 'agent',
-          content: data.content,
+          content: data.message || data.content || '抱歉，没有收到有效回复',
           timestamp: new Date()
         };
         setMessages(prev => [...prev, agentMessage]);
@@ -140,60 +154,95 @@ const AgentTestPage: React.FC = () => {
     setStreaming(true);
 
     try {
-      const response = await fetch('/api/chat/stream', {
+      console.log('开始流式请求...');
+      const response = await fetch(getApiUrl('/api/chat/stream'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         },
         body: JSON.stringify({
           user_id: 'test_user',
           message: userMessage.content,
-          agent_id: selectedAgentId
+          agent_type: getSelectedAgentName(),
+          context: {}
         }),
       });
 
-      if (response.ok) {
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let agentMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          type: 'agent',
-          content: '',
-          timestamp: new Date()
-        };
+      console.log('流式响应状态:', response.status, response.statusText);
 
-        setMessages(prev => [...prev, agentMessage]);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('无法获取响应流');
+      }
 
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n');
+      let agentMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: 'agent',
+        content: '',
+        timestamp: new Date()
+      };
 
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6);
-                if (data === '[DONE]') {
-                  break;
-                }
-                try {
-                  const parsed = JSON.parse(data);
-                  if (parsed.content) {
-                    agentMessage.content += parsed.content;
-                    setMessages(prev => [...prev.slice(0, -1), { ...agentMessage }]);
-                  }
-                } catch (e) {
-                  // 忽略解析错误
-                }
+      setMessages(prev => [...prev, agentMessage]);
+
+      let fullContent = '';
+      const decoder = new TextDecoder(undefined, { fatal: false });
+
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        
+        // 处理完整的行
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // 保留最后一个不完整的行
+        
+        for (const line of lines) {
+          if (line.trim() && line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              console.log('收到流式数据:', data);
+              
+              if (data.type === 'content' && data.content) {
+                fullContent += data.content;
+                console.log('收到内容块:', data.content, '累积内容:', fullContent);
+                
+                // 实时更新消息内容
+                setMessages(prev => {
+                  const newMessages = prev.map(msg => 
+                    msg.id === agentMessage.id 
+                      ? { ...msg, content: fullContent }
+                      : msg
+                  );
+                  return newMessages;
+                });
+                
+              } else if (data.type === 'done') {
+                console.log('流式响应完成，使用的工具:', data.tools_used);
+                
+              } else if (data.error) {
+                // 处理错误
+                setMessages(prev => prev.map(msg => 
+                  msg.id === agentMessage.id 
+                    ? { ...msg, content: `错误: ${data.error}` }
+                    : msg
+                ));
+                console.error('流式响应错误:', data.error);
               }
+            } catch (e) {
+              console.error('解析流式数据失败:', e, line);
             }
           }
         }
-      } else {
-        const error = await response.json();
-        message.error(`流式发送消息失败: ${error.detail || '未知错误'}`);
       }
     } catch (error) {
       console.error('流式发送消息失败:', error);

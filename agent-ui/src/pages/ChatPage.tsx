@@ -430,27 +430,16 @@ const ChatPage: React.FC = () => {
         {/* 消息列表 */}
         <div className="messages-container">
           {loading ? (
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'center', 
-              alignItems: 'center', 
-              height: '200px' 
-            }}>
+            <div className="loading-container">
               <Spin size="large" />
             </div>
           ) : (
             <div className="messages-list">
               {messages.length === 0 ? (
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'center', 
-                  alignItems: 'center', 
-                  height: '200px',
-                  flexDirection: 'column'
-                }}>
-                  <RobotOutlined style={{ fontSize: 48, color: '#d9d9d9', marginBottom: 16 }} />
-                  <Text type="secondary" style={{ marginBottom: 8 }}>欢迎使用AI助手！</Text>
-                  <Text type="secondary" style={{ fontSize: 12 }}>直接输入消息开始聊天，系统会自动创建会话</Text>
+                <div className="empty-container">
+                  <RobotOutlined className="empty-icon" />
+                  <Text type="secondary" className="empty-title">欢迎使用AI助手！</Text>
+                  <Text type="secondary" className="empty-subtitle">直接输入消息开始聊天，系统会自动创建会话</Text>
                 </div>
               ) : (
                 messages.map((message) => (
@@ -510,7 +499,7 @@ const ChatPage: React.FC = () => {
               >
                 发送
               </Button>
-                          </div>
+            </div>
           </div>
         </div>
       </div>

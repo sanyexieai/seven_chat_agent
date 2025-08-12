@@ -180,8 +180,9 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                             
                         except Exception as llm_error:
                             logger.error(f"流式LLM调用失败: {str(llm_error)}")
-                            # 回退到逐字符显示
-                            for char in response_message:
+                            # 回退到错误消息显示
+                            error_message = f"抱歉，LLM调用失败: {str(llm_error)}"
+                            for char in error_message:
                                 yield f"data: {json.dumps({'content': char, 'type': 'content'}, ensure_ascii=False)}\n\n"
                             yield f"data: {json.dumps({'type': 'done', 'tools_used': tools_used}, ensure_ascii=False)}\n\n"
                         

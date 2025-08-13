@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import Layout from './components/Layout';
-import HomePage from './pages/HomePage';
 import AgentsPage from './pages/AgentsPage';
 import AgentTestPage from './pages/AgentTestPage';
 import MCPPage from './pages/MCPPage';
@@ -25,7 +24,7 @@ const App: React.FC = () => {
       <Router>
         <Layout>
           <Routes>
-            <Route path="/" element={<HomePage />} />
+            <Route path="/" element={<ChatPage />} />
 
             <Route path="/agent-management" element={<AgentsPage />} />
             <Route path="/agent-test" element={<AgentTestPage />} />

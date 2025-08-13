@@ -54,6 +54,8 @@ const ChatPage: React.FC = () => {
     display_name: string;
     description?: string;
   }>>([]);
+  // 防止重复处理根路径访问的标志
+  const [hasHandledRootPath, setHasHandledRootPath] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
@@ -62,14 +64,19 @@ const ChatPage: React.FC = () => {
 
   // 处理sessionId变化
   useEffect(() => {
-    if (sessionId) {
+    if (sessionId && !isNaN(parseInt(sessionId))) {
       // 加载指定会话
       loadSession(parseInt(sessionId));
-    } else {
-      // 创建新会话
-      createNewSession();
     }
   }, [sessionId]);
+
+  // 处理根路径访问（只在组件初始化时执行一次）
+  useEffect(() => {
+    if (!sessionId && !hasHandledRootPath) {
+      setHasHandledRootPath(true);
+      handleRootPathAccess();
+    }
+  }, [hasHandledRootPath]);
 
   // 获取智能体列表
   useEffect(() => {
@@ -95,8 +102,108 @@ const ChatPage: React.FC = () => {
     }
   };
 
+  // 处理根路径访问
+  const handleRootPathAccess = async () => {
+    try {
+      console.log('开始检查现有会话...');
+      const response = await fetch('/api/sessions?user_id=default_user');
+      console.log('API响应状态:', response.status, response.statusText);
+      
+      if (response.ok) {
+        const sessions = await response.json();
+        console.log('获取到的会话列表:', sessions);
+        console.log('会话数量:', Array.isArray(sessions) ? sessions.length : '不是数组');
+        
+        if (Array.isArray(sessions) && sessions.length > 0) {
+          console.log('有现有会话，开始排序...');
+          // 有现有会话，选择最新的一条（按创建时间排序）
+          const sortedSessions = sessions.sort((a, b) => {
+            const timeA = new Date(a.created_at || 0).getTime();
+            const timeB = new Date(b.created_at || 0).getTime();
+            console.log(`比较会话: ${a.id}(${a.created_at}) vs ${b.id}(${b.created_at})`);
+            return timeB - timeA; // 降序排列，最新的在前
+          });
+          console.log('排序后的会话:', sortedSessions);
+          
+          const latestSession = sortedSessions[0];
+          console.log('选择最新会话:', latestSession);
+          setCurrentSession(latestSession);
+          
+          // 确保有选中的智能体
+          if (!selectedAgent && agents.length > 0) {
+            setSelectedAgent(agents[0]);
+          }
+          
+          // 加载会话消息
+          if (latestSession.id) {
+            console.log('加载会话消息，ID:', latestSession.id);
+            loadSessionMessages(latestSession.id);
+          }
+          // 更新URL，不替换，直接跳转
+          console.log('跳转到会话:', `/chat/${latestSession.id}`);
+          navigate(`/chat/${latestSession.id}`);
+        } else {
+          console.log('没有现有会话，创建新会话');
+          // 没有现有会话，创建新会话
+          createNewSession();
+        }
+      } else {
+        // API调用失败，创建新会话
+        console.error('获取会话列表失败，创建新会话');
+        createNewSession();
+      }
+    } catch (error) {
+      console.error('检查现有会话失败，创建新会话:', error);
+      createNewSession();
+    }
+  };
+
+  // 检查现有会话（保留用于其他用途）
+  const checkExistingSessions = async () => {
+    try {
+      const response = await fetch('/api/sessions?user_id=default_user');
+      if (response.ok) {
+        const sessions = await response.json();
+        if (Array.isArray(sessions) && sessions.length > 0) {
+          // 有现有会话，选择最新的一条（按创建时间排序）
+          const sortedSessions = sessions.sort((a, b) => {
+            const timeA = new Date(a.created_at || 0).getTime();
+            const timeB = new Date(b.created_at || 0).getTime();
+            return timeB - timeA; // 降序排列，最新的在前
+          });
+          const latestSession = sortedSessions[0];
+          console.log('选择最新会话:', latestSession);
+          setCurrentSession(latestSession);
+          
+          // 确保有选中的智能体
+          if (!selectedAgent && agents.length > 0) {
+            setSelectedAgent(agents[0]);
+          }
+          
+          // 加载会话消息
+          if (latestSession.id) {
+            loadSessionMessages(latestSession.id);
+          }
+          // 更新URL，不替换，直接跳转
+          navigate(`/chat/${latestSession.id}`);
+        } else {
+          // 没有现有会话，创建新会话
+          createNewSession();
+        }
+      } else {
+        // API调用失败，创建新会话
+        console.error('获取会话列表失败，创建新会话');
+        createNewSession();
+    }
+    } catch (error) {
+      console.error('检查现有会话失败，创建新会话:', error);
+      createNewSession();
+    }
+  };
+
   // 创建新会话
   const createNewSession = async () => {
+    console.log('开始创建新会话...');
     try {
       const response = await fetch(`${apiBase}/api/chat/sessions`, {
         method: 'POST',
@@ -113,7 +220,7 @@ const ChatPage: React.FC = () => {
       if (response.ok) {
         const sessionData = await response.json();
         const newSession = {
-          id: sessionData.session_id,
+          id: sessionData.id,
           session_id: sessionData.session_id,
           title: sessionData.session_name
           // 不再设置默认智能体
@@ -124,10 +231,18 @@ const ChatPage: React.FC = () => {
         // 设置默认智能体（使用第一个可用的智能体）
         if (agents.length > 0) {
           setSelectedAgent(agents[0]);
+        } else {
+          // 如果智能体列表还没有加载完成，等待加载完成后再设置
+          setTimeout(() => {
+            if (agents.length > 0 && !selectedAgent) {
+              setSelectedAgent(agents[0]);
+            }
+          }, 100);
         }
         
-        // 更新URL，但不重新加载页面
-        navigate(`/chat/${sessionData.session_id}`, { replace: true });
+        // 更新URL，直接跳转到新会话
+        console.log('创建新会话成功，跳转到:', `/chat/${sessionData.id}`);
+        navigate(`/chat/${sessionData.id}`);
       } else {
         console.error('创建会话失败');
         message.error('创建会话失败');
@@ -140,11 +255,24 @@ const ChatPage: React.FC = () => {
 
   // 加载会话信息
   const loadSession = async (sessionId: number) => {
+    // 验证sessionId是否有效
+    if (isNaN(sessionId) || sessionId <= 0) {
+      console.error('无效的会话ID:', sessionId);
+      message.error('无效的会话ID');
+      return;
+    }
+    
     try {
       const response = await fetch(`/api/sessions/${sessionId}`);
       if (response.ok) {
         const session = await response.json();
         setCurrentSession(session);
+        
+        // 确保有选中的智能体
+        if (!selectedAgent && agents.length > 0) {
+          setSelectedAgent(agents[0]);
+        }
+        
         // 加载会话的历史消息
         loadSessionMessages(sessionId);
       } else {
@@ -159,26 +287,41 @@ const ChatPage: React.FC = () => {
 
   // 加载会话消息
   const loadSessionMessages = async (sessionId: number) => {
+    // 验证sessionId是否有效
+    if (isNaN(sessionId) || sessionId <= 0) {
+      console.error('无效的会话ID:', sessionId);
+      return;
+    }
+    
     try {
       const response = await fetch(`/api/sessions/${sessionId}/messages`);
       if (response.ok) {
         const messages = await response.json();
         console.log('加载的消息:', messages); // 调试日志
-        const formattedMessages = messages.map((msg: any) => ({
-          id: msg.id,
-          content: msg.content,
-          type: msg.message_type === 'user' ? 'user' : 'agent',
-          timestamp: new Date(msg.created_at),
-          agentName: msg.agent_name
-        }));
-        setMessages(formattedMessages);
+        
+        if (Array.isArray(messages) && messages.length > 0) {
+          // 有消息，格式化显示
+          const formattedMessages: Message[] = messages.map((msg: any) => ({
+            id: msg.id,
+            content: msg.content,
+            type: msg.message_type === 'user' ? 'user' : 'agent',
+            timestamp: new Date(msg.created_at),
+            agentName: msg.agent_name
+          }));
+          setMessages(formattedMessages);
+        } else {
+          // 没有消息，显示空消息列表
+          setMessages([]);
+        }
       } else {
         console.error('加载会话消息失败');
+        // 显示空消息列表
         setMessages([]);
       }
     } catch (error) {
       console.error('加载会话消息失败:', error);
-      setMessages([]);
+              // 显示空消息列表
+        setMessages([]);
     }
   };
 
@@ -246,8 +389,14 @@ const ChatPage: React.FC = () => {
         }
       }
 
+      // 检查是否选择了智能体
+      if (!selectedAgent) {
+        message.error('请先选择智能体');
+        return;
+      }
+
       // 发送消息到智能体
-      if (currentSession?.session_id && selectedAgent) {
+      if (currentSession?.session_id) {
         // 创建智能体消息占位符
         const agentMessageId = (Date.now() + 1).toString();
         const agentMessage: Message = {
@@ -410,44 +559,36 @@ const ChatPage: React.FC = () => {
             </div>
           ) : (
             <div className="messages-list">
-              {messages.length === 0 ? (
-                <div className="empty-container">
-                  <RobotOutlined className="empty-icon" />
-                  <Text type="secondary" className="empty-title">欢迎使用AI助手！</Text>
-                  <Text type="secondary" className="empty-subtitle">直接输入消息开始聊天，系统会自动创建会话</Text>
-                </div>
-              ) : (
-                messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`message-wrapper ${message.type === 'user' ? 'user' : 'agent'}`}
-                  >
-                    <div className="message-content">
-                      <Avatar 
-                        icon={message.type === 'user' 
-                          ? <UserOutlined style={{ color: '#fff' }} /> 
-                          : <RobotOutlined style={{ color: '#1890ff' }} />}
-                        size={36}
-                        className="message-avatar"
-                        style={message.type === 'user' 
-                          ? { backgroundColor: '#1890ff' }
-                          : { backgroundColor: '#e6f7ff', border: '1px solid #91d5ff' }}
-                      />
-                      <div className="message-bubble">
-                        <div className="message-header">
-                          <Text className="message-name">
-                            {message.agentName || (message.type === 'user' ? '我' : 'AI助手')}
-                          </Text>
-                        </div>
-                        <div className="message-text">{message.content}</div>
-                        <div className="message-time">
-                          {formatTime(message.timestamp)}
-                        </div>
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`message-wrapper ${message.type === 'user' ? 'user' : 'agent'}`}
+                >
+                  <div className="message-content">
+                    <Avatar 
+                      icon={message.type === 'user' 
+                        ? <UserOutlined style={{ color: '#fff' }} /> 
+                        : <RobotOutlined style={{ color: '#1890ff' }} />}
+                      size={36}
+                      className="message-avatar"
+                      style={message.type === 'user' 
+                        ? { backgroundColor: '#1890ff' }
+                        : { backgroundColor: '#e6f6ff', border: '1px solid #91d5ff' }}
+                    />
+                    <div className="message-bubble">
+                      <div className="message-header">
+                        <Text className="message-name">
+                          {message.agentName || (message.type === 'user' ? '我' : 'AI助手')}
+                        </Text>
+                      </div>
+                      <div className="message-text">{message.content}</div>
+                      <div className="message-time">
+                        {formatTime(message.timestamp)}
                       </div>
                     </div>
                   </div>
-                ))
-              )}
+                </div>
+              ))}
               <div ref={messagesEndRef} />
             </div>
           )}

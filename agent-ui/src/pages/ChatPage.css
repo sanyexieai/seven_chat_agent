@@ -352,28 +352,4 @@
   height: 200px;
 }
 
-/* 空状态样式 */
-.empty-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 200px;
-  flex-direction: column;
-  color: #8c8c8c;
-}
-
-.empty-icon {
-  font-size: 48px;
-  color: #d9d9d9;
-  margin-bottom: 16px;
-}
-
-.empty-title {
-  margin-bottom: 8px;
-  font-size: 14px;
-}
-
-.empty-subtitle {
-  font-size: 12px;
-  color: #bfbfbf;
-} 
+ 

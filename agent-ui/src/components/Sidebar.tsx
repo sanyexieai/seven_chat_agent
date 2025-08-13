@@ -83,13 +83,25 @@ const Sidebar: React.FC = () => {
 
   const fetchSessions = async (agentId?: number) => {
     try {
+      // 使用正确的URL格式：/api/chat/sessions/{user_id}
       const url = agentId 
-        ? `/api/sessions?user_id=default&agent_id=${agentId}`
-        : '/api/sessions?user_id=default';
+        ? `/api/chat/sessions/default_user?agent_id=${agentId}`
+        : '/api/chat/sessions/default_user';
       const response = await fetch(url);
       const data = await response.json();
-      // 确保data是数组
-      setSessions(Array.isArray(data) ? data : []);
+      
+      console.log('获取会话列表响应:', data);
+      
+      // 处理新的API响应格式
+      if (data.success && Array.isArray(data.sessions)) {
+        setSessions(data.sessions);
+      } else if (Array.isArray(data)) {
+        // 兼容旧格式
+        setSessions(data);
+      } else {
+        console.warn('会话数据格式不正确:', data);
+        setSessions([]);
+      }
     } catch (error) {
       console.error('获取会话失败:', error);
       setSessions([]);
@@ -100,7 +112,7 @@ const Sidebar: React.FC = () => {
 
   const handleSessionSelect = (sessionId: number) => {
     setSelectedSession(sessionId);
-    // 这里可以触发消息加载
+    // 跳转到聊天页面
     navigate(`/chat/${sessionId}`);
   };
 
@@ -113,7 +125,7 @@ const Sidebar: React.FC = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          user_id: 'default',
+          user_id: 'default_user',
           session_name: '新对话'
         }),
       });
@@ -121,8 +133,8 @@ const Sidebar: React.FC = () => {
       if (response.ok) {
         const sessionData = await response.json();
         fetchSessions();
-        // 创建成功后跳转到聊天页面
-        navigate(`/chat/${sessionData.session_id}`);
+        // 创建成功后跳转到聊天页面，使用数字ID
+        navigate(`/chat/${sessionData.id}`);
       }
     } catch (error) {
       console.error('创建会话失败:', error);
@@ -184,7 +196,7 @@ const Sidebar: React.FC = () => {
                     borderRadius: '4px',
                     marginBottom: '4px',
                   }}
-                  onClick={() => handleSessionSelect(session.id)}
+                  onClick={() => handleSessionSelect(session.id || parseInt(session.session_id))}
                 >
                   <List.Item.Meta
                     avatar={<Avatar icon={<MessageOutlined />} size="small" />}

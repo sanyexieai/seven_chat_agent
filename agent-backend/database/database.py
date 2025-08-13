@@ -137,7 +137,7 @@ def create_default_llm_configs():
                 "display_name": "Ollama Qwen 模型",
                 "description": "Ollama Qwen 模型配置",
                 "provider": "ollama",
-                "model_name": "qwen2.5:7b",
+                "model_name": "qwen3:32b",
                 "api_key": "",
                 "api_base": "http://localhost:11434",
                 "config": {

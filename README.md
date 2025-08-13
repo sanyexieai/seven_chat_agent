@@ -193,7 +193,7 @@ npm start
 3. **Ollama使用指南**
    - 下载并安装Ollama: https://ollama.ai
    - 启动Ollama服务: `ollama serve`
-   - 下载模型: `ollama pull qwen2.5:7b`
+   - 下载模型: `ollama pull qwen3:32b`
    - 在前端选择"Ollama"提供商进行配置
    - 使用"快速Ollama配置"按钮快速创建配置
 

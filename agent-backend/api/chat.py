@@ -343,6 +343,7 @@ async def create_chat_session(request: dict, db: Session = Depends(get_db)):
         logger.info(f"创建聊天会话: {session.session_id}, 智能体: {agent_id or '未选择'}")
         return {
             "success": True,
+            "id": session.id,  # 添加数字ID
             "session_id": session.session_id,
             "session_name": session.session_name,
             "agent_id": session.agent_id,
@@ -365,6 +366,7 @@ async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
             "success": True,
             "sessions": [
                 {
+                    "id": session.id,  # 添加数字ID
                     "session_id": session.session_id,
                     "session_name": session.session_name,
                     "agent_id": session.agent_id,  # 修复字段名

@@ -18,7 +18,7 @@ interface Message {
 }
 
 interface Session {
-  id?: number;
+  id?: number | string; // 支持临时ID（字符串）
   session_id?: string;
   title: string;
   // 移除强制绑定的智能体，改为可选
@@ -29,6 +29,7 @@ interface Session {
     description?: string;
   };
   created_at?: string;
+  isTemp?: boolean; // 标记是否为临时会话
 }
 
 const ChatPage: React.FC = () => {
@@ -64,9 +65,14 @@ const ChatPage: React.FC = () => {
 
   // 处理sessionId变化
   useEffect(() => {
-    if (sessionId && !isNaN(parseInt(sessionId))) {
-      // 加载指定会话
-      loadSession(parseInt(sessionId));
+    if (sessionId) {
+      if (sessionId.startsWith('temp_')) {
+        // 临时会话，不需要加载
+        console.log('临时会话，跳过加载');
+      } else if (!isNaN(parseInt(sessionId))) {
+        // 加载指定会话
+        loadSession(parseInt(sessionId));
+      }
     }
   }, [sessionId]);
 
@@ -143,18 +149,18 @@ const ChatPage: React.FC = () => {
           console.log('跳转到会话:', `/chat/${latestSession.id}`);
           navigate(`/chat/${latestSession.id}`);
         } else {
-          console.log('没有现有会话，创建新会话');
-          // 没有现有会话，创建新会话
-          createNewSession();
+          console.log('没有现有会话，创建临时会话');
+          // 没有现有会话，创建临时会话
+          createTempSession();
         }
       } else {
-        // API调用失败，创建新会话
-        console.error('获取会话列表失败，创建新会话');
-        createNewSession();
+        // API调用失败，创建临时会话
+        console.error('获取会话列表失败，创建临时会话');
+        createTempSession();
       }
     } catch (error) {
-      console.error('检查现有会话失败，创建新会话:', error);
-      createNewSession();
+      console.error('检查现有会话失败，创建临时会话:', error);
+      createTempSession();
     }
   };
 
@@ -187,76 +193,59 @@ const ChatPage: React.FC = () => {
           // 更新URL，不替换，直接跳转
           navigate(`/chat/${latestSession.id}`);
         } else {
-          // 没有现有会话，创建新会话
-          createNewSession();
+          // 没有现有会话，创建临时会话
+          createTempSession();
         }
       } else {
-        // API调用失败，创建新会话
-        console.error('获取会话列表失败，创建新会话');
-        createNewSession();
+        // API调用失败，创建临时会话
+        console.error('获取会话列表失败，创建临时会话');
+        createTempSession();
     }
     } catch (error) {
-      console.error('检查现有会话失败，创建新会话:', error);
-      createNewSession();
+      console.error('检查现有会话失败，创建临时会话:', error);
+      createTempSession();
     }
   };
 
-  // 创建新会话
-  const createNewSession = async () => {
-    console.log('开始创建新会话...');
-    try {
-      const response = await fetch(`${apiBase}/api/chat/sessions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          user_id: 'default_user', // 这里应该使用真实的用户ID
-          session_name: '新对话'
-          // 不再强制绑定智能体
-        })
-      });
-      
-      if (response.ok) {
-        const sessionData = await response.json();
-        const newSession = {
-          id: sessionData.id,
-          session_id: sessionData.session_id,
-          title: sessionData.session_name
-          // 不再设置默认智能体
-        };
-        setCurrentSession(newSession);
-        setMessages([]);
-        
-        // 设置默认智能体（使用第一个可用的智能体）
-        if (agents.length > 0) {
+  // 创建临时会话（不保存到数据库）
+  const createTempSession = () => {
+    console.log('创建临时会话...');
+    const tempSession = {
+      id: `temp_${Date.now()}`, // 临时ID
+      session_id: `temp_${Date.now()}`, // 临时session_id
+      title: '新对话',
+      isTemp: true // 标记为临时会话
+    };
+    setCurrentSession(tempSession);
+    setMessages([]);
+    
+    // 设置默认智能体（使用第一个可用的智能体）
+    if (agents.length > 0) {
+      setSelectedAgent(agents[0]);
+    } else {
+      // 如果智能体列表还没有加载完成，等待加载完成后再设置
+      setTimeout(() => {
+        if (agents.length > 0 && !selectedAgent) {
           setSelectedAgent(agents[0]);
-        } else {
-          // 如果智能体列表还没有加载完成，等待加载完成后再设置
-          setTimeout(() => {
-            if (agents.length > 0 && !selectedAgent) {
-              setSelectedAgent(agents[0]);
-            }
-          }, 100);
         }
-        
-        // 更新URL，直接跳转到新会话
-        console.log('创建新会话成功，跳转到:', `/chat/${sessionData.id}`);
-        navigate(`/chat/${sessionData.id}`);
-      } else {
-        console.error('创建会话失败');
-        message.error('创建会话失败');
-      }
-    } catch (error) {
-      console.error('创建会话失败:', error);
-      message.error('创建会话失败');
+      }, 100);
     }
+    
+    // 更新URL，使用临时ID
+    console.log('创建临时会话，跳转到:', `/chat/${tempSession.id}`);
+    navigate(`/chat/${tempSession.id}`);
   };
 
   // 加载会话信息
-  const loadSession = async (sessionId: number) => {
+  const loadSession = async (sessionId: number | string) => {
     // 验证sessionId是否有效
-    if (isNaN(sessionId) || sessionId <= 0) {
+    if (typeof sessionId === 'string' && sessionId.startsWith('temp_')) {
+      // 临时会话，不需要加载
+      console.log('临时会话，跳过加载');
+      return;
+    }
+    
+    if (typeof sessionId === 'number' && (isNaN(sessionId) || sessionId <= 0)) {
       console.error('无效的会话ID:', sessionId);
       message.error('无效的会话ID');
       return;
@@ -286,9 +275,15 @@ const ChatPage: React.FC = () => {
   };
 
   // 加载会话消息
-  const loadSessionMessages = async (sessionId: number) => {
+  const loadSessionMessages = async (sessionId: number | string) => {
     // 验证sessionId是否有效
-    if (isNaN(sessionId) || sessionId <= 0) {
+    if (typeof sessionId === 'string' && sessionId.startsWith('temp_')) {
+      // 临时会话，不需要加载消息
+      console.log('临时会话，跳过加载消息');
+      return;
+    }
+    
+    if (typeof sessionId === 'number' && (isNaN(sessionId) || sessionId <= 0)) {
       console.error('无效的会话ID:', sessionId);
       return;
     }
@@ -370,6 +365,78 @@ const ChatPage: React.FC = () => {
     setInputValue('');
 
     try {
+      // 检查是否选择了智能体
+      if (!selectedAgent) {
+        message.error('请先选择智能体');
+        return;
+      }
+
+      // 如果是临时会话且是第一条消息，先创建真正的会话
+      if (currentSession?.isTemp && messages.length === 0) {
+        console.log('临时会话发送第一条消息，创建真正会话...');
+        try {
+          const response = await fetch(`${apiBase}/api/chat/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              user_id: 'default_user',
+              session_name: extractTitleFromMessage(inputValue)
+            })
+          });
+          
+          if (response.ok) {
+            const sessionData = await response.json();
+            const realSession = {
+              id: sessionData.id,
+              session_id: sessionData.session_id,
+              title: sessionData.session_name,
+              isTemp: false
+            };
+            setCurrentSession(realSession);
+            
+            // 更新URL为真正的会话ID，使用replace避免重新渲染
+            window.history.replaceState(null, '', `/chat/${sessionData.id}`);
+            
+            console.log('创建真正会话成功:', realSession);
+            
+            // 立即保存用户消息到数据库
+            try {
+              const messageResponse = await fetch(`${apiBase}/api/sessions/${sessionData.id}/messages`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  user_id: 'default_user',
+                  message_type: 'user',
+                  content: inputValue,
+                  agent_name: selectedAgent.name,
+                  metadata: {}
+                })
+              });
+              
+              if (messageResponse.ok) {
+                console.log('用户消息保存成功');
+              } else {
+                console.error('保存用户消息失败');
+              }
+            } catch (error) {
+              console.error('保存用户消息失败:', error);
+            }
+          } else {
+            console.error('创建会话失败');
+            message.error('创建会话失败');
+            return;
+          }
+        } catch (error) {
+          console.error('创建会话失败:', error);
+          message.error('创建会话失败');
+          return;
+        }
+      }
+
       // 确保有当前会话
       if (!currentSession?.session_id) {
         message.error('请先创建会话');
@@ -377,7 +444,7 @@ const ChatPage: React.FC = () => {
       }
 
       // 如果是第一次发送消息，更新会话标题
-      if (messages.length === 0) {
+      if (messages.length === 0 && !currentSession.isTemp) {
         const title = extractTitleFromMessage(inputValue);
         // 更新会话标题
         try {
@@ -387,12 +454,6 @@ const ChatPage: React.FC = () => {
         } catch (error) {
           console.error('更新会话标题失败:', error);
         }
-      }
-
-      // 检查是否选择了智能体
-      if (!selectedAgent) {
-        message.error('请先选择智能体');
-        return;
       }
 
       // 发送消息到智能体
@@ -471,7 +532,32 @@ const ChatPage: React.FC = () => {
                     }
                     
                   } else if (data.type === 'done') {
-                    // 流式响应完成
+                    // 流式响应完成，保存智能体回复消息到数据库
+                    if (!currentSession.isTemp && fullContent.trim()) {
+                      try {
+                        const messageResponse = await fetch(`${apiBase}/api/sessions/${currentSession.id}/messages`, {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                          },
+                          body: JSON.stringify({
+                            user_id: 'default_user',
+                            message_type: 'agent',
+                            content: fullContent,
+                            agent_name: selectedAgent.name,
+                            metadata: {}
+                          })
+                        });
+                        
+                        if (messageResponse.ok) {
+                          console.log('智能体回复消息保存成功');
+                        } else {
+                          console.error('保存智能体回复消息失败');
+                        }
+                      } catch (error) {
+                        console.error('保存智能体回复消息失败:', error);
+                      }
+                    }
                   } else if (data.error) {
                     setMessages(prev => prev.map(msg => 
                       msg.id === agentMessageId 

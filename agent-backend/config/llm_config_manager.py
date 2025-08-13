@@ -179,7 +179,7 @@ class LLMConfigManager:
         # 返回默认本地配置
         return {
             "api_base": os.getenv("LOCAL_API_BASE", "http://localhost:11434"),
-            "model": "qwen2.5:7b",
+            "model": "qwen3:32b",
             "temperature": 0.7,
             "max_tokens": 2048
         }
@@ -199,7 +199,7 @@ class LLMConfigManager:
         # 返回默认Ollama配置
         return {
             "api_base": os.getenv("OLLAMA_API_BASE", "http://localhost:11434"),
-            "model": "qwen2.5:7b",
+            "model": "qwen3:32b",
             "temperature": 0.7,
             "max_tokens": 2048
         }

@@ -97,8 +97,16 @@ async def get_session_messages(
 ):
     """获取会话消息"""
     try:
-        messages = MessageService.get_session_messages(db, session_id, limit)
+        # 先根据数字ID查找会话，获取UUID
+        session = SessionService.get_session_by_id(db, session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        # 使用会话的UUID查询消息
+        messages = MessageService.get_session_messages(db, session.session_id, limit)
         return messages
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"获取会话消息失败: {str(e)}")
         raise HTTPException(status_code=500, detail="获取会话消息失败")
@@ -111,10 +119,17 @@ async def create_message(
 ):
     """创建消息"""
     try:
-        # 确保session_id一致
-        message_data.session_id = session_id
+        # 先根据数字ID查找会话，获取UUID
+        session = SessionService.get_session_by_id(db, session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        # 使用会话的UUID创建消息
+        message_data.session_id = session.session_id
         message = MessageService.create_message(db, message_data)
         return message
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"创建消息失败: {str(e)}")
         raise HTTPException(status_code=500, detail="创建消息失败")

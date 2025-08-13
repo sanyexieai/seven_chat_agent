@@ -181,7 +181,7 @@ const LLMConfigPage: React.FC = () => {
       display_name: 'Ollama Qwen 模型',
       description: 'Ollama Qwen 模型配置',
       provider: 'ollama',
-      model_name: 'qwen2.5:7b',
+      model_name: 'qwen3:32b',
       api_key: '',
       api_base: 'http://localhost:11434',
       config: JSON.stringify({
@@ -444,8 +444,8 @@ const LLMConfigPage: React.FC = () => {
                   selectedProvider === 'openai' ? 'gpt-4, gpt-3.5-turbo' :
                   selectedProvider === 'anthropic' ? 'claude-3-sonnet-20240229, claude-3-haiku-20240307' :
                   selectedProvider === 'deepseek' ? 'deepseek-chat, deepseek-coder' :
-                  selectedProvider === 'ollama' ? 'qwen2.5:7b, llama3.2:3b, mistral:7b' :
-                  selectedProvider === 'local' ? 'qwen2.5:7b, llama3.2:3b' :
+                  selectedProvider === 'ollama' ? 'qwen3:32b, llama3.2:3b, mistral:7b' :
+                  selectedProvider === 'local' ? 'qwen3:32b, llama3.2:3b' :
                   '请输入模型名称'
                 }
               />

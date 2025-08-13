@@ -43,9 +43,25 @@ class BaseAgent(ABC):
     
     def create_message(self, content: str, message_type: str, agent_name: str = None) -> AgentMessage:
         """创建消息"""
+        # 将字符串转换为MessageType枚举
+        from models.chat_models import MessageType
+        try:
+            if message_type == "user":
+                msg_type = MessageType.USER
+            elif message_type == "agent":
+                msg_type = MessageType.AGENT
+            elif message_type == "system":
+                msg_type = MessageType.SYSTEM
+            elif message_type == "tool":
+                msg_type = MessageType.TOOL
+            else:
+                msg_type = MessageType.AGENT  # 默认使用AGENT类型
+        except Exception:
+            msg_type = MessageType.AGENT  # 如果转换失败，使用默认类型
+        
         return AgentMessage(
             id=str(uuid.uuid4()),
-            type=message_type,
+            type=msg_type,
             content=content,
             agent_name=agent_name or self.name,
             timestamp=datetime.now()

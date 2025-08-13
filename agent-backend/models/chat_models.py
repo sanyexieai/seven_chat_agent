@@ -66,8 +66,8 @@ class AgentContext(BaseModel):
 
 class StreamChunk(BaseModel):
     """流式响应块模型"""
-    chunk_id: str = Field(..., description="块ID")
-    session_id: str = Field(..., description="会话ID")
+    chunk_id: Optional[str] = Field(default=None, description="块ID")
+    session_id: Optional[str] = Field(default=None, description="会话ID")
     type: str = Field(..., description="块类型")
     content: str = Field(..., description="内容")
     agent_name: Optional[str] = Field(default=None, description="智能体名称")

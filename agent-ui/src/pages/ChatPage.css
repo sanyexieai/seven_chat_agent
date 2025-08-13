@@ -44,6 +44,89 @@
   color: #8c8c8c;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-selector {
+  background-color: #fff;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #333;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.agent-selector:hover {
+  border-color: #1890ff;
+}
+
+.agent-selector:focus {
+  outline: none;
+  border-color: #1890ff;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+
+
+/* 智能体选择器弹窗 */
+.agent-selector-modal .ant-modal-content {
+  border-radius: 12px;
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px;
+  border: 2px solid #f0f0f0;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background-color: #fff;
+}
+
+.agent-card:hover {
+  border-color: #1890ff;
+  box-shadow: 0 4px 12px rgba(24, 144, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+.agent-card.selected {
+  border-color: #1890ff;
+  background-color: #f6ffed;
+}
+
+.agent-icon {
+  font-size: 32px;
+  margin-bottom: 12px;
+}
+
+.agent-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.agent-desc {
+  font-size: 12px;
+  color: #8c8c8c;
+  text-align: center;
+  line-height: 1.4;
+}
+
 /* 消息容器 */
 .messages-container {
   flex: 1;
@@ -147,12 +230,31 @@
 
 .input-wrapper {
   display: flex;
+  flex-direction: column;
   gap: 12px;
-  align-items: flex-end;
+}
+
+.input-left-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.input-btn {
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: #666;
+  background-color: #fff;
+}
+
+.input-btn:hover {
+  border-color: #1890ff;
+  color: #1890ff;
 }
 
 .message-input {
-  flex: 1;
   border-radius: 20px;
   border: 1px solid #d9d9d9;
   padding: 8px 16px;
@@ -167,9 +269,29 @@
   box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
 }
 
-.button-group {
+.input-right-buttons {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.auto-btn {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: #666;
+  position: relative;
+}
+
+.auto-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  background-color: #ff4d4f;
+  border-radius: 50%;
 }
 
 .send-button {

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message } from 'antd';
-import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined } from '@ant-design/icons';
+import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message, Select, Modal } from 'antd';
+import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
 import './ChatPage.css';
@@ -21,7 +21,8 @@ interface Session {
   id?: number;
   session_id?: string;
   title: string;
-  agent: {
+  // 移除强制绑定的智能体，改为可选
+  agent?: {
     id: number;
     name: string;
     display_name: string;
@@ -37,7 +38,22 @@ const ChatPage: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sessionCreated, setSessionCreated] = useState(false);
+  // 添加当前选择的智能体状态
+  const [selectedAgent, setSelectedAgent] = useState<{
+    id: number;
+    name: string;
+    display_name: string;
+    description?: string;
+  } | null>(null);
+  // 智能体选择器显示状态
+  const [agentSelectorVisible, setAgentSelectorVisible] = useState(false);
+  // 智能体列表
+  const [agents, setAgents] = useState<Array<{
+    id: number;
+    name: string;
+    display_name: string;
+    description?: string;
+  }>>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
@@ -55,6 +71,30 @@ const ChatPage: React.FC = () => {
     }
   }, [sessionId]);
 
+  // 获取智能体列表
+  useEffect(() => {
+    fetchAgents();
+  }, []);
+
+  // 获取智能体列表
+  const fetchAgents = async () => {
+    try {
+      const response = await fetch('/api/agents/');
+      if (response.ok) {
+        const data = await response.json();
+        const agentsList = Array.isArray(data) ? data : [];
+        setAgents(agentsList);
+        
+        // 如果没有选中的智能体，设置第一个作为默认值
+        if (agentsList.length > 0 && !selectedAgent) {
+          setSelectedAgent(agentsList[0]);
+        }
+      }
+    } catch (error) {
+      console.error('获取智能体列表失败:', error);
+    }
+  };
+
   // 创建新会话
   const createNewSession = async () => {
     try {
@@ -65,8 +105,8 @@ const ChatPage: React.FC = () => {
         },
         body: JSON.stringify({
           user_id: 'default_user', // 这里应该使用真实的用户ID
-          session_name: '新对话',
-          agent_type: 'general'
+          session_name: '新对话'
+          // 不再强制绑定智能体
         })
       });
       
@@ -75,17 +115,16 @@ const ChatPage: React.FC = () => {
         const newSession = {
           id: sessionData.session_id,
           session_id: sessionData.session_id,
-          title: sessionData.session_name,
-          agent: {
-            id: 1,
-            name: 'general_agent',
-            display_name: 'AI助手',
-            description: '通用智能体'
-          }
+          title: sessionData.session_name
+          // 不再设置默认智能体
         };
         setCurrentSession(newSession);
         setMessages([]);
-        setSessionCreated(true);
+        
+        // 设置默认智能体（使用第一个可用的智能体）
+        if (agents.length > 0) {
+          setSelectedAgent(agents[0]);
+        }
         
         // 更新URL，但不重新加载页面
         navigate(`/chat/${sessionData.session_id}`, { replace: true });
@@ -164,39 +203,7 @@ const ChatPage: React.FC = () => {
     return title.length > 20 ? title.substring(0, 20) + '...' : title || '新对话';
   };
 
-  const createSession = async (title: string) => {
-    try {
-      const response = await fetch('/api/sessions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          user_id: 'default',
-          agent_id: currentSession?.agent?.id || 1,
-          title: title,
-        }),
-      });
 
-      if (response.ok) {
-        const session = await response.json();
-        setCurrentSession(prev => prev ? {
-          ...prev,
-          id: session.id,
-          session_id: session.session_id,
-          created_at: session.created_at
-        } : null);
-        setSessionCreated(true);
-        // 更新URL以反映新的会话ID
-        navigate(`/chat/${session.id}`, { replace: true });
-        return session;
-      }
-    } catch (error) {
-      console.error('创建会话失败:', error);
-      message.error('创建会话失败');
-    }
-    return null;
-  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -220,262 +227,118 @@ const ChatPage: React.FC = () => {
     setInputValue('');
 
     try {
-      // 如果是第一次发送消息，创建会话
-      let sessionId = currentSession?.id;
-      if (!sessionCreated && !sessionId) {
+      // 确保有当前会话
+      if (!currentSession?.session_id) {
+        message.error('请先创建会话');
+        return;
+      }
+
+      // 如果是第一次发送消息，更新会话标题
+      if (messages.length === 0) {
         const title = extractTitleFromMessage(inputValue);
-        const session = await createSession(title);
-        if (session) {
-          sessionId = session.id;
-          // 更新当前会话信息
-          setCurrentSession(prev => prev ? {
-            ...prev,
-            id: session.id,
-            session_id: session.session_id,
-            created_at: session.created_at
-          } : null);
+        // 更新会话标题
+        try {
+          await fetch(`/api/sessions/${currentSession.id}/title?title=${encodeURIComponent(title)}`, {
+            method: 'PUT',
+          });
+        } catch (error) {
+          console.error('更新会话标题失败:', error);
         }
       }
 
       // 发送消息到智能体
-      if (sessionId) {
+      if (currentSession?.session_id && selectedAgent) {
+        // 创建智能体消息占位符
+        const agentMessageId = (Date.now() + 1).toString();
+        const agentMessage: Message = {
+          id: agentMessageId,
+          content: '正在思考...',
+          type: 'agent',
+          timestamp: new Date(),
+          agentName: selectedAgent.display_name
+        };
+
+        setMessages(prev => [...prev, agentMessage]);
+
+        // 使用流式API获取响应
+        const agentName = selectedAgent.name;
         try {
           const response = await fetch(`${apiBase}/api/chat/stream`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              'Accept': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
             },
             body: JSON.stringify({
               user_id: 'default_user',
               message: inputValue,
-              session_id: sessionId.toString(),
-              agent_type: 'general'
-            })
+              session_id: currentSession.session_id,
+              agent_name: agentName,
+              context: {}
+            }),
           });
 
-          if (response.ok) {
-            const reader = response.body?.getReader();
-            if (reader) {
-              const decoder = new TextDecoder();
-              let buffer = '';
-              
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-                
-                for (const line of lines) {
-                  if (line.startsWith('data: ')) {
-                    try {
-                      const data = JSON.parse(line.slice(6));
-                      
-                      if (data.type === 'content') {
-                        // 添加或更新助手消息
-                        setMessages(prev => {
-                          const lastMessage = prev[prev.length - 1];
-                          if (lastMessage && lastMessage.type === 'agent') {
-                            // 更新现有消息
-                            return prev.map((msg, index) => 
-                              index === prev.length - 1 
-                                ? { ...msg, content: msg.content + data.content }
-                                : msg
-                            );
-                          } else {
-                            // 创建新消息
-                            const agentMessage: Message = {
-                              id: Date.now().toString(),
-                              content: data.content,
-                              type: 'agent',
-                              timestamp: new Date(),
-                              agentName: currentSession?.agent?.display_name
-                            };
-                            return [...prev, agentMessage];
-                          }
-                        });
-                      } else if (data.type === 'tool_result') {
-                        // 添加工具执行结果
-                        setMessages(prev => {
-                          const lastMessage = prev[prev.length - 1];
-                          if (lastMessage && lastMessage.type === 'agent') {
-                            return prev.map((msg, index) => 
-                              index === prev.length - 1 
-                                ? { ...msg, content: msg.content + data.content }
-                                : msg
-                            );
-                          }
-                          return prev;
-                        });
-                      } else if (data.type === 'done') {
-                        // 消息完成
-                        console.log('聊天完成，使用的工具:', data.tools_used);
-                      }
-                    } catch (e) {
-                      console.error('解析SSE数据失败:', e);
-                    }
-                  }
-                }
-              }
-            }
-          } else {
-            console.error('发送消息失败');
-            message.error('发送消息失败');
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
           }
-        } catch (error) {
-          console.error('发送消息失败:', error);
-          message.error('发送消息失败');
-        }
-      }
 
-      // 创建智能体消息占位符
-      const agentMessageId = (Date.now() + 1).toString();
-      const agentMessage: Message = {
-        id: agentMessageId,
-        content: '正在思考...',  // 添加初始内容
-        type: 'agent',
-        timestamp: new Date(),
-        agentName: currentSession?.agent?.display_name || 'AI助手'
-      };
+          const reader = response.body?.getReader();
+          if (!reader) {
+            throw new Error('无法获取响应流');
+          }
 
-      console.log('创建智能体消息:', agentMessage);
-      setMessages(prev => {
-        const newMessages = [...prev, agentMessage];
-        console.log('添加消息后的消息列表:', newMessages);
-        return newMessages;
-      });
+          let fullContent = '';
+          const decoder = new TextDecoder(undefined, { fatal: false });
+          let buffer = '';
 
-      // 使用流式API获取响应
-      const agentName = currentSession?.agent?.name || 'general_agent';
-      try {
-        console.log('开始流式请求...');
-        const response = await fetch(`${apiBase}/api/chat/stream`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-          },
-          body: JSON.stringify({
-            user_id: 'default_user',
-            message: inputValue,
-            session_id: sessionId?.toString(),
-            agent_type: agentName,
-            context: {}
-          }),
-        });
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-        console.log('流式响应状态:', response.status, response.statusText);
-        console.log('响应头:', Object.fromEntries(response.headers.entries()));
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('无法获取响应流');
-        }
-
-        let fullContent = '';
-        const decoder = new TextDecoder(undefined, { fatal: false });
-
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          buffer += chunk;
-          
-          // 处理完整的行
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // 保留最后一个不完整的行
-          
-          for (const line of lines) {
-            if (line.trim() && line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                console.log('收到流式数据:', data); // 调试日志
-                
-                if (data.type === 'content' && data.content) {
-                  fullContent += data.content;
-                  console.log('收到内容块:', data.content, '累积内容:', fullContent);
+            const chunk = decoder.decode(value, { stream: true });
+            buffer += chunk;
+            
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+              if (line.trim() && line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
                   
-                  // 实时更新消息内容 - 使用函数式更新确保状态正确
-                  setMessages(prev => {
-                    const newMessages = prev.map(msg => 
+                  if (data.type === 'content' && data.content) {
+                    fullContent += data.content;
+                    
+                    setMessages(prev => prev.map(msg => 
                       msg.id === agentMessageId 
                         ? { ...msg, content: fullContent }
                         : msg
-                    );
-                    console.log('更新后的消息列表:', newMessages);
-                    return newMessages;
-                  });
-                  
-                  // 立即滚动到底部，显示最新内容（关闭平滑滚动以减少抖动）
-                  if (messagesEndRef.current) {
-                    messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
+                    ));
+                    
+                    if (messagesEndRef.current) {
+                      messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
+                    }
+                    
+                  } else if (data.type === 'done') {
+                    // 流式响应完成
+                  } else if (data.error) {
+                    setMessages(prev => prev.map(msg => 
+                      msg.id === agentMessageId 
+                        ? { ...msg, content: `错误: ${data.error}` }
+                        : msg
+                    ));
+                    console.error('流式响应错误:', data.error);
                   }
-                  
-                  // 去掉提示弹窗，减少抖动
-                  // console.info('AI开始回复...');
-                  
-                  // console.log('实时更新内容完成，当前长度:', fullContent.length);
-                  
-                } else if (data.type === 'done') {
-                  // 流式响应完成
-                  // console.log('流式响应完成，使用的工具:', data.tools_used);
-                  // 去掉成功弹窗，减少抖动
-                  
-                } else if (data.error) {
-                  // 处理错误
-                  setMessages(prev => prev.map(msg => 
-                    msg.id === agentMessageId 
-                      ? { ...msg, content: `错误: ${data.error}` }
-                      : msg
-                  ));
-                  // 保留错误，但不弹窗
-                  console.error('流式响应错误:', data.error);
+                } catch (e) {
+                  console.error('解析流式数据失败:', e, line);
                 }
-              } catch (e) {
-                console.error('解析流式数据失败:', e, line);
               }
             }
           }
-        }
-
-        // 保存完整的智能体消息到数据库
-        if (sessionId && fullContent) {
-          await fetch(`/api/sessions/${sessionId}/messages`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              session_id: sessionId.toString(),
-              user_id: 'default',
-              message_type: 'agent',
-              content: fullContent,
-              agent_name: currentSession?.agent?.name || 'general_agent',
-            }),
-          });
-        }
-
-      } catch (error) {
-        console.error('流式请求失败:', error);
-        // 如果流式请求失败，回退到普通请求
-        try {
-          const response = await sendMessage(inputValue, agentName);
-          setMessages(prev => prev.map(msg => 
-            msg.id === agentMessageId 
-              ? { ...msg, content: response.message }
-              : msg
-          ));
-        } catch (fallbackError) {
-          console.error('回退请求也失败:', fallbackError);
+        } catch (error) {
+          console.error('流式请求失败:', error);
           setMessages(prev => prev.map(msg => 
             msg.id === agentMessageId 
               ? { ...msg, content: '抱歉，处理您的消息时出现了问题，请稍后重试。' }
@@ -526,14 +389,18 @@ const ChatPage: React.FC = () => {
           <div className="header-left">
             <Avatar icon={<RobotOutlined />} />
             <div className="header-info">
-              <Text strong>{currentSession?.agent?.display_name || 'AI助手'}</Text>
+              <Text strong>{selectedAgent?.display_name || 'AI助手'}</Text>
               <Text type="secondary" className="status-text">
                 {currentSession?.title || '新对话'} • {isConnected ? '在线' : '离线'}
               </Text>
             </div>
           </div>
-          <Button icon={<SettingOutlined />} type="text" />
+          <div className="header-right">
+            <Button icon={<SettingOutlined />} type="text" />
+          </div>
         </div>
+
+
 
         {/* 消息列表 */}
         <div className="messages-container">
@@ -586,9 +453,70 @@ const ChatPage: React.FC = () => {
           )}
         </div>
 
+        {/* 智能体选择器弹窗 */}
+        <Modal
+          title="选择智能体"
+          open={agentSelectorVisible}
+          onCancel={() => setAgentSelectorVisible(false)}
+          footer={null}
+          width={600}
+          className="agent-selector-modal"
+        >
+          <div className="agent-grid">
+            {agents.map((agent) => (
+              <div 
+                key={agent.id}
+                className={`agent-card ${selectedAgent?.name === agent.name ? 'selected' : ''}`}
+                onClick={() => {
+                  setSelectedAgent({
+                    id: agent.id,
+                    name: agent.name,
+                    display_name: agent.display_name,
+                    description: agent.description
+                  });
+                  setAgentSelectorVisible(false);
+                }}
+              >
+                <div className="agent-icon">
+                  {agent.name === 'general_agent' ? '🤖' :
+                   agent.name === 'code_agent' ? '💻' :
+                   agent.name === 'writing_agent' ? '✍️' :
+                   agent.name === 'finance_agent' ? '💰' : '🤖'}
+                </div>
+                <div className="agent-title">{agent.display_name}</div>
+                <div className="agent-desc">{agent.description || '智能体'}</div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+
         {/* 输入区域 */}
         <div className="input-container">
           <div className="input-wrapper">
+            <div className="input-left-buttons">
+              <Button 
+                type="text" 
+                icon={<RobotOutlined />}
+                className="input-btn"
+                onClick={() => setAgentSelectorVisible(true)}
+              >
+                @智能体
+              </Button>
+              <Button 
+                type="text" 
+                icon={<SettingOutlined />}
+                className="input-btn"
+              >
+                #上下文
+              </Button>
+              <Button 
+                type="text" 
+                icon={<PictureOutlined />}
+                className="input-btn"
+              >
+                图片
+              </Button>
+            </div>
             <TextArea
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
@@ -597,7 +525,15 @@ const ChatPage: React.FC = () => {
               autoSize={{ minRows: 1, maxRows: 4 }}
               className="message-input"
             />
-            <div className="button-group">
+            <div className="input-right-buttons">
+              <Button
+                type="text"
+                className="auto-btn"
+                style={{ marginRight: 8 }}
+              >
+                Auto
+                <span className="auto-dot"></span>
+              </Button>
               <Button
                 type="primary"
                 icon={<SendOutlined />}

@@ -44,8 +44,10 @@ interface Agent {
 interface Session {
   id: number;
   session_id: string;
-  title: string;
-  agent: Agent;
+  title?: string;
+  session_name?: string;  // 添加session_name字段
+  // 移除强制绑定的智能体
+  agent?: Agent;
   created_at: string;
 }
 
@@ -55,9 +57,7 @@ const Sidebar: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSession, setSelectedSession] = useState<number | null>(null);
-  const [isCreateSessionModalVisible, setIsCreateSessionModalVisible] = useState(false);
   const [isSettingsDrawerVisible, setIsSettingsDrawerVisible] = useState(false);
-  const [createSessionForm] = Form.useForm();
 
   // 获取智能体列表
   useEffect(() => {
@@ -104,30 +104,25 @@ const Sidebar: React.FC = () => {
     navigate(`/chat/${sessionId}`);
   };
 
-  const handleCreateSession = async (values: any) => {
+  const handleCreateSessionDirect = async () => {
     try {
-      const agentId = values.agent_id || (agents.length > 0 ? agents[0].id : null);
-      if (!agentId) {
-        console.error('没有可用的智能体');
-        return;
-      }
-      
-      const response = await fetch('/api/sessions', {
+      // 直接创建新会话，标题为默认值
+      const response = await fetch('/api/chat/sessions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           user_id: 'default',
-          agent_id: agentId,
-          title: values.title,
+          session_name: '新对话'
         }),
       });
       
       if (response.ok) {
-        setIsCreateSessionModalVisible(false);
-        createSessionForm.resetFields();
+        const sessionData = await response.json();
         fetchSessions();
+        // 创建成功后跳转到聊天页面
+        navigate(`/chat/${sessionData.session_id}`);
       }
     } catch (error) {
       console.error('创建会话失败:', error);
@@ -176,13 +171,6 @@ const Sidebar: React.FC = () => {
               <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
                 会话
               </Text>
-              <Button
-                type="text"
-                icon={<PlusOutlined />}
-                size="small"
-                style={{ color: 'white' }}
-                onClick={() => setIsCreateSessionModalVisible(true)}
-              />
             </div>
             <List
               size="small"
@@ -202,7 +190,7 @@ const Sidebar: React.FC = () => {
                     avatar={<Avatar icon={<MessageOutlined />} size="small" />}
                     title={
                       <Text style={{ color: 'white', fontSize: '12px' }}>
-                        {session.title}
+                        {session.title || session.session_name || '新对话'}
                       </Text>
                     }
                     description={
@@ -227,7 +215,7 @@ const Sidebar: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
               <Button
                 type="text"
-                icon={<MessageOutlined />}
+                icon={<PlusOutlined />}
                 style={{ 
                   color: 'white', 
                   width: '100%',
@@ -236,9 +224,9 @@ const Sidebar: React.FC = () => {
                   border: '1px solid #303030',
                   borderRadius: '4px'
                 }}
-                onClick={() => navigate('/chat')}
+                onClick={handleCreateSessionDirect}
               >
-                开始聊天
+                新建会话
               </Button>
               <Button
                 type="text"
@@ -259,45 +247,7 @@ const Sidebar: React.FC = () => {
           </div>
         </div>
 
-        {/* 创建会话模态框 */}
-        <Modal
-          title="创建新会话"
-          open={isCreateSessionModalVisible}
-          onCancel={() => setIsCreateSessionModalVisible(false)}
-          footer={null}
-        >
-          <Form
-            form={createSessionForm}
-            onFinish={handleCreateSession}
-            layout="vertical"
-          >
-            <Form.Item
-              name="title"
-              label="会话标题"
-              rules={[{ required: true, message: '请输入会话标题' }]}
-            >
-              <Input placeholder="请输入会话标题" />
-            </Form.Item>
-            <Form.Item
-              name="agent_id"
-              label="选择智能体"
-              rules={[{ required: true, message: '请选择智能体' }]}
-            >
-              <Select placeholder="请选择智能体">
-                {agents.map(agent => (
-                  <Select.Option key={agent.id} value={agent.id}>
-                    {agent.display_name}
-                  </Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-            <Form.Item>
-              <Button type="primary" htmlType="submit" block>
-                创建会话
-              </Button>
-            </Form.Item>
-          </Form>
-        </Modal>
+
       </Sider>
 
       {/* 设置抽屉 */}

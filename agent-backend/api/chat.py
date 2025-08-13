@@ -19,7 +19,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str = None  # 会话ID，用于维护上下文
     context: Dict[str, Any] = {}
-    agent_type: str = "general"
+    agent_name: str = "general_agent"  # 智能体名称，可以在聊天时动态选择
     stream: bool = False
 
 class ChatResponse(BaseModel):
@@ -35,14 +35,14 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     """处理聊天请求"""
     try:
-        logger.info(f"收到聊天请求: user_id={request.user_id}, agent_type={request.agent_type}")
+        logger.info(f"收到聊天请求: user_id={request.user_id}, agent_name={request.agent_name}")
         
         # 调用智能体管理器来处理消息
         try:
             from main import agent_manager
             if agent_manager:
-                # 获取智能体
-                agent = agent_manager.get_agent(request.agent_type)
+                # 获取智能体 - 现在从agent_name获取，可以在聊天时动态选择
+                agent = agent_manager.get_agent(request.agent_name)
                 if agent:
                     logger.info(f"找到智能体: {agent.name}")
                     
@@ -118,11 +118,11 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                         timestamp=datetime.now().isoformat()
                     )
                 else:
-                    logger.warning(f"未找到智能体: {request.agent_type}")
+                    logger.warning(f"未找到智能体: {request.agent_name}")
                     # 返回错误响应
                     response = ChatResponse(
                         success=False,
-                        message=f"抱歉，未找到智能体 {request.agent_type}",
+                        message=f"抱歉，未找到智能体 {request.agent_name}",
                         agent_name="系统",
                         tools_used=[],
                         timestamp=datetime.now().isoformat()
@@ -158,14 +158,14 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
 async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
     """处理流式聊天请求"""
     try:
-        logger.info(f"收到流式聊天请求: user_id={request.user_id}, agent_type={request.agent_type}")
+        logger.info(f"收到流式聊天请求: user_id={request.user_id}, agent_name={request.agent_name}")
         
         async def generate_response():
             try:
                 from main import agent_manager
                 if agent_manager:
                     # 获取智能体
-                    agent = agent_manager.get_agent(request.agent_type)
+                    agent = agent_manager.get_agent(request.agent_name)
                     if agent:
                         logger.info(f"找到智能体: {agent.name}")
                         
@@ -286,8 +286,8 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                 yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
                         
                     else:
-                        logger.warning(f"未找到智能体: {request.agent_type}")
-                        yield f"data: {json.dumps({'error': f'抱歉，未找到智能体 {request.agent_type}'}, ensure_ascii=False)}\n\n"
+                        logger.warning(f"未找到智能体: {request.agent_name}")
+                        yield f"data: {json.dumps({'error': f'抱歉，未找到智能体 {request.agent_name}'}, ensure_ascii=False)}\n\n"
                 else:
                     logger.error("智能体管理器未初始化")
                     yield f"data: {json.dumps({'error': '抱歉，智能体系统未初始化，请稍后重试'}, ensure_ascii=False)}\n\n"
@@ -324,24 +324,28 @@ async def create_chat_session(request: dict, db: Session = Depends(get_db)):
     try:
         user_id = request.get("user_id")
         session_name = request.get("session_name", "新对话")
-        agent_type = request.get("agent_type", "general")
+        # 智能体ID现在是可选的，不强制绑定
+        agent_id = request.get("agent_id")
         
         if not user_id:
             raise HTTPException(status_code=400, detail="用户ID不能为空")
         
-        session_service = SessionService(db)
-        session = session_service.create_session(
+        # 创建会话数据
+        from models.database_models import SessionCreate
+        session_data = SessionCreate(
             user_id=user_id,
             session_name=session_name,
-            agent_type=agent_type
+            agent_id=agent_id  # 可以为None
         )
         
-        logger.info(f"创建聊天会话: {session.session_id}")
+        session = SessionService.create_session(db, session_data)
+        
+        logger.info(f"创建聊天会话: {session.session_id}, 智能体: {agent_id or '未选择'}")
         return {
             "success": True,
             "session_id": session.session_id,
             "session_name": session.session_name,
-            "agent_type": session.agent_type,
+            "agent_id": session.agent_id,
             "created_at": session.created_at.isoformat()
         }
     except Exception as e:
@@ -355,8 +359,7 @@ async def create_chat_session(request: dict, db: Session = Depends(get_db)):
 async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
     """获取用户的所有聊天会话"""
     try:
-        session_service = SessionService(db)
-        sessions = session_service.get_user_sessions(user_id)
+        sessions = SessionService.get_user_sessions(db, user_id)
         logger.info(f"获取用户 {user_id} 的会话，共 {len(sessions)} 个")
         return {
             "success": True,
@@ -364,7 +367,7 @@ async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
                 {
                     "session_id": session.session_id,
                     "session_name": session.session_name,
-                    "agent_type": session.agent_type,
+                    "agent_id": session.agent_id,  # 修复字段名
                     "created_at": session.created_at.isoformat(),
                     "updated_at": session.updated_at.isoformat() if session.updated_at else None
                 }
@@ -416,11 +419,10 @@ async def create_chat_message(message: MessageCreate, db: Session = Depends(get_
         )
 
 @router.get("/sessions/{user_id}")
-async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
-    """获取用户的会话列表"""
+async def get_user_sessions_legacy(user_id: str, db: Session = Depends(get_db)):
+    """获取用户的会话列表（兼容性端点）"""
     try:
-        session_service = SessionService(db)
-        sessions = session_service.get_user_sessions(user_id)
+        sessions = SessionService.get_user_sessions(db, user_id)
         logger.info(f"获取用户 {user_id} 的会话，共 {len(sessions)} 个")
         return sessions
     except Exception as e:
@@ -432,10 +434,16 @@ async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
 
 @router.post("/sessions")
 async def create_session(user_id: str, agent_id: int, db: Session = Depends(get_db)):
-    """创建新会话"""
+    """创建新会话（兼容性端点）"""
     try:
-        session_service = SessionService(db)
-        session = session_service.create_session(user_id, agent_id)
+        # 创建会话数据
+        from models.database_models import SessionCreate
+        session_data = SessionCreate(
+            user_id=user_id,
+            session_name="新对话",
+            agent_id=agent_id
+        )
+        session = SessionService.create_session(db, session_data)
         logger.info(f"创建会话: {session.session_id}")
         return session
     except Exception as e:

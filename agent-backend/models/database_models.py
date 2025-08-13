@@ -54,12 +54,14 @@ class UserSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String(100), unique=True, index=True, nullable=False)
     user_id = Column(String(100), nullable=False)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False)
+    session_name = Column(String(200), nullable=False, default="新对话")
+    # 移除强制绑定智能体，改为可选
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # 关联关系
+    # 关联关系 - 智能体关系改为可选
     agent = relationship("Agent", back_populates="sessions")
     messages = relationship("ChatMessage", back_populates="session")
 
@@ -298,13 +300,15 @@ class ChatMessageResponse(BaseModel):
 
 class SessionCreate(BaseModel):
     user_id: str
-    agent_id: int
+    session_name: str = "新对话"
+    agent_id: Optional[int] = None  # 现在可选
 
 class SessionResponse(BaseModel):
     id: int
     session_id: str
     user_id: str
-    agent_id: int
+    session_name: str
+    agent_id: Optional[int] = None  # 现在可选
     is_active: bool
     created_at: datetime
     updated_at: datetime

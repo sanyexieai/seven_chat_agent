@@ -17,13 +17,14 @@ class SessionService:
         session = UserSession(
             session_id=session_id,
             user_id=session_data.user_id,
-            agent_id=session_data.agent_id,
+            session_name=session_data.session_name,
+            agent_id=session_data.agent_id,  # 现在可以为None
             is_active=True
         )
         db.add(session)
         db.commit()
         db.refresh(session)
-        logger.info(f"创建会话: {session_id}")
+        logger.info(f"创建会话: {session_id}, 智能体: {session_data.agent_id or '未选择'}")
         return session
     
     @staticmethod
@@ -47,7 +48,7 @@ class SessionService:
         """更新会话标题"""
         session = db.query(UserSession).filter(UserSession.id == session_id).first()
         if session:
-            session.title = title
+            session.session_name = title  # 使用session_name字段
             db.commit()
             db.refresh(session)
             logger.info(f"更新会话标题: {session_id}")

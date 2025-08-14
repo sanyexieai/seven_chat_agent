@@ -28,7 +28,7 @@ jobs:
     - name: Install uv
       uses: astral-sh/setup-uv@v1
       with:
-        version: ${{ env.UV_VERSION }}
+        version: latest
 
     - name: Cache Python dependencies
       uses: actions/cache@v3
@@ -72,14 +72,8 @@ jobs:
           }
         }
         EOF
-
-    - name: Create deployment package
-      run: |
-        mkdir -p deployment
-        cp -r agent-ui/build deployment/frontend
-        cp -r agent-backend deployment/backend
-        cp README.md pyproject.toml deployment/
-        tar -czf agent-system-deployment.tar.gz -C deployment .
+        echo "Production config created:"
+        cat agent-ui/build/config/config.json
 
     - name: Deploy Backend Code
       uses: appleboy/scp-action@master
@@ -93,7 +87,7 @@ jobs:
         strip_components: 1
         rm: true
 
-    - name: Deploy Frontend Static Files
+    - name: Deploy Frontend to Backend Static Directory
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.SSH_HOST }}
@@ -101,11 +95,11 @@ jobs:
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         port: 222
         source: "agent-ui/build/*"
-        target: "/vol1/1000/project/agent-system/static/"
+        target: "/vol1/1000/project/agent-system/backend/static/"
         strip_components: 2
         rm: true
 
-    - name: Deploy Docker and Restart Service
+    - name: Build and Run Docker
       uses: appleboy/ssh-action@master
       with:
         host: ${{ secrets.SSH_HOST }}
@@ -114,14 +108,6 @@ jobs:
         port: 222
         script: |
           cd /vol1/1000/project/agent-system/
-
-          # 创建 .dockerignore
-          cat > .dockerignore << 'EOF'
-          node_modules
-          agent-ui
-          deployment
-          *.log
-          EOF
 
           # 创建 Dockerfile
           cat > backend/Dockerfile << 'EOF'
@@ -134,14 +120,14 @@ jobs:
           EOF
 
           # 停止旧容器
-          docker stop agent-system || true
-          docker rm agent-system || true
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker stop agent-system || true
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker rm agent-system || true
 
           # 重新构建镜像
-          docker build --no-cache -t agent-system -f backend/Dockerfile .
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build --no-cache -t agent-system -f backend/Dockerfile .
 
-          # 启动新容器（仅挂载 data）
-          docker run -d \
+          # 启动新容器
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker run -d \
             --name agent-system \
             -p 32004:8000 \
             -v /vol1/1000/project/agent-system/data:/app/data \

@@ -75,16 +75,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册路由
-app.include_router(agents_router)
-app.include_router(sessions_router)
-app.include_router(chat_router)
-app.include_router(mcp_router)
-app.include_router(flows_router)
-app.include_router(llm_config_router)
-app.include_router(knowledge_base_router)
+# 自动检测并挂载静态文件
+import os
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+is_production = os.path.exists(static_dir) and os.path.isdir(static_dir)
 
-@app.get("/")
+if is_production:
+    logger.info(f"检测到静态文件目录: {static_dir}")
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+    logger.info("静态文件已挂载到根路径 /")
+
+# 注册路由（根据环境自动调整前缀）
+api_prefix = "/api" if is_production else ""
+app.include_router(agents_router, prefix=api_prefix)
+app.include_router(sessions_router, prefix=api_prefix)
+app.include_router(chat_router, prefix=api_prefix)
+app.include_router(mcp_router, prefix=api_prefix)
+app.include_router(flows_router, prefix=api_prefix)
+app.include_router(llm_config_router, prefix=api_prefix)
+app.include_router(knowledge_base_router, prefix=api_prefix)
+
+# 动态注册根路径和健康检查
+@app.get(f"{api_prefix}/" if api_prefix else "/")
 async def root():
     """根路径"""
     return {
@@ -93,7 +105,7 @@ async def root():
         "status": "running"
     }
 
-@app.get("/health")
+@app.get(f"{api_prefix}/health" if api_prefix else "/health")
 async def health_check():
     """健康检查"""
     return {

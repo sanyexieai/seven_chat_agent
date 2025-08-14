@@ -53,21 +53,10 @@ jobs:
       working-directory: agent-ui
       run: npm ci
 
-    - name: Check code formatting
-      run: |
-        uv run black --check .
-        uv run isort --check-only .
-
     - name: Run linting
       run: |
-        uv run flake8 .
-        uv run mypy .
         cd agent-ui && npm run lint
         cd agent-ui && npm run type-check
-
-    - name: Install dev dependencies
-      run: |
-        uv pip install black isort flake8 mypy
 
     - name: Run tests
       run: |

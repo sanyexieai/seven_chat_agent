@@ -167,7 +167,7 @@ jobs:
            
            EXPOSE 8000
            
-           CMD ["uv", "run", "uvicorn", "agent_backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+           CMD ["uv", "run", "uvicorn", "main_static:app", "--host", "0.0.0.0", "--port", "8000"]
            EOF
            
            # 创建支持静态文件的后端主文件
@@ -286,17 +286,44 @@ jobs:
            # 更新Dockerfile使用新的主文件
            sed -i 's/main:app/main_static:app/g' backend/Dockerfile
           
+          # 显示当前目录结构
+          echo "=== 当前目录结构 ==="
+          ls -la
+          echo "=== 后端目录结构 ==="
+          ls -la backend/
+          
           # 停止并删除旧容器
+          echo "=== 停止旧容器 ==="
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose down || true
           
-          # 构建并运行新容器
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose up -d --build
+          # 构建新镜像
+          echo "=== 构建 Docker 镜像 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose build --no-cache
+          
+          # 检查镜像是否构建成功
+          echo "=== 检查 Docker 镜像 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker images | grep agent-system || echo "镜像未找到"
+          
+          # 启动容器
+          echo "=== 启动容器 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose up -d
           
           # 等待服务启动
+          echo "=== 等待服务启动 ==="
           sleep 30
           
           # 检查服务状态
+          echo "=== 检查容器状态 ==="
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose ps
           
+          # 检查容器日志
+          echo "=== 检查容器日志 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose logs agent-backend
+          
           # 检查端口是否正常监听
-          netstat -tlnp | grep :32004 || echo "Port 32004 not listening" 
+          echo "=== 检查端口监听 ==="
+          netstat -tlnp | grep :32004 || echo "Port 32004 not listening"
+          
+          # 测试服务是否响应
+          echo "=== 测试服务响应 ==="
+          curl -f http://localhost:32004/api/health || echo "服务未响应" 

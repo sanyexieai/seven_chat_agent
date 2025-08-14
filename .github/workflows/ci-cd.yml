@@ -137,11 +137,8 @@ jobs:
           
           WORKDIR /app
           
-          RUN pip install uv
-          
-          # 从项目根目录复制依赖文件
-          COPY pyproject.toml uv.lock ./
-          RUN uv sync --frozen
+          # 直接安装依赖，不使用 uv.lock
+          RUN pip install fastapi uvicorn python-multipart
           
           # 复制后端代码
           COPY backend/ .
@@ -151,7 +148,7 @@ jobs:
           
           EXPOSE 8000
           
-          CMD ["uv", "run", "uvicorn", "main_static:app", "--host", "0.0.0.0", "--port", "8000"]
+          CMD ["uvicorn", "main_static:app", "--host", "0.0.0.0", "--port", "8000"]
           EOF
           
           # 创建简化的主文件
@@ -175,6 +172,8 @@ jobs:
           # 显示当前目录结构
           echo "=== 当前目录结构 ==="
           ls -la
+          echo "=== 检查关键文件 ==="
+          ls -la pyproject.toml uv.lock || echo "关键文件不存在"
           echo "=== 后端目录结构 ==="
           ls -la backend/
           

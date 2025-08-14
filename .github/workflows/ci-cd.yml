@@ -157,11 +157,14 @@ jobs:
           
           # 显示当前目录结构
           echo "=== 当前目录结构 ==="
+          pwd
           ls -la
           echo "=== 检查关键文件 ==="
           ls -la pyproject.toml uv.lock || echo "关键文件不存在"
           echo "=== 检查文件内容 ==="
           head -5 pyproject.toml 2>/dev/null || echo "pyproject.toml 不存在"
+          echo "=== 检查文件路径 ==="
+          find . -name "pyproject.toml" -type f 2>/dev/null || echo "找不到 pyproject.toml"
           echo "=== 后端目录结构 ==="
           ls -la backend/
           
@@ -172,7 +175,12 @@ jobs:
           
           # 强制重新构建镜像（不使用缓存）
           echo "=== 强制重新构建 Docker 镜像 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build --no-cache -t agent-system -f backend/Dockerfile .
+          if echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build --no-cache -t agent-system -f backend/Dockerfile .; then
+            echo "Docker 镜像构建成功"
+          else
+            echo "Docker 镜像构建失败，退出"
+            exit 1
+          fi
           
           # 检查镜像是否构建成功
           echo "=== 检查 Docker 镜像 ==="

@@ -139,8 +139,8 @@ jobs:
           
           # 使用 uv 安装依赖
           RUN pip install uv
-          COPY pyproject.toml ./
-          RUN uv sync
+          COPY pyproject.toml uv.lock ./
+          RUN uv sync --frozen
           
           # 复制后端代码
           COPY backend/ .
@@ -160,6 +160,8 @@ jobs:
           ls -la
           echo "=== 检查关键文件 ==="
           ls -la pyproject.toml uv.lock || echo "关键文件不存在"
+          echo "=== 检查文件内容 ==="
+          head -5 pyproject.toml 2>/dev/null || echo "pyproject.toml 不存在"
           echo "=== 后端目录结构 ==="
           ls -la backend/
           

@@ -28,7 +28,7 @@ jobs:
     - name: Install uv
       uses: astral-sh/setup-uv@v1
       with:
-        version: latest
+        version: ${{ env.UV_VERSION }}
 
     - name: Cache Python dependencies
       uses: actions/cache@v3
@@ -49,10 +49,6 @@ jobs:
       working-directory: agent-ui
       run: npm ci
 
-
-
-
-
     - name: Build frontend
       working-directory: agent-ui
       run: |
@@ -61,7 +57,6 @@ jobs:
 
     - name: Update Frontend Config for Production
       run: |
-        # 创建生产环境的配置文件 - 前后端使用同一端口
         mkdir -p agent-ui/build/config
         cat > agent-ui/build/config/config.json << 'EOF'
         {
@@ -77,29 +72,14 @@ jobs:
           }
         }
         EOF
-        
-        echo "Production config created (unified port):"
-        cat agent-ui/build/config/config.json
 
     - name: Create deployment package
       run: |
         mkdir -p deployment
         cp -r agent-ui/build deployment/frontend
         cp -r agent-backend deployment/backend
-        cp README.md deployment/
-        cp pyproject.toml deployment/
-        
+        cp README.md pyproject.toml deployment/
         tar -czf agent-system-deployment.tar.gz -C deployment .
-        
-        echo "Deployment package created:"
-        ls -la deployment/
-        ls -la
-
-    - name: Copy Dependencies to Backend
-      run: |
-        cp pyproject.toml agent-backend/
-        cp uv.lock agent-backend/
-        echo "依赖文件已复制到 backend 目录"
 
     - name: Deploy Backend Code
       uses: appleboy/scp-action@master
@@ -113,7 +93,7 @@ jobs:
         strip_components: 1
         rm: true
 
-    - name: Deploy Frontend to Backend Directory
+    - name: Deploy Frontend Static Files
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.SSH_HOST }}
@@ -121,13 +101,11 @@ jobs:
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         port: 222
         source: "agent-ui/build/*"
-        target: "/vol1/1000/project/agent-system/backend/static/"
+        target: "/vol1/1000/project/agent-system/static/"
         strip_components: 2
         rm: true
 
-
-
-    - name: Build and Run Docker
+    - name: Deploy Docker and Restart Service
       uses: appleboy/ssh-action@master
       with:
         host: ${{ secrets.SSH_HOST }}
@@ -136,83 +114,50 @@ jobs:
         port: 222
         script: |
           cd /vol1/1000/project/agent-system/
-          
-          # 创建后端 Dockerfile - 支持静态文件
+
+          # 创建 .dockerignore
+          cat > .dockerignore << 'EOF'
+          node_modules
+          agent-ui
+          deployment
+          *.log
+          EOF
+
+          # 创建 Dockerfile
           cat > backend/Dockerfile << 'EOF'
           FROM python:3.11-slim
-          
           WORKDIR /app
-          
-          # 直接安装必要的依赖包
           RUN pip install fastapi uvicorn python-multipart sqlalchemy aiosqlite python-jose[cryptography] passlib[bcrypt] httpx requests
-          
-          # 复制后端代码
-          COPY backend/ .
-          
-          # 确保静态文件目录存在
-          RUN mkdir -p static
-          
+          COPY . .
           EXPOSE 8000
-          
           CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
           EOF
-          
-          
-          # 停止并删除旧容器
-          echo "=== 停止旧容器 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker stop agent-system || true
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker rm agent-system || true
-          
-          # 强制重新构建镜像（不使用缓存）
-          echo "=== 强制重新构建 Docker 镜像 ==="
-          if echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build --no-cache -t agent-system -f backend/Dockerfile .; then
-            echo "Docker 镜像构建成功"
-          else
-            echo "Docker 镜像构建失败，退出"
-            exit 1
-          fi
-          
-          # 检查镜像是否构建成功
-          echo "=== 检查 Docker 镜像 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker images | grep agent-system
-          
-          # 启动容器
-          echo "=== 启动容器 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker run -d \
+
+          # 停止旧容器
+          docker stop agent-system || true
+          docker rm agent-system || true
+
+          # 重新构建镜像
+          docker build --no-cache -t agent-system -f backend/Dockerfile .
+
+          # 启动新容器（仅挂载 data）
+          docker run -d \
             --name agent-system \
             -p 32004:8000 \
             -v /vol1/1000/project/agent-system/data:/app/data \
             -e DATABASE_URL=sqlite:///./data/agent_system.db \
             --restart unless-stopped \
             agent-system
-          
-          # 等待服务启动
-          echo "=== 等待服务启动 ==="
-          sleep 30
-          
-          # 检查服务状态
-          echo "=== 检查容器状态 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker ps | grep agent-system
-          
-          # 检查容器日志
-          echo "=== 检查容器日志 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker logs agent-system
-          
-          # 检查容器内文件
-          echo "=== 检查容器内文件 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/ || echo "无法执行容器命令"
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/static/ 2>/dev/null || echo "static目录不存在"
-          
-          # 检查 main.py 内容
-          echo "=== 检查 main.py 内容 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system head -20 /app/main.py || echo "无法读取 main.py"
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system grep -n "环境检测" /app/main.py || echo "main.py 中没有环境检测代码"
-          
-          # 检查端口是否正常监听
-          echo "=== 检查端口监听 ==="
-          netstat -tlnp | grep :32004 || echo "Port 32004 not listening"
-          
-          # 测试服务是否响应
-          echo "=== 测试服务响应 ==="
-          curl -f http://localhost:32004/api/health || echo "服务未响应"
-          curl -f http://localhost:32004/health || echo "本地路径也不响应" 
+
+          # 健康检查（最多重试 5 次）
+          for i in {1..5}; do
+            if curl -sf http://localhost:32004/api/health; then
+              echo "服务已启动"
+              exit 0
+            fi
+            echo "等待服务启动..."
+            sleep 5
+          done
+
+          echo "服务启动失败"
+          exit 1

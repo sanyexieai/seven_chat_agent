@@ -337,14 +337,15 @@ async def chat_stream(request: Dict[str, Any]):
         async def generate_response():
             try:
                 async for chunk in agent.process_message_stream(user_id, message, context):
-                    yield f"data: {json.dumps({
+                    chunk_payload = {
                         'chunk_id': chunk.chunk_id,
                         'type': chunk.type,
                         'content': chunk.content,
                         'agent_name': chunk.agent_name,
                         'metadata': chunk.metadata,
                         'is_end': chunk.is_end
-                    })}\n\n"
+                    }
+                    yield "data: " + json.dumps(chunk_payload) + "\n\n"
                     
                     if chunk.is_end:
                         break

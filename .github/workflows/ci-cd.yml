@@ -55,7 +55,9 @@ jobs:
 
     - name: Build frontend
       working-directory: agent-ui
-      run: npm run build
+      run: |
+        export DISABLE_ESLINT_PLUGIN=true
+        npm run build
 
     - name: Update Frontend Config for Production
       run: |

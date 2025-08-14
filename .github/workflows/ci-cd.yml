@@ -107,6 +107,12 @@ jobs:
         strip_components: 1
         rm: true
 
+    - name: Copy Dependencies to Backend
+      run: |
+        cp pyproject.toml agent-backend/
+        cp uv.lock agent-backend/
+        echo "依赖文件已复制到 backend 目录"
+
     - name: Deploy Frontend to Backend Directory
       uses: appleboy/scp-action@master
       with:
@@ -130,6 +136,8 @@ jobs:
         port: 222
         script: |
           cd /vol1/1000/project/agent-system/
+          
+
           
           # 创建后端 Dockerfile - 支持静态文件
           cat > backend/Dockerfile << 'EOF'

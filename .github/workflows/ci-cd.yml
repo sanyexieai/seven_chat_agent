@@ -74,6 +74,7 @@ jobs:
     - name: Export requirements.txt to backend directory
       run: |
         cd agent-backend
+        pip install uv
         uv export --format requirements.txt > requirements.txt
 
     - name: Deploy Backend Code

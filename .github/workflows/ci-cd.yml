@@ -200,10 +200,16 @@ jobs:
           echo "=== 检查容器日志 ==="
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker logs agent-system
           
+          # 检查容器内文件
+          echo "=== 检查容器内文件 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/ || echo "无法执行容器命令"
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/static/ 2>/dev/null || echo "static目录不存在"
+          
           # 检查端口是否正常监听
           echo "=== 检查端口监听 ==="
           netstat -tlnp | grep :32004 || echo "Port 32004 not listening"
           
           # 测试服务是否响应
           echo "=== 测试服务响应 ==="
-          curl -f http://localhost:32004/api/health || echo "服务未响应" 
+          curl -f http://localhost:32004/api/health || echo "服务未响应"
+          curl -f http://localhost:32004/health || echo "本地路径也不响应" 

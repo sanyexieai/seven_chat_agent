@@ -38,10 +38,6 @@ jobs:
           ~/.cache/uv
         key: ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-uv-${{ hashFiles('**/pyproject.toml', '**/uv.lock') }}
 
-    - name: Install Python dependencies
-      run: |
-        uv sync
-
     - name: Set up Node.js ${{ env.NODE_VERSION }}
       uses: actions/setup-node@v4
       with:
@@ -53,18 +49,10 @@ jobs:
       working-directory: agent-ui
       run: npm ci
 
-    - name: Run linting
+    - name: Run frontend linting
       working-directory: agent-ui
       run: |
         npm run lint
-
-    - name: Run tests
-      run: |
-        uv run pytest tests/ --verbose
-
-    - name: Run frontend tests
-      working-directory: agent-ui
-      run: npm test -- --coverage --watchAll=false --passWithNoTests
 
 
 

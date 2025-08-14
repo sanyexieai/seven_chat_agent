@@ -110,6 +110,7 @@ jobs:
         port: 222
         source: "agent-backend/*"
         target: "/vol1/1000/project/agent-system/backend/"
+        strip_components: 1
         rm: true
 
     - name: Deploy Frontend to Backend Directory

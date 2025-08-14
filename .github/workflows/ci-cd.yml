@@ -122,7 +122,7 @@ jobs:
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         port: 222
         script: |
-          cd /vol1/1000/project/agent-system/
+          cd /vol1/1000/project/agent-system/backend
 
           # 创建 Dockerfile
           cat > backend/Dockerfile << 'EOF'

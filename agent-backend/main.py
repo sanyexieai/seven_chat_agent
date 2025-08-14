@@ -80,8 +80,12 @@ import os
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 is_production = os.path.exists(static_dir) and os.path.isdir(static_dir)
 
+logger.info(f"环境检测: is_production={is_production}, static_dir={static_dir}")
+
 # 注册路由（根据环境自动调整前缀）
 api_prefix = "/api" if is_production else ""
+logger.info(f"使用API前缀: '{api_prefix}'")
+
 app.include_router(agents_router, prefix=api_prefix)
 app.include_router(sessions_router, prefix=api_prefix)
 app.include_router(chat_router, prefix=api_prefix)
@@ -89,6 +93,15 @@ app.include_router(mcp_router, prefix=api_prefix)
 app.include_router(flows_router, prefix=api_prefix)
 app.include_router(llm_config_router, prefix=api_prefix)
 app.include_router(knowledge_base_router, prefix=api_prefix)
+
+logger.info("所有路由已注册完成")
+
+# 显示所有注册的路由
+logger.info("=== 已注册的路由 ===")
+for route in app.routes:
+    if hasattr(route, 'path'):
+        logger.info(f"路由: {route.path} [{', '.join(route.methods) if hasattr(route, 'methods') else 'N/A'}]")
+logger.info("==================")
 
 # 静态文件挂载必须在路由注册之后
 if is_production:

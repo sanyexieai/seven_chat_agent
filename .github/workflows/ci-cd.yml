@@ -126,7 +126,7 @@ jobs:
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker rm agent-system || true
 
           # 重新构建镜像
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build --no-cache -t agent-system -f backend/Dockerfile .
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build --no-cache -t agent-system -f Dockerfile .
 
           # 启动新容器
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker run -d \

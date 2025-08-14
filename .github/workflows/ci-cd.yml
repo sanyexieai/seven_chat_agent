@@ -131,50 +131,44 @@ jobs:
         script: |
           cd /vol1/1000/project/agent-system/
           
+          # 创建后端 Dockerfile - 支持静态文件
+          cat > backend/Dockerfile << 'EOF'
+          FROM python:3.11-slim
           
+          WORKDIR /app
           
+          RUN pip install uv
           
+          COPY pyproject.toml uv.lock ./
+          RUN uv sync --frozen
           
-                     # 创建后端 Dockerfile - 支持静态文件
-           cat > backend/Dockerfile << 'EOF'
-           FROM python:3.11-slim
-           
-           WORKDIR /app
-           
-           RUN pip install uv
-           
-           COPY pyproject.toml uv.lock ./
-           RUN uv sync --frozen
-           
-           COPY . .
-           
-           # 确保静态文件目录存在
-           RUN mkdir -p static
-           
-           EXPOSE 8000
-           
-           CMD ["uv", "run", "uvicorn", "main_static:app", "--host", "0.0.0.0", "--port", "8000"]
-           EOF
-           
-           # 创建简化的主文件
-           cat > backend/main_static.py << 'EOF'
-           from fastapi import FastAPI
-           from fastapi.middleware.cors import CORSMiddleware
-           from fastapi.staticfiles import StaticFiles
-           
-           app = FastAPI(title="Seven Chat Agent API")
-           
-           app.add_middleware(CORSMiddleware, allow_origins=["*"])
-           
-           # 挂载静态文件
-           app.mount("/", StaticFiles(directory="static", html=True), name="static")
-           
-           @app.get("/api/health")
-           async def health_check():
-               return {"status": "healthy"}
-           EOF
-           
-
+          COPY . .
+          
+          # 确保静态文件目录存在
+          RUN mkdir -p static
+          
+          EXPOSE 8000
+          
+          CMD ["uv", "run", "uvicorn", "main_static:app", "--host", "0.0.0.0", "--port", "8000"]
+          EOF
+          
+          # 创建简化的主文件
+          cat > backend/main_static.py << 'EOF'
+          from fastapi import FastAPI
+          from fastapi.middleware.cors import CORSMiddleware
+          from fastapi.staticfiles import StaticFiles
+          
+          app = FastAPI(title="Seven Chat Agent API")
+          
+          app.add_middleware(CORSMiddleware, allow_origins=["*"])
+          
+          # 挂载静态文件
+          app.mount("/", StaticFiles(directory="static", html=True), name="static")
+          
+          @app.get("/api/health")
+          async def health_check():
+              return {"status": "healthy"}
+          EOF
           
           # 显示当前目录结构
           echo "=== 当前目录结构 ==="

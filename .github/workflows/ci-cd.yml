@@ -131,21 +131,7 @@ jobs:
         script: |
           cd /vol1/1000/project/agent-system/
           
-                     # 创建 docker-compose.yml - 前后端统一端口
-           cat > docker-compose.yml << 'EOF'
-           version: '3.8'
-           services:
-             agent-backend:
-               build: ./backend
-               ports:
-                 - "32004:8000"
-               volumes:
-                 - ./backend:/app
-                 - ./data:/app/data
-               environment:
-                 - DATABASE_URL=sqlite:///./data/agent_system.db
-               restart: unless-stopped
-           EOF
+          
           
           
           
@@ -294,19 +280,27 @@ jobs:
           
           # 停止并删除旧容器
           echo "=== 停止旧容器 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose down || true
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker stop agent-system || true
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker rm agent-system || true
           
           # 构建新镜像
           echo "=== 构建 Docker 镜像 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose build --no-cache
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build -t agent-system ./backend
           
           # 检查镜像是否构建成功
           echo "=== 检查 Docker 镜像 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker images | grep agent-system || echo "镜像未找到"
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker images | grep agent-system
           
           # 启动容器
           echo "=== 启动容器 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose up -d
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker run -d \
+            --name agent-system \
+            -p 32004:8000 \
+            -v /vol1/1000/project/agent-system/backend:/app \
+            -v /vol1/1000/project/agent-system/data:/app/data \
+            -e DATABASE_URL=sqlite:///./data/agent_system.db \
+            --restart unless-stopped \
+            agent-system
           
           # 等待服务启动
           echo "=== 等待服务启动 ==="
@@ -314,11 +308,11 @@ jobs:
           
           # 检查服务状态
           echo "=== 检查容器状态 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose ps
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker ps | grep agent-system
           
           # 检查容器日志
           echo "=== 检查容器日志 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose logs agent-backend
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker logs agent-system
           
           # 检查端口是否正常监听
           echo "=== 检查端口监听 ==="

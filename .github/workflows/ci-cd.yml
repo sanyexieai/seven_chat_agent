@@ -40,7 +40,7 @@ jobs:
 
     - name: Install Python dependencies
       run: |
-        uv sync --frozen
+        uv pip sync
 
     - name: Set up Node.js ${{ env.NODE_VERSION }}
       uses: actions/setup-node@v4

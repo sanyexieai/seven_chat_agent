@@ -113,7 +113,7 @@ jobs:
           cd /vol1/1000/project/agent-system/backend
 
           # 创建 Dockerfile
-          cat > backend/Dockerfile << 'EOF'
+          cat > Dockerfile << 'EOF'
           FROM python:3.11-slim
           WORKDIR /app
           RUN pip install -r requirements.txt

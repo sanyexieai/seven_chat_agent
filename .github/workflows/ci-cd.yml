@@ -14,21 +14,7 @@ env:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: linux
-            binary: agent-system-linux-x86_64
-          - os: windows-latest
-            target: windows
-            binary: agent-system-windows-x86_64
-          - os: macos-latest
-            target: macos
-            binary: agent-system-macos-x86_64
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
@@ -84,9 +70,7 @@ jobs:
         uv run pytest tests/ --verbose
         cd agent-ui && npm test -- --coverage --watchAll=false --passWithNoTests
 
-    - name: Build Python package
-      run: |
-        uv build
+
 
     - name: Build frontend
       working-directory: agent-ui
@@ -115,43 +99,21 @@ jobs:
         echo "Production config created (unified port):"
         cat agent-ui/build/config/config.json
 
-    - name: Create release package
+    - name: Create deployment package
       run: |
-        mkdir -p release
-        cp -r dist/* release/
-        cp -r agent-ui/build release/frontend
-        cp README.md release/
-        cp pyproject.toml release/
+        mkdir -p deployment
+        cp -r agent-ui/build deployment/frontend
+        cp -r agent-backend deployment/backend
+        cp README.md deployment/
+        cp pyproject.toml deployment/
         
-        if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          7z a -tzip agent-system-${{ matrix.target }}-x86_64.zip ./release/*
-        else
-          tar -czf agent-system-${{ matrix.target }}-x86_64.tar.gz -C release .
-        fi
-
-    - name: List files (Windows)
-      if: matrix.os == 'windows-latest'
-      run: dir release\
-
-    - name: List files (Unix)
-      if: matrix.os != 'windows-latest'
-      run: ls -la release/
-
-    - name: Upload Release Asset
-      if: startsWith(github.ref, 'refs/tags/') && success()
-      uses: softprops/action-gh-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        files: |
-          agent-system-${{ matrix.target }}-x86_64.zip
-          agent-system-${{ matrix.target }}-x86_64.tar.gz
-        draft: false
-        prerelease: false
-        generate_release_notes: true
+        tar -czf agent-system-deployment.tar.gz -C deployment .
+        
+        echo "Deployment package created:"
+        ls -la deployment/
+        ls -la
 
     - name: Deploy Backend to Server
-      if: matrix.os == 'ubuntu-latest' && success()
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.SSH_HOST }}
@@ -164,7 +126,6 @@ jobs:
         rm: true
 
     - name: Deploy Frontend to Backend Directory
-      if: matrix.os == 'ubuntu-latest' && success()
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.SSH_HOST }}
@@ -179,7 +140,6 @@ jobs:
 
 
     - name: Build and Run Docker
-      if: matrix.os == 'ubuntu-latest' && success()
       uses: appleboy/ssh-action@master
       with:
         host: ${{ secrets.SSH_HOST }}

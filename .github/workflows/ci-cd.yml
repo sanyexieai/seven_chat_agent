@@ -1,0 +1,360 @@
+name: AI Agent System CI and Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+  UV_VERSION: '0.1.0'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux
+            binary: agent-system-linux-x86_64
+          - os: windows-latest
+            target: windows
+            binary: agent-system-windows-x86_64
+          - os: macos-latest
+            target: macos
+            binary: agent-system-macos-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v1
+      with:
+        version: ${{ env.UV_VERSION }}
+
+    - name: Cache Python dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          .venv
+          ~/.cache/uv
+        key: ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-uv-${{ hashFiles('**/pyproject.toml', '**/uv.lock') }}
+
+    - name: Install Python dependencies
+      run: |
+        uv sync --frozen
+
+    - name: Set up Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: agent-ui/package-lock.json
+
+    - name: Install Node.js dependencies
+      working-directory: agent-ui
+      run: npm ci
+
+    - name: Check code formatting
+      run: |
+        uv run black --check .
+        uv run isort --check-only .
+
+    - name: Run linting
+      run: |
+        uv run flake8 .
+        uv run mypy .
+        cd agent-ui && npm run lint
+        cd agent-ui && npm run type-check
+
+    - name: Run tests
+      run: |
+        uv run pytest tests/ --verbose
+        cd agent-ui && npm test -- --coverage --watchAll=false --passWithNoTests
+
+    - name: Build Python package
+      run: |
+        uv build
+
+    - name: Build frontend
+      working-directory: agent-ui
+      run: npm run build
+
+    - name: Update Frontend Config for Production
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        # 创建生产环境的配置文件 - 前后端使用同一端口
+        mkdir -p agent-ui/build/config
+        cat > agent-ui/build/config/config.json << 'EOF'
+        {
+          "api": {
+            "backend_port": 32004,
+            "frontend_port": 32004,
+            "host": "${{ secrets.SSH_HOST }}",
+            "base_path": "/api"
+          },
+          "app": {
+            "name": "Seven Chat Agent",
+            "version": "1.0.0"
+          }
+        }
+        EOF
+        
+        echo "Production config created (unified port):"
+        cat agent-ui/build/config/config.json
+
+    - name: Create release package
+      run: |
+        mkdir -p release
+        cp -r dist/* release/
+        cp -r agent-ui/build release/frontend
+        cp README.md release/
+        cp pyproject.toml release/
+        
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          7z a -tzip agent-system-${{ matrix.target }}-x86_64.zip ./release/*
+        else
+          tar -czf agent-system-${{ matrix.target }}-x86_64.tar.gz -C release .
+        fi
+
+    - name: List files (Windows)
+      if: matrix.os == 'windows-latest'
+      run: dir release\
+
+    - name: List files (Unix)
+      if: matrix.os != 'windows-latest'
+      run: ls -la release/
+
+    - name: Upload Release Asset
+      if: startsWith(github.ref, 'refs/tags/') && success()
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        files: |
+          agent-system-${{ matrix.target }}-x86_64.zip
+          agent-system-${{ matrix.target }}-x86_64.tar.gz
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+
+    - name: Deploy Backend to Server
+      if: matrix.os == 'ubuntu-latest' && success()
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: 222
+        source: "agent-backend/*"
+        target: "/vol1/1000/project/agent-system/backend/"
+        strip_components: 1
+        rm: true
+
+    - name: Deploy Frontend to Backend Directory
+      if: matrix.os == 'ubuntu-latest' && success()
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: 222
+        source: "agent-ui/build/*"
+        target: "/vol1/1000/project/agent-system/backend/static/"
+        strip_components: 2
+        rm: true
+
+
+
+    - name: Build and Run Docker
+      if: matrix.os == 'ubuntu-latest' && success()
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: 222
+        script: |
+          cd /vol1/1000/project/agent-system/
+          
+                     # 创建 docker-compose.yml - 前后端统一端口
+           cat > docker-compose.yml << 'EOF'
+           version: '3.8'
+           services:
+             agent-backend:
+               build: ./backend
+               ports:
+                 - "32004:8000"
+               volumes:
+                 - ./backend:/app
+                 - ./data:/app/data
+               environment:
+                 - DATABASE_URL=sqlite:///./data/agent_system.db
+               restart: unless-stopped
+           EOF
+          
+          
+          
+                     # 创建后端 Dockerfile - 支持静态文件
+           cat > backend/Dockerfile << 'EOF'
+           FROM python:3.11-slim
+           
+           WORKDIR /app
+           
+           RUN pip install uv
+           
+           COPY pyproject.toml uv.lock ./
+           RUN uv sync --frozen
+           
+           COPY . .
+           
+           # 确保静态文件目录存在
+           RUN mkdir -p static
+           
+           EXPOSE 8000
+           
+           CMD ["uv", "run", "uvicorn", "agent_backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+           EOF
+           
+           # 创建支持静态文件的后端主文件
+           cat > backend/main_static.py << 'EOF'
+           from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
+           from fastapi.middleware.cors import CORSMiddleware
+           from fastapi.staticfiles import StaticFiles
+           from fastapi.responses import StreamingResponse, FileResponse
+           from contextlib import asynccontextmanager
+           import uvicorn
+           import asyncio
+           import json
+           import uuid
+           from typing import Dict, List, Any
+           import logging
+           import os
+           
+           # 导入路由
+           from api.agents import router as agents_router
+           from api.sessions import router as sessions_router
+           from api.chat import router as chat_router
+           from api.mcp import router as mcp_router
+           from api.flows import router as flows_router
+           from api.llm_config import router as llm_config_router
+           from api.knowledge_base import router as knowledge_base_router
+           
+           # 导入数据库和智能体管理器
+           from database.database import engine, Base, get_db, SessionLocal
+           from database.migrations import run_migrations, create_default_agents
+           from agents.agent_manager import AgentManager
+           from utils.log_helper import get_logger
+           
+           # 配置日志
+           logging.basicConfig(level=logging.INFO)
+           logger = get_logger("main")
+           
+           # 运行数据库迁移
+           logger.info("开始数据库迁移...")
+           from database.database import init_db
+           init_db()
+           logger.info("数据库迁移完成")
+           
+           # 全局变量
+           agent_manager = None
+           active_connections: Dict[str, WebSocket] = {}
+           
+           @asynccontextmanager
+           async def lifespan(app: FastAPI):
+               """应用生命周期管理"""
+               global agent_manager
+               
+               # 启动时初始化
+               logger.info("应用启动中...")
+               agent_manager = AgentManager()
+               await agent_manager.initialize()
+               logger.info("应用启动完成")
+               
+               yield
+               
+               # 关闭时清理
+               logger.info("应用关闭中...")
+               if agent_manager:
+                   await agent_manager.cleanup()
+               logger.info("应用关闭完成")
+           
+           # 创建FastAPI应用
+           app = FastAPI(
+               title="Seven Chat Agent API",
+               description="多智能体聊天系统API",
+               version="1.0.0",
+               lifespan=lifespan
+           )
+           
+           # 配置CORS
+           app.add_middleware(
+               CORSMiddleware,
+               allow_origins=["*"],
+               allow_credentials=True,
+               allow_methods=["*"],
+               allow_headers=["*"],
+           )
+           
+           # 挂载静态文件
+           app.mount("/", StaticFiles(directory="static", html=True), name="static")
+           
+           # 注册API路由 (需要在静态文件挂载之后)
+           app.include_router(agents_router, prefix="/api")
+           app.include_router(sessions_router, prefix="/api")
+           app.include_router(chat_router, prefix="/api")
+           app.include_router(mcp_router, prefix="/api")
+           app.include_router(flows_router, prefix="/api")
+           app.include_router(llm_config_router, prefix="/api")
+           app.include_router(knowledge_base_router, prefix="/api")
+           
+           @app.get("/api/")
+           async def root():
+               """API根路径"""
+               return {
+                   "message": "Seven Chat Agent API",
+                   "version": "1.0.0",
+                   "status": "running"
+               }
+           
+           @app.get("/api/health")
+           async def health_check():
+               """健康检查"""
+               return {
+                   "status": "healthy",
+                   "timestamp": "2024-01-01T00:00:00Z"
+               }
+           
+           # 其他路由和WebSocket处理...
+           # 这里需要复制原main.py中的其他内容
+           EOF
+           
+           # 更新Dockerfile使用新的主文件
+           sed -i 's/main:app/main_static:app/g' backend/Dockerfile
+          
+          # 停止并删除旧容器
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose down || true
+          
+          # 构建并运行新容器
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose up -d --build
+          
+          # 等待服务启动
+          sleep 30
+          
+          # 检查服务状态
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker-compose ps
+          
+          # 检查端口是否正常监听
+          netstat -tlnp | grep :32004 || echo "Port 32004 not listening" 

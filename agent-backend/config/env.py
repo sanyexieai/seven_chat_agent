@@ -32,8 +32,8 @@ PORT = int(os.getenv("PORT", "8000"))
 # 数据库配置
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///agent_system.db")
 
-# Redis配置
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+# Redis配置 (已移除，项目未使用)
+# REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 # 文件上传配置
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
@@ -85,7 +85,7 @@ def get_config() -> dict:
         "host": HOST,
         "port": PORT,
         "database_url": DATABASE_URL,
-        "redis_url": REDIS_URL,
+        # "redis_url": REDIS_URL,  # 已移除
         "upload_dir": UPLOAD_DIR,
         "max_file_size": MAX_FILE_SIZE,
         "secret_key": SECRET_KEY,

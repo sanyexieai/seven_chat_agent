@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     # 数据库配置
     DATABASE_URL: Optional[str] = None
     
-    # Redis配置
-    REDIS_URL: str = "redis://localhost:6379"
+    # Redis配置 (已移除，项目未使用)
+    # REDIS_URL: str = "redis://localhost:6379"
     
     # LLM配置
     OPENAI_API_KEY: Optional[str] = None

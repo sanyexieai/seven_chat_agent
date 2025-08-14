@@ -14,7 +14,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       <Sidebar />
       <Content style={{ 
         marginLeft: 280, 
-        padding: '24px', 
+        padding: '0 24px 24px 24px', 
         backgroundColor: '#f0f2f5',
         minHeight: '100vh',
         overflow: 'auto'

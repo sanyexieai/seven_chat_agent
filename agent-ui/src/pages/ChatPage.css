@@ -1,9 +1,23 @@
-/* 聊天页面样式 */
+/* 全局 Flexbox 布局 - 解决所有滚动条问题 */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden; /* 防止最外层出现滚动条 */
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 聊天页面样式 - 使用 Flexbox 布局 */
 .chat-layout {
-  height: 100vh;
+  height: 100%;
   display: flex;
   flex-direction: column;
   background-color: #f5f5f5;
+  overflow: hidden; /* 确保聊天布局不出现滚动条 */
 }
 
 .chat-main {
@@ -14,10 +28,11 @@
   border-radius: 8px;
   margin: 16px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
+  overflow: hidden; /* 确保主容器不出现滚动条 */
+  min-height: 0; /* 重要：允许 flex 子元素收缩 */
 }
 
-/* 聊天头部 */
+/* 聊天头部 - 固定高度，不参与 flex 伸缩 */
 .chat-header {
   display: flex;
   justify-content: space-between;
@@ -25,6 +40,7 @@
   padding: 16px 24px;
   border-bottom: 1px solid #f0f0f0;
   background-color: #fff;
+  flex: 0 0 auto; /* 固定高度，不伸缩 */
 }
 
 .header-left {
@@ -127,15 +143,26 @@
   line-height: 1.4;
 }
 
-/* 消息容器 */
+/* 消息容器 - 使用 Flexbox 实现完美滚动 */
 .messages-container {
   flex: 1;
-  overflow-y: auto;
-  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 隐藏溢出，由内部处理 */
   background-color: #fafafa;
+  position: relative; /* 为绝对定位的滚动容器提供参考 */
+  min-height: 0; /* 重要：允许 flex 子元素收缩 */
 }
 
 .messages-list {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -177,7 +204,9 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
   position: relative;
   word-wrap: break-word;
+  word-break: break-word; /* 确保长单词也能换行 */
   max-width: 100%;
+  overflow-wrap: break-word; /* 现代浏览器的换行属性 */
 }
 
 .message-wrapper.user .message-bubble {
@@ -246,11 +275,12 @@
   background-color: #fff2f0;
 }
 
-/* 输入区域 */
+/* 输入区域 - 固定在底部，不参与滚动 */
 .input-container {
   padding: 16px 24px;
   border-top: 1px solid #f0f0f0;
   background-color: #fff;
+  flex: 0 0 auto; /* 固定高度，不伸缩 */
 }
 
 .input-wrapper {
@@ -337,7 +367,7 @@
     padding: 12px 16px;
   }
   
-  .messages-container {
+  .messages-list {
     padding: 12px 16px;
   }
   
@@ -350,23 +380,45 @@
   }
 }
 
-/* 滚动条样式 */
-.messages-container::-webkit-scrollbar {
-  width: 6px;
+/* 滚动条样式 - 只针对消息列表 */
+.messages-list::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-.messages-container::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 3px;
+.messages-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
-.messages-container::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 3px;
+.messages-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+  background-clip: content-box;
 }
 
-.messages-container::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8;
+/* 确保所有容器都没有滚动条 */
+.chat-layout,
+.chat-main,
+.messages-container,
+.input-container,
+.chat-header {
+  overflow: hidden;
+}
+
+/* 强制隐藏所有可能的滚动条 */
+.chat-layout::-webkit-scrollbar,
+.chat-main::-webkit-scrollbar,
+.messages-container::-webkit-scrollbar,
+.input-container::-webkit-scrollbar,
+.chat-header::-webkit-scrollbar {
+  display: none;
+}
+
+/* 确保消息列表是唯一的滚动区域 */
+.messages-list {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
 }
 
 /* 加载状态样式 */
@@ -375,6 +427,41 @@
   justify-content: center;
   align-items: center;
   height: 200px;
+}
+
+/* 覆盖 Ant Design 组件的默认滚动条 */
+.ant-card,
+.ant-modal,
+.ant-drawer,
+.ant-tabs-content {
+  overflow: hidden !important;
+}
+
+/* 确保输入框不会产生滚动条 */
+.ant-input,
+.ant-input-textarea {
+  overflow: hidden !important;
+}
+
+/* 全局滚动条样式重置 */
+* {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+*::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
+/* 只允许消息列表显示滚动条 */
+.messages-list {
+  scrollbar-width: auto;
+  -ms-overflow-style: auto;
+}
+
+.messages-list::-webkit-scrollbar {
+  display: block;
+  width: 8px;
 }
 
  

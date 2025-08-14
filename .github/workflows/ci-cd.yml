@@ -113,7 +113,9 @@ jobs:
           cat > backend/Dockerfile << 'EOF'
           FROM python:3.11-slim
           WORKDIR /app
-          RUN pip install fastapi uvicorn python-multipart sqlalchemy aiosqlite python-jose[cryptography] passlib[bcrypt] httpx requests
+          RUN pip install uv
+          RUN uv export --format requirements.txt > requirements.txt
+          RUN pip install -r requirements.txt
           EXPOSE 8000
           CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
           EOF
@@ -130,7 +132,6 @@ jobs:
             --name agent-system \
             -p 32004:8000 \
             -v /vol1/1000/project/agent-system/backend:/app \
-            -v /vol1/1000/project/agent-system/data:/app/data \
             -e DATABASE_URL=sqlite:///./data/agent_system.db \
             --restart unless-stopped \
             agent-system

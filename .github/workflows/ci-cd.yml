@@ -87,6 +87,21 @@ jobs:
         strip_components: 1
         rm: true
 
+   #复制uv.lock和pyproject.toml到backend目录
+    - name: Copy uv.lock and pyproject.toml to backend directory
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: 222
+        source: "uv.lock,pyproject.toml"
+        target: "/vol1/1000/project/agent-system/backend/"
+        strip_components: 1
+        rm: true
+        
+    
+
     - name: Deploy Frontend to Backend Static Directory
       uses: appleboy/scp-action@master
       with:

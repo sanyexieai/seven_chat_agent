@@ -148,7 +148,7 @@ jobs:
           
           # 使用 uv 安装依赖（只安装，不构建）
           COPY backend/pyproject.toml backend/uv.lock ./
-          RUN uv export --format requirements-txt > requirements.txt && uv pip install -r requirements.txt
+          RUN uv export --format requirements-txt > requirements.txt && uv pip install --system -r requirements.txt
           
           # 复制后端代码
           COPY backend/ .

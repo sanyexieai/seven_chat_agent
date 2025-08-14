@@ -410,6 +410,7 @@ const ChatPage: React.FC = () => {
                   'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
+                  session_id: sessionData.session_id, // 添加必需的session_id字段
                   user_id: 'default_user',
                   message_type: 'user',
                   content: inputValue,
@@ -542,6 +543,7 @@ const ChatPage: React.FC = () => {
                             'Content-Type': 'application/json',
                           },
                           body: JSON.stringify({
+                            session_id: currentSession.session_id, // 添加必需的session_id字段
                             user_id: 'default_user',
                             message_type: 'agent',
                             content: fullContent,

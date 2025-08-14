@@ -183,7 +183,6 @@ jobs:
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker run -d \
             --name agent-system \
             -p 32004:8000 \
-            -v /vol1/1000/project/agent-system/backend:/app \
             -v /vol1/1000/project/agent-system/data:/app/data \
             -e DATABASE_URL=sqlite:///./data/agent_system.db \
             --restart unless-stopped \

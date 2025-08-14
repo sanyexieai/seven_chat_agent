@@ -65,6 +65,10 @@ jobs:
         cd agent-ui && npm run lint
         cd agent-ui && npm run type-check
 
+    - name: Install dev dependencies
+      run: |
+        uv pip install black isort flake8 mypy
+
     - name: Run tests
       run: |
         uv run pytest tests/ --verbose

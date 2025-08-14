@@ -54,14 +54,18 @@ jobs:
       run: npm ci
 
     - name: Run linting
+      working-directory: agent-ui
       run: |
-        cd agent-ui && npm run lint
-        cd agent-ui && npm run type-check
+        npm run lint
+        npm run type-check
 
     - name: Run tests
       run: |
         uv run pytest tests/ --verbose
-        cd agent-ui && npm test -- --coverage --watchAll=false --passWithNoTests
+
+    - name: Run frontend tests
+      working-directory: agent-ui
+      run: npm test -- --coverage --watchAll=false --passWithNoTests
 
 
 

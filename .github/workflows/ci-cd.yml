@@ -98,7 +98,7 @@ jobs:
         source: "uv.lock,pyproject.toml"
         target: "/vol1/1000/project/agent-system/backend/"
         strip_components: 1
-        rm: true
+        rm: false
         
     
 

@@ -95,7 +95,13 @@ jobs:
         ls -la deployment/
         ls -la
 
-    - name: Deploy Backend to Server
+    - name: Copy Dependencies to Backend
+      run: |
+        cp pyproject.toml agent-backend/
+        cp uv.lock agent-backend/
+        echo "依赖文件已复制到 backend 目录"
+
+    - name: Deploy Backend Code
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.SSH_HOST }}
@@ -104,14 +110,7 @@ jobs:
         port: 222
         source: "agent-backend/*"
         target: "/vol1/1000/project/agent-system/backend/"
-        strip_components: 1
         rm: true
-
-    - name: Copy Dependencies to Backend
-      run: |
-        cp pyproject.toml agent-backend/
-        cp uv.lock agent-backend/
-        echo "依赖文件已复制到 backend 目录"
 
     - name: Deploy Frontend to Backend Directory
       uses: appleboy/scp-action@master

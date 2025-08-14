@@ -170,9 +170,9 @@ jobs:
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker stop agent-system || true
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker rm agent-system || true
           
-          # 构建新镜像 (从项目根目录构建，指定 Dockerfile 路径)
-          echo "=== 构建 Docker 镜像 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build -t agent-system -f backend/Dockerfile .
+          # 强制重新构建镜像（不使用缓存）
+          echo "=== 强制重新构建 Docker 镜像 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker build --no-cache -t agent-system -f backend/Dockerfile .
           
           # 检查镜像是否构建成功
           echo "=== 检查 Docker 镜像 ==="
@@ -204,6 +204,11 @@ jobs:
           echo "=== 检查容器内文件 ==="
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/ || echo "无法执行容器命令"
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/static/ 2>/dev/null || echo "static目录不存在"
+          
+          # 检查 main.py 内容
+          echo "=== 检查 main.py 内容 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system head -20 /app/main.py || echo "无法读取 main.py"
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system grep -n "环境检测" /app/main.py || echo "main.py 中没有环境检测代码"
           
           # 检查端口是否正常监听
           echo "=== 检查端口监听 ==="

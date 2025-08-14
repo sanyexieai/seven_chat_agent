@@ -221,6 +221,31 @@
   color: rgba(255, 255, 255, 0.6);
 }
 
+/* 思考过程按钮激活状态 */
+.input-btn.active {
+  border-color: #52c41a;
+  color: #52c41a;
+  background-color: #f6ffed;
+}
+
+.input-btn.active:hover {
+  border-color: #73d13d;
+  color: #73d13d;
+  background-color: #f6ffed;
+}
+
+.input-btn.inactive {
+  border-color: #ff7875;
+  color: #ff7875;
+  background-color: #fff2f0;
+}
+
+.input-btn.inactive:hover {
+  border-color: #ff9c9c;
+  color: #ff9c9c;
+  background-color: #fff2f0;
+}
+
 /* 输入区域 */
 .input-container {
   padding: 16px 24px;

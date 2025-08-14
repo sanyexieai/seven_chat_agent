@@ -1,0 +1,118 @@
+.think-tag-container {
+  width: 100%;
+}
+
+/* 思考过程控制区域样式已移除，现在由输入框上方的按钮控制 */
+
+.think-tag-card {
+  margin: 8px 0;
+  border: 1px solid #d9d9d9;
+  background-color: #fafafa;
+  border-radius: 6px;
+}
+
+.think-tag-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.think-tag-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.think-tag-title .anticon {
+  color: #faad14;
+  font-size: 14px;
+}
+
+.think-tag-title .ant-typography {
+  font-size: 12px;
+  color: #666;
+  margin: 0;
+}
+
+.think-tag-actions {
+  display: none; /* 不再需要操作按钮区域 */
+}
+
+.think-tag-content {
+  margin-top: 8px;
+  padding: 0 12px 12px;
+}
+
+.think-tag-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #666;
+  background-color: #fff;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #f0f0f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.think-tag-hidden {
+  display: none;
+}
+
+/* 流式加载时的动画效果 */
+.think-tag-streaming {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* 不完整思考过程的特殊样式 */
+.think-tag-incomplete {
+  border-color: #ff7875;
+  background-color: #fff2f0;
+}
+
+.think-tag-incomplete .think-tag-card {
+  border-color: #ff7875;
+}
+
+.think-tag-incomplete .think-tag-text {
+  border-color: #ffd6d6;
+  background-color: #fff;
+}
+
+/* 等待状态的样式 */
+.think-tag-incomplete .ant-btn[disabled] {
+  color: #bfbfbf;
+  background: transparent;
+  border-color: #d9d9d9;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .think-tag-controls {
+    justify-content: flex-start;
+  }
+  
+  .think-tag-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .think-tag-actions {
+    align-self: flex-end;
+  }
+} 

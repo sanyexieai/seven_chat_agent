@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message, Select, Modal } from 'antd';
-import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined } from '@ant-design/icons';
+import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined, BulbOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
+import ThinkTagRenderer from '../components/ThinkTagRenderer';
 import './ChatPage.css';
 
 const { Header, Content, Sider } = Layout;
@@ -667,7 +668,13 @@ const ChatPage: React.FC = () => {
                           {message.agentName || (message.type === 'user' ? '我' : 'AI助手')}
                         </Text>
                       </div>
-                      <div className="message-text">{message.content}</div>
+                      <div className="message-text">
+                        {message.type === 'agent' ? (
+                          <ThinkTagRenderer content={message.content} />
+                        ) : (
+                          message.content
+                        )}
+                      </div>
                       <div className="message-time">
                         {formatTime(message.timestamp)}
                       </div>
@@ -742,6 +749,28 @@ const ChatPage: React.FC = () => {
                 className="input-btn"
               >
                 图片
+              </Button>
+              <Button 
+                type="text" 
+                icon={<BulbOutlined />}
+                className={`input-btn ${(() => {
+                  try {
+                    return localStorage.getItem('think-tag-visible') !== 'false' ? 'active' : 'inactive';
+                  } catch {
+                    return 'active';
+                  }
+                })()}`}
+                onClick={() => {
+                  try {
+                    const currentVisible = localStorage.getItem('think-tag-visible') !== 'false';
+                    const newVisible = !currentVisible;
+                    localStorage.setItem('think-tag-visible', newVisible.toString());
+                    // 触发页面重新渲染
+                    window.dispatchEvent(new Event('storage'));
+                  } catch {}
+                }}
+              >
+                思考过程
               </Button>
             </div>
             <TextArea

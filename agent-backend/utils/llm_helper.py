@@ -11,6 +11,7 @@ from anthropic import AsyncAnthropic
 
 from config.env import MODEL, MODEL_PROVIDER, TEMPERATURE, BASE_URL, API_KEY
 from config.llm_config_manager import llm_config_manager
+from config.llm_config import get_ollama_timeout, get_ollama_retry_config
 from utils.log_helper import get_logger
 
 # 获取logger实例
@@ -272,12 +273,24 @@ class LLMHelper:
             
             logger.info("使用同步requests发送Ollama请求...")
             
+            # 获取超时配置
+            connect_timeout, read_timeout = get_ollama_timeout(is_stream=False)
+            retry_config = get_ollama_retry_config()
+            
+            # 创建带连接池的session，提高连接稳定性
+            session = requests.Session()
+            session.mount('http://', requests.adapters.HTTPAdapter(
+                max_retries=retry_config['max_retries'],
+                pool_connections=retry_config['pool_connections'],
+                pool_maxsize=retry_config['pool_maxsize']
+            ))
+            
             try:
-                response = requests.post(
+                response = session.post(
                     f"{self._ollama_base_url}/api/chat",
                     json=data,
                     headers={"Content-Type": "application/json"},
-                    timeout=30
+                    timeout=(connect_timeout, read_timeout)
                 )
                 
                 end_time = time.time()
@@ -298,9 +311,14 @@ class LLMHelper:
             except requests.exceptions.Timeout:
                 logger.error("同步请求超时")
                 raise
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"连接错误: {str(e)}")
+                raise
             except requests.exceptions.RequestException as e:
                 logger.error(f"同步请求失败: {str(e)}")
                 raise
+            finally:
+                session.close()
                 
         except httpx.HTTPStatusError as e:
             logger.error(f"Ollama HTTP错误: {e.response.status_code} - {e.response.text}")
@@ -483,12 +501,24 @@ class LLMHelper:
             import requests
             logger.info("使用同步requests发送Ollama流式请求...")
             
+            # 获取超时配置
+            connect_timeout, read_timeout = get_ollama_timeout(is_stream=True)
+            retry_config = get_ollama_retry_config()
+            
+            # 创建带连接池的session，提高连接稳定性
+            session = requests.Session()
+            session.mount('http://', requests.adapters.HTTPAdapter(
+                max_retries=retry_config['max_retries'],
+                pool_connections=retry_config['pool_connections'],
+                pool_maxsize=retry_config['pool_maxsize']
+            ))
+            
             try:
-                response = requests.post(
+                response = session.post(
                     f"{self._ollama_base_url}/api/chat",
                     json=data,
                     headers={"Content-Type": "application/json"},
-                    timeout=30,
+                    timeout=(connect_timeout, read_timeout),
                     stream=True
                 )
                 
@@ -519,9 +549,14 @@ class LLMHelper:
             except requests.exceptions.Timeout:
                 logger.error("同步流式请求超时")
                 raise
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"连接错误: {str(e)}")
+                raise
             except requests.exceptions.RequestException as e:
                 logger.error(f"同步流式请求失败: {str(e)}")
                 raise
+            finally:
+                session.close()
                                 
         except httpx.HTTPStatusError as e:
             logger.error(f"Ollama流式HTTP错误: {e.response.status_code} - {e.response.text}")

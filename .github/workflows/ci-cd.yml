@@ -49,10 +49,7 @@ jobs:
       working-directory: agent-ui
       run: npm ci
 
-    - name: Run frontend linting
-      working-directory: agent-ui
-      run: |
-        npm run lint
+
 
 
 

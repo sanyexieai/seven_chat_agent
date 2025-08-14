@@ -146,7 +146,7 @@ jobs:
           # 使用 uv 安装依赖
           RUN pip install uv
           COPY backend/pyproject.toml backend/uv.lock ./
-          RUN uv pip install --system $(uv tree --format requirements-txt | grep -v "file://" | tr '\n' ' ') --no-build
+          RUN uv sync --no-install .
           
           # 复制后端代码
           COPY backend/ .

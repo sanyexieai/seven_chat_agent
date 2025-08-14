@@ -143,10 +143,8 @@ jobs:
           
           WORKDIR /app
           
-          # 使用 uv 安装依赖
-          RUN pip install uv
-          COPY backend/pyproject.toml backend/uv.lock ./
-          RUN uv sync --no-install .
+          # 直接安装必要的依赖包
+          RUN pip install fastapi uvicorn python-multipart sqlalchemy aiosqlite python-jose[cryptography] passlib[bcrypt] httpx requests
           
           # 复制后端代码
           COPY backend/ .

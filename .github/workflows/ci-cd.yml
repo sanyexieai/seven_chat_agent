@@ -137,8 +137,7 @@ jobs:
         script: |
           cd /vol1/1000/project/agent-system/
           
-
-          
+         
           # 创建后端 Dockerfile - 支持静态文件
           cat > backend/Dockerfile << 'EOF'
           FROM python:3.11-slim
@@ -147,8 +146,7 @@ jobs:
           
           # 使用 uv 安装依赖
           RUN pip install uv
-          COPY pyproject.toml uv.lock ./
-          RUN uv sync --frozen
+          RUN uv sync 
           
           # 复制后端代码
           COPY backend/ .
@@ -161,20 +159,6 @@ jobs:
           CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
           EOF
           
-
-          
-          # 显示当前目录结构
-          echo "=== 当前目录结构 ==="
-          pwd
-          ls -la
-          echo "=== 检查关键文件 ==="
-          ls -la pyproject.toml uv.lock || echo "关键文件不存在"
-          echo "=== 检查文件内容 ==="
-          head -5 pyproject.toml 2>/dev/null || echo "pyproject.toml 不存在"
-          echo "=== 检查文件路径 ==="
-          find . -name "pyproject.toml" -type f 2>/dev/null || echo "找不到 pyproject.toml"
-          echo "=== 后端目录结构 ==="
-          ls -la backend/
           
           # 停止并删除旧容器
           echo "=== 停止旧容器 ==="

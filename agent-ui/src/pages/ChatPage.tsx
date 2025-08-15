@@ -159,8 +159,6 @@ const ChatPage: React.FC = () => {
     try {
       // 检查是否有现有会话
       const response = await fetch(getApiUrl('/api/sessions?user_id=default_user'));
-      // 检查是否有现有会话
-      const response = await fetch(getApiUrl('/api/sessions?user_id=default_user'));
       if (response.ok) {
         const sessions = await response.json();
         
@@ -628,24 +626,8 @@ const ChatPage: React.FC = () => {
                       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
                     
-                  } else if (data.type === 'content' && data.content) {
-                    // 兼容旧格式：type: 'content'
-                    fullContent += data.content;
-                    
-                    // 实时更新消息内容，显示流式效果
-                    setMessages(prev => {
-                      const updated = prev.map(msg => 
-                        msg.id === agentMessageId 
-                          ? { ...msg, content: fullContent, isStreaming: true }
-                          : msg
-                      );
-                      return updated;
-                    });
-                    
-                    // 自动滚动到底部
-                    if (messagesEndRef.current) {
-                      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-                    }
+                    // 添加小延迟，确保流式效果可见
+                    await new Promise(resolve => setTimeout(resolve, 50));
                     
                   } else if (data.message && data.message.content) {
                     // Ollama格式：{message: {content: "..."}}
@@ -666,6 +648,9 @@ const ChatPage: React.FC = () => {
                     if (messagesEndRef.current) {
                       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
+                    
+                    // 添加小延迟，确保流式效果可见
+                    await new Promise(resolve => setTimeout(resolve, 50));
                     
                   } else if (data.is_end || data.type === 'done' || data.done) {
                     // 流式响应完成，清除流式状态

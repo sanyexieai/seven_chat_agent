@@ -154,6 +154,10 @@ jobs:
           
           echo "=== 检查配置文件 ==="
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system cat /app/static/config/config.json
+          
+          echo "=== 测试静态文件访问 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/static/js/main.16f30cd7.js || echo "静态文件访问失败"
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/health || echo "API访问失败"
 
           # 健康检查（最多重试 5 次）
           for i in {1..5}; do

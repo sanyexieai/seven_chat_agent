@@ -106,6 +106,17 @@ logger.info("==================")
 # 静态文件挂载必须在路由注册之后
 if is_production:
     logger.info(f"检测到静态文件目录: {static_dir}")
+    # 检查静态文件目录内容
+    if os.path.exists(static_dir):
+        logger.info(f"静态文件目录内容:")
+        for root, dirs, files in os.walk(static_dir):
+            level = root.replace(static_dir, '').count(os.sep)
+            indent = ' ' * 2 * level
+            logger.info(f"{indent}{os.path.basename(root)}/")
+            subindent = ' ' * 2 * (level + 1)
+            for file in files:
+                logger.info(f"{subindent}{file}")
+    
     # 修复：将静态文件挂载到/static路径，而不是根路径
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     logger.info("静态文件已挂载到 /static 路径")
@@ -127,7 +138,7 @@ if is_production:
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="API endpoint not found")
         
-        # 尝试提供静态文件
+        # 尝试提供其他静态文件（非/static路径）
         file_path = os.path.join(static_dir, full_path)
         if os.path.exists(file_path) and os.path.isfile(file_path):
             return FileResponse(file_path)
@@ -139,15 +150,16 @@ if is_production:
         
         raise HTTPException(status_code=404, detail="File not found")
 
-# 动态注册根路径和健康检查
-@app.get(f"{api_prefix}/" if api_prefix else "/")
-async def root():
-    """根路径"""
-    return {
-        "message": "Seven Chat Agent API",
-        "version": "1.0.0",
-        "status": "running"
-    }
+# 动态注册根路径和健康检查（只在非生产环境或API前缀存在时）
+if not is_production or api_prefix:
+    @app.get(f"{api_prefix}/" if api_prefix else "/")
+    async def root():
+        """根路径"""
+        return {
+            "message": "Seven Chat Agent API",
+            "version": "1.0.0",
+            "status": "running"
+        }
 
 @app.get(f"{api_prefix}/health" if api_prefix else "/health")
 async def health_check():

@@ -129,23 +129,6 @@ if is_production:
         if os.path.exists(index_path):
             return FileResponse(index_path)
         return {"message": "Static files not found"}
-    
-    # 添加通配符路由，处理前端路由
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        from fastapi.responses import FileResponse
-        
-        # 尝试提供静态文件（非/static路径）
-        file_path = os.path.join(static_dir, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        
-        # 如果文件不存在，返回index.html（支持SPA路由）
-        index_path = os.path.join(static_dir, "index.html")
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        
-        raise HTTPException(status_code=404, detail="File not found")
 
 # 动态注册根路径和健康检查（只在非生产环境或API前缀存在时）
 if not is_production or api_prefix:
@@ -165,6 +148,28 @@ async def health_check():
         "status": "healthy",
         "agent_manager": "initialized" if agent_manager else "not_initialized"
     }
+
+# 通配符路由必须在所有其他路由之后注册，用于处理前端路由
+if is_production:
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        from fastapi.responses import FileResponse
+        
+        # 如果是API请求，直接返回404（让FastAPI处理）
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        
+        # 尝试提供静态文件（非/static路径）
+        file_path = os.path.join(static_dir, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        
+        # 如果文件不存在，返回index.html（支持SPA路由）
+        index_path = os.path.join(static_dir, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        
+        raise HTTPException(status_code=404, detail="File not found")
 
 # WebSocket连接管理
 class ConnectionManager:

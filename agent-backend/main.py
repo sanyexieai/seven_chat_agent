@@ -106,8 +106,38 @@ logger.info("==================")
 # 静态文件挂载必须在路由注册之后
 if is_production:
     logger.info(f"检测到静态文件目录: {static_dir}")
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
-    logger.info("静态文件已挂载到根路径 /")
+    # 修复：将静态文件挂载到/static路径，而不是根路径
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    logger.info("静态文件已挂载到 /static 路径")
+    
+    # 添加根路径处理，返回index.html
+    @app.get("/")
+    async def serve_index():
+        from fastapi.responses import FileResponse
+        index_path = os.path.join(static_dir, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"message": "Static files not found"}
+    
+    # 添加通配符路由，处理前端路由
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        from fastapi.responses import FileResponse
+        # 如果是API请求，让FastAPI处理
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        
+        # 尝试提供静态文件
+        file_path = os.path.join(static_dir, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        
+        # 如果文件不存在，返回index.html（支持SPA路由）
+        index_path = os.path.join(static_dir, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        
+        raise HTTPException(status_code=404, detail="File not found")
 
 # 动态注册根路径和健康检查
 @app.get(f"{api_prefix}/" if api_prefix else "/")

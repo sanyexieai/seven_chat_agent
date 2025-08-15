@@ -139,6 +139,22 @@ jobs:
             --restart unless-stopped \
             agent-system
 
+          # 等待容器启动
+          sleep 10
+
+          # 检查容器状态和文件结构
+          echo "=== 容器状态 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker ps
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker logs agent-system --tail 50
+          
+          echo "=== 容器内文件结构 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/static
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/static/config
+          
+          echo "=== 检查配置文件 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system cat /app/static/config/config.json
+
           # 健康检查（最多重试 5 次）
           for i in {1..5}; do
             if curl -sf http://localhost:32004/api/health; then

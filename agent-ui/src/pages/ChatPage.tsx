@@ -635,7 +635,7 @@ const ChatPage: React.FC = () => {
                       
                       const updated = prev.map(msg => 
                         msg.id === agentMessageId 
-                          ? { ...msg, content: fullContent }
+                          ? { ...msg, content: fullContent, isStreaming: true }
                           : msg
                       );
                       console.log('流式更新后消息数量:', updated.length);
@@ -647,6 +647,9 @@ const ChatPage: React.FC = () => {
                       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
                     
+                    // 添加小延迟，确保流式效果可见
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    
                   } else if (data.type === 'content' && data.content) {
                     // 兼容旧格式：type: 'content'
                     fullContent += data.content;
@@ -656,7 +659,7 @@ const ChatPage: React.FC = () => {
                     setMessages(prev => {
                       const updated = prev.map(msg => 
                         msg.id === agentMessageId 
-                          ? { ...msg, content: fullContent }
+                          ? { ...msg, content: fullContent, isStreaming: true }
                           : msg
                       );
                       console.log('流式更新后消息数量(旧格式):', updated.length);
@@ -668,6 +671,9 @@ const ChatPage: React.FC = () => {
                       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
                     
+                    // 添加小延迟，确保流式效果可见
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    
                   } else if (data.message && data.message.content) {
                     // Ollama格式：{message: {content: "..."}}
                     const content = data.message.content;
@@ -678,7 +684,7 @@ const ChatPage: React.FC = () => {
                     setMessages(prev => {
                       const updated = prev.map(msg => 
                         msg.id === agentMessageId 
-                          ? { ...msg, content: fullContent }
+                          ? { ...msg, content: fullContent, isStreaming: true }
                           : msg
                       );
                       console.log('流式更新后消息数量(Ollama格式):', updated.length);
@@ -689,6 +695,9 @@ const ChatPage: React.FC = () => {
                     if (messagesEndRef.current) {
                       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
+                    
+                    // 添加小延迟，确保流式效果可见
+                    await new Promise(resolve => setTimeout(resolve, 50));
                     
                   } else if (data.is_end || data.type === 'done' || data.done) {
                     // 流式响应完成，清除流式状态

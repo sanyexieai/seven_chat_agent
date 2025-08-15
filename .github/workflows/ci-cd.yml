@@ -75,7 +75,7 @@ jobs:
       run: |
         cd agent-backend
         pip install uv
-        uv export --format requirements.txt > requirements.txt
+        uv export --no-hashes --format requirements.txt > requirements.txt
 
     - name: Deploy Backend Code
       uses: appleboy/scp-action@master
@@ -117,7 +117,7 @@ jobs:
           FROM python:3.11-slim
           WORKDIR /app
           COPY . .
-          RUN pip install --no-deps --no-cache-dir -r requirements.txt --no-require-hashes
+          RUN pip install --no-deps --no-cache-dir -r requirements.txt
           EXPOSE 8000
           CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
           EOF

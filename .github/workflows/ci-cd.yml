@@ -116,10 +116,29 @@ jobs:
           # 创建 Dockerfile
           cat > Dockerfile << 'EOF'
           FROM python:3.11-slim
+          
+          # 安装系统依赖和基础工具
+          RUN apt-get update && apt-get install -y \
+              curl \
+              wget \
+              git \
+              jq \
+              build-essential \
+              python3-dev \
+              openssl \
+              ca-certificates \
+              && rm -rf /var/lib/apt/lists/*
+          
+          # 安装包管理器和执行器
+          RUN pip install uv pipx
+          RUN pip install requests
+          
           WORKDIR /app
           COPY . .
+          
+          # 安装 Python 依赖
           RUN pip install --no-deps --no-cache-dir -r requirements.txt
-          RUN pip install requests
+          
           EXPOSE 8000
           CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
           EOF

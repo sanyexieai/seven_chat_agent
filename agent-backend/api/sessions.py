@@ -10,6 +10,14 @@ logger = get_logger("sessions_api")
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 # 会话相关API
+@router.get("", response_model=List[SessionResponse])
+async def get_user_sessions_no_slash(
+    user_id: str,
+    db: Session = Depends(get_db)
+):
+    """获取用户的所有会话（不带斜杠）"""
+    return await get_user_sessions(user_id, db)
+
 @router.get("/", response_model=List[SessionResponse])
 async def get_user_sessions(
     user_id: str,

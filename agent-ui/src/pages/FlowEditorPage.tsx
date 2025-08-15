@@ -46,6 +46,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import axios from 'axios';
+import { API_PATHS } from '../config/api';
 
 const { Title, Paragraph } = Typography;
 const { Option } = Select;
@@ -321,7 +322,7 @@ const FlowEditorPage: React.FC = () => {
 
   const fetchAgents = async () => {
     try {
-      const response = await axios.get('/api/agents');
+      const response = await axios.get(API_PATHS.AGENTS);
       setAgents(response.data || []);
     } catch (error) {
       console.error('获取智能体失败:', error);
@@ -331,7 +332,7 @@ const FlowEditorPage: React.FC = () => {
 
   const fetchFlows = async () => {
     try {
-      const response = await axios.get('/api/flows');
+      const response = await axios.get(API_PATHS.FLOWS);
       setFlows(response.data || []);
     } catch (error) {
       console.error('获取流程图失败:', error);
@@ -565,7 +566,7 @@ const FlowEditorPage: React.FC = () => {
 
       // 如果有当前智能体ID，说明是编辑模式，更新智能体
       if (currentFlowId) {
-        const response = await fetch(`/api/agents/${currentFlowId}`, {
+        const response = await fetch(API_PATHS.AGENT_BY_ID(currentFlowId), {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -586,7 +587,7 @@ const FlowEditorPage: React.FC = () => {
         }
       } else {
         // 否则创建新的流程图
-        const response = await fetch('/api/flows', {
+        const response = await fetch(API_PATHS.FLOWS, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -631,7 +632,7 @@ const FlowEditorPage: React.FC = () => {
       };
 
       // 调用后端API测试流程图
-      const response = await fetch(`/api/flows/${currentFlowId}/test`, {
+      const response = await fetch(API_PATHS.FLOW_TEST(currentFlowId), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -662,7 +663,7 @@ const FlowEditorPage: React.FC = () => {
 
   const deleteFlow = async (flowId: number) => {
     try {
-      const response = await fetch(`/api/flows/${flowId}`, {
+      const response = await fetch(API_PATHS.FLOW_BY_ID(flowId), {
         method: 'DELETE',
       });
 
@@ -694,7 +695,7 @@ const FlowEditorPage: React.FC = () => {
 
   const loadSavedFlow = async (flowId: number) => {
     try {
-      const response = await fetch(`/api/flows/${flowId}`);
+      const response = await fetch(API_PATHS.FLOW_BY_ID(flowId));
       if (response.ok) {
         const flow = await response.json();
         setFlowName(flow.display_name);
@@ -770,7 +771,7 @@ const FlowEditorPage: React.FC = () => {
         }
       };
 
-      const response = await fetch('/api/agents/create_from_flow', {
+      const response = await fetch(API_PATHS.AGENT_CREATE_FROM_FLOW, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -789,7 +790,7 @@ const FlowEditorPage: React.FC = () => {
         
         // 重新加载智能体列表
         try {
-          const reloadResponse = await fetch('/api/agents/reload', {
+          const reloadResponse = await fetch(API_PATHS.AGENT_RELOAD, {
             method: 'POST',
           });
           if (reloadResponse.ok) {

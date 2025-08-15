@@ -138,6 +138,14 @@ async def root():
         "status": "running"
     }
 
+@app.get("/health")
+async def health_check_root():
+    """健康检查（根路径）"""
+    return {
+        "status": "healthy",
+        "agent_manager": "initialized" if agent_manager else "not_initialized"
+    }
+
 @app.get("/api/health")
 async def health_check():
     """健康检查"""

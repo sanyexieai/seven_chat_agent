@@ -11,6 +11,11 @@ logger = get_logger("flows_api")
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
 
+@router.get("", response_model=List[FlowResponse])
+async def get_flows_no_slash(db: Session = Depends(get_db)):
+    """获取所有流程图（不带斜杠）"""
+    return await get_flows(db)
+
 @router.get("/", response_model=List[FlowResponse])
 async def get_flows(db: Session = Depends(get_db)):
     """获取所有流程图"""

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_PATHS } from '../config/api';
 import {
   Card,
   Input,
@@ -66,7 +67,7 @@ const AgentTestPage: React.FC = () => {
 
   const fetchAgents = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/agents'));
+      const response = await fetch(getApiUrl(API_PATHS.AGENTS));
       if (response.ok) {
         const data = await response.json();
         setAgents(data);
@@ -103,7 +104,7 @@ const AgentTestPage: React.FC = () => {
     setLoading(true);
 
     try {
-      const response = await fetch(getApiUrl('/api/chat'), {
+      const response = await fetch(getApiUrl(API_PATHS.CHAT), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -155,7 +156,7 @@ const AgentTestPage: React.FC = () => {
 
     try {
       console.log('开始流式请求...');
-      const response = await fetch(getApiUrl('/api/chat/stream'), {
+      const response = await fetch(getApiUrl(API_PATHS.CHAT_STREAM), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

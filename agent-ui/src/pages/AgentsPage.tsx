@@ -31,6 +31,7 @@ import {
   SettingOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
+import { API_PATHS } from '../config/api';
 
 const { TextArea } = Input;
 const { Option } = Select;
@@ -145,7 +146,7 @@ const AgentsPage: React.FC = () => {
 
   const fetchAgents = async () => {
     try {
-      const response = await axios.get('/api/agents');
+      const response = await axios.get(API_PATHS.AGENTS);
       setAgents(response.data || []);
     } catch (error) {
       console.error('获取智能体失败:', error);
@@ -159,7 +160,7 @@ const AgentsPage: React.FC = () => {
 
   const fetchMCPServers = async () => {
     try {
-      const response = await axios.get('/api/mcp/servers');
+      const response = await axios.get(API_PATHS.MCP_SERVERS);
       const servers = response.data || [];
       setMcpServers(servers);
       
@@ -207,7 +208,7 @@ const AgentsPage: React.FC = () => {
 
   const fetchLLMConfigs = async () => {
     try {
-      const response = await axios.get('/api/llm-config/');
+      const response = await axios.get(API_PATHS.LLM_CONFIG);
       setLlmConfigs(response.data || []);
     } catch (error) {
       console.error('获取LLM配置失败:', error);
@@ -217,7 +218,7 @@ const AgentsPage: React.FC = () => {
 
   const fetchKnowledgeBases = async () => {
     try {
-      const response = await axios.get('/api/knowledge-base/');
+      const response = await axios.get(API_PATHS.KNOWLEDGE_BASE);
       setKnowledgeBases(response.data || []);
     } catch (error) {
       console.error('获取知识库失败:', error);
@@ -297,7 +298,7 @@ const AgentsPage: React.FC = () => {
         values.bound_tools = convertTreeValuesToToolNames(values.bound_tools);
       }
       
-      await axios.post('/api/agents', values);
+              await axios.post(API_PATHS.AGENTS, values);
       message.success('智能体创建成功');
       
       setCreateModalVisible(false);
@@ -319,7 +320,7 @@ const AgentsPage: React.FC = () => {
         values.bound_tools = convertTreeValuesToToolNames(values.bound_tools);
       }
       
-      await axios.put(`/api/agents/${selectedAgent.id}`, values);
+              await axios.put(API_PATHS.AGENT_BY_ID(selectedAgent.id), values);
       message.success('智能体更新成功');
       setEditModalVisible(false);
       editForm.resetFields();
@@ -332,7 +333,7 @@ const AgentsPage: React.FC = () => {
 
   const handleDeleteAgent = async (agentId: number) => {
     try {
-      await axios.delete(`/api/agents/${agentId}`);
+              await axios.delete(API_PATHS.AGENT_BY_ID(agentId));
       message.success('智能体删除成功');
       fetchAgents();
     } catch (error) {

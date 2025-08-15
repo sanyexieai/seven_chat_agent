@@ -9,6 +9,11 @@ from utils.log_helper import get_logger
 logger = get_logger("llm_config_api")
 router = APIRouter(prefix="/api/llm-config", tags=["llm-config"])
 
+@router.get("", response_model=List[LLMConfigResponse])
+async def get_llm_configs_no_slash(db: Session = Depends(get_db)):
+    """获取所有LLM配置（不带斜杠）"""
+    return await get_llm_configs(db)
+
 @router.get("/", response_model=List[LLMConfigResponse])
 async def get_llm_configs(db: Session = Depends(get_db)):
     """获取所有LLM配置"""

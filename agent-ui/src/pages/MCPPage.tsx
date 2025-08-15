@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_PATHS } from '../config/api';
 import './MCPPage.css';
 
 interface MCPServer {
@@ -81,7 +82,7 @@ const MCPPage: React.FC = () => {
   const loadServers = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/mcp/servers');
+      const response = await fetch(API_PATHS.MCP_SERVERS);
       if (response.ok) {
         const data = await response.json();
         setServers(data);
@@ -98,7 +99,7 @@ const MCPPage: React.FC = () => {
   // 加载工具列表
   const loadTools = async (serverId: number) => {
     try {
-      const response = await fetch(`/api/mcp/servers/${serverId}/tools`);
+      const response = await fetch(API_PATHS.MCP_SERVER_TOOLS(serverId));
       if (response.ok) {
         const data = await response.json();
         setTools(data);
@@ -112,7 +113,7 @@ const MCPPage: React.FC = () => {
   const syncTools = async (serverName: string) => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/mcp/servers/${serverName}/sync`, {
+      const response = await fetch(API_PATHS.MCP_SERVER_SYNC(serverName), {
         method: 'POST'
       });
       if (response.ok) {
@@ -135,7 +136,7 @@ const MCPPage: React.FC = () => {
   const createServer = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/mcp/servers', {
+      const response = await fetch(API_PATHS.MCP_SERVERS, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -162,7 +163,7 @@ const MCPPage: React.FC = () => {
     if (!editingServer) return;
     try {
       setLoading(true);
-      const response = await fetch(`/api/mcp/servers/${editingServer.id}`, {
+      const response = await fetch(API_PATHS.MCP_SERVER_BY_ID(editingServer.id), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json'
@@ -190,7 +191,7 @@ const MCPPage: React.FC = () => {
     if (!window.confirm('确定要删除这个MCP服务器吗？')) return;
     try {
       setLoading(true);
-      const response = await fetch(`/api/mcp/servers/${serverId}`, {
+      const response = await fetch(API_PATHS.MCP_SERVER_BY_ID(serverId), {
         method: 'DELETE'
       });
       if (response.ok) {
@@ -214,7 +215,7 @@ const MCPPage: React.FC = () => {
     if (!selectedServer) return;
     try {
       setLoading(true);
-      const response = await fetch(`/api/mcp/servers/${selectedServer.id}/tools`, {
+      const response = await fetch(API_PATHS.MCP_SERVER_TOOLS(selectedServer.id), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -241,7 +242,7 @@ const MCPPage: React.FC = () => {
     if (!window.confirm('确定要删除这个工具吗？')) return;
     try {
       setLoading(true);
-      const response = await fetch(`/api/mcp/tools/${toolId}`, {
+      const response = await fetch(API_PATHS.MCP_TOOL_BY_ID(toolId), {
         method: 'DELETE'
       });
       if (response.ok) {
@@ -334,7 +335,7 @@ const MCPPage: React.FC = () => {
           console.log(`导入服务器 ${name}，原始配置:`, serverConfigAny);
           console.log(`转换后transport: ${transport}`);
 
-          const response = await fetch('/api/mcp/servers', {
+          const response = await fetch(API_PATHS.MCP_SERVERS, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'

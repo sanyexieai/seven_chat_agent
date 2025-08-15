@@ -535,10 +535,19 @@ class LLMHelper:
                             if line_text:
                                 logger.debug(f"收到流式数据行: {line_text}")
                                 chunk_data = json.loads(line_text)
+                                
+                                # 检查是否是结束标记
+                                if chunk_data.get('done', False):
+                                    logger.debug("收到流式结束标记")
+                                    break
+                                
+                                # 检查是否有消息内容
                                 if 'message' in chunk_data and 'content' in chunk_data['message']:
                                     content = chunk_data['message']['content']
-                                    logger.debug(f"流式内容片段: {content}")
-                                    yield content
+                                    if content:  # 只yield非空内容
+                                        logger.debug(f"流式内容片段: {content}")
+                                        yield content
+                                        
                         except json.JSONDecodeError as e:
                             logger.warning(f"流式数据JSON解析失败: {str(e)}, 数据行: {line_text}")
                             continue

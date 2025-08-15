@@ -82,5 +82,8 @@ export const getApiBase = (): string => {
 
 export const getApiUrl = (endpoint: string): string => {
   const base = getApiBase();
+  console.log('API配置 - 当前端口:', window.location.port);
+  console.log('API配置 - 后端地址:', base);
+  console.log('API配置 - 完整URL:', base ? `${base}${endpoint}` : endpoint);
   return base ? `${base}${endpoint}` : endpoint;
 }; 

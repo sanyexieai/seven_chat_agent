@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { API_PATHS } from '../config/api';
 import axios from 'axios';
 
 interface ChatResponse {
@@ -28,7 +29,7 @@ export const useChat = () => {
 
   const checkConnection = async () => {
     try {
-      const response = await axios.get('/health');
+      const response = await axios.get(API_PATHS.HEALTH_ROOT);
       setIsConnected(response.status === 200);
     } catch (error) {
       setIsConnected(false);
@@ -46,7 +47,7 @@ export const useChat = () => {
         stream: false,
       };
 
-      const response = await axios.post<ChatResponse>('/api/chat', request);
+      const response = await axios.post<ChatResponse>(API_PATHS.CHAT, request);
       
       if (!response.data.success) {
         throw new Error(response.data.message || '发送消息失败');
@@ -75,7 +76,7 @@ export const useChat = () => {
         stream: true,
       };
 
-      const response = await axios.post('/api/chat/stream', request, {
+      const response = await axios.post(API_PATHS.CHAT_STREAM, request, {
         responseType: 'stream',
       });
 

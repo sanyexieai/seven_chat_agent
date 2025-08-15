@@ -4,6 +4,8 @@ import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutl
 import { useNavigate, useParams } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
 import ThinkTagRenderer from '../components/ThinkTagRenderer';
+import { API_PATHS } from '../config/api';
+import { getApiUrl, apiConfigManager } from '../utils/apiConfig';
 import './ChatPage.css';
 
 const { Header, Content, Sider } = Layout;
@@ -16,6 +18,7 @@ interface Message {
   type: 'user' | 'agent';
   timestamp: Date;
   agentName?: string;
+  isStreaming?: boolean; // 流式状态指示器
 }
 
 interface Session {
@@ -61,8 +64,13 @@ const ChatPage: React.FC = () => {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
-  // 在开发环境下绕过前端代理，直接连后端，避免SSE被代理缓存/缓冲
-  const apiBase = (window.location.port === '3000') ? 'http://localhost:8000' : '';
+  // 使用统一的API配置
+  
+  // 使用ref追踪最新的消息状态，解决闭包问题
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // 处理sessionId变化
   useEffect(() => {
@@ -85,15 +93,26 @@ const ChatPage: React.FC = () => {
     }
   }, [hasHandledRootPath]);
 
-  // 获取智能体列表
+  // 初始化API配置并获取智能体列表
   useEffect(() => {
-    fetchAgents();
+    const initApi = async () => {
+      try {
+        await apiConfigManager.initialize();
+        console.log('API配置初始化完成');
+        fetchAgents();
+      } catch (error) {
+        console.error('API配置初始化失败:', error);
+        fetchAgents(); // 即使配置失败也尝试获取智能体
+      }
+    };
+    
+    initApi();
   }, []);
 
   // 获取智能体列表
   const fetchAgents = async () => {
     try {
-      const response = await fetch('/api/agents/');
+      const response = await fetch(getApiUrl('/api/agents/'));
       if (response.ok) {
         const data = await response.json();
         const agentsList = Array.isArray(data) ? data : [];
@@ -123,12 +142,12 @@ const ChatPage: React.FC = () => {
         
         if (Array.isArray(sessions) && sessions.length > 0) {
           console.log('有现有会话，开始排序...');
-          // 有现有会话，选择最新的一条（按创建时间排序）
+          // 有现有会话，按创建时间排序，最新的在最上面
           const sortedSessions = sessions.sort((a, b) => {
             const timeA = new Date(a.created_at || 0).getTime();
             const timeB = new Date(b.created_at || 0).getTime();
             console.log(`比较会话: ${a.id}(${a.created_at}) vs ${b.id}(${b.created_at})`);
-            return timeB - timeA; // 降序排列，最新的在前
+            return timeB - timeA; // 降序排列，最新的在最上面
           });
           console.log('排序后的会话:', sortedSessions);
           
@@ -168,15 +187,15 @@ const ChatPage: React.FC = () => {
   // 检查现有会话（保留用于其他用途）
   const checkExistingSessions = async () => {
     try {
-      const response = await fetch('/api/sessions?user_id=default_user');
+      const response = await fetch(getApiUrl('/api/sessions?user_id=default_user'));
       if (response.ok) {
         const sessions = await response.json();
         if (Array.isArray(sessions) && sessions.length > 0) {
-          // 有现有会话，选择最新的一条（按创建时间排序）
+          // 有现有会话，按创建时间排序，最新的在最上面
           const sortedSessions = sessions.sort((a, b) => {
             const timeA = new Date(a.created_at || 0).getTime();
             const timeB = new Date(b.created_at || 0).getTime();
-            return timeB - timeA; // 降序排列，最新的在前
+            return timeB - timeA; // 降序排列，最新的在最上面
           });
           const latestSession = sortedSessions[0];
           console.log('选择最新会话:', latestSession);
@@ -253,7 +272,7 @@ const ChatPage: React.FC = () => {
     }
     
     try {
-      const response = await fetch(`/api/sessions/${sessionId}`);
+      const response = await fetch(getApiUrl(`/api/sessions/${sessionId}`));
       if (response.ok) {
         const session = await response.json();
         setCurrentSession(session);
@@ -290,7 +309,7 @@ const ChatPage: React.FC = () => {
     }
     
     try {
-      const response = await fetch(`/api/sessions/${sessionId}/messages`);
+      const response = await fetch(getApiUrl(`/api/sessions/${sessionId}/messages`));
       if (response.ok) {
         const messages = await response.json();
         console.log('加载的消息:', messages); // 调试日志
@@ -356,13 +375,18 @@ const ChatPage: React.FC = () => {
     if (!inputValue.trim()) return;
 
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       content: inputValue,
       type: 'user',
       timestamp: new Date()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    console.log('创建用户消息，ID:', userMessage.id);
+    setMessages(prev => {
+      const updated = [...prev, userMessage];
+      console.log('添加用户消息后，总消息数量:', updated.length);
+      return updated;
+    });
     setInputValue('');
 
     try {
@@ -376,7 +400,7 @@ const ChatPage: React.FC = () => {
       if (currentSession?.isTemp && messages.length === 0) {
         console.log('临时会话发送第一条消息，创建真正会话...');
         try {
-          const response = await fetch(`${apiBase}/api/chat/sessions`, {
+          const response = await fetch(getApiUrl(API_PATHS.CREATE_SESSION), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -404,7 +428,7 @@ const ChatPage: React.FC = () => {
             
             // 立即保存用户消息到数据库
             try {
-              const messageResponse = await fetch(`${apiBase}/api/sessions/${sessionData.id}/messages`, {
+              const messageResponse = await fetch(getApiUrl(`/api/sessions/${sessionData.id}/messages`), {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -450,7 +474,7 @@ const ChatPage: React.FC = () => {
         const title = extractTitleFromMessage(inputValue);
         // 更新会话标题
         try {
-          await fetch(`/api/sessions/${currentSession.id}/title?title=${encodeURIComponent(title)}`, {
+          await fetch(getApiUrl(`/api/sessions/${currentSession.id}/title?title=${encodeURIComponent(title)}`), {
             method: 'PUT',
           });
         } catch (error) {
@@ -460,8 +484,8 @@ const ChatPage: React.FC = () => {
 
       // 发送消息到智能体
       if (currentSession?.session_id) {
-        // 创建智能体消息占位符
-        const agentMessageId = (Date.now() + 1).toString();
+        // 创建智能体消息占位符 - 使用更唯一的ID
+        const agentMessageId = `agent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const agentMessage: Message = {
           id: agentMessageId,
           content: '正在思考...',
@@ -470,12 +494,27 @@ const ChatPage: React.FC = () => {
           agentName: selectedAgent.display_name
         };
 
-        setMessages(prev => [...prev, agentMessage]);
+        console.log('创建智能体消息，ID:', agentMessageId);
+        setMessages(prev => {
+          const updated = [...prev, agentMessage];
+          console.log('添加智能体消息后，总消息数量:', updated.length);
+          return updated;
+        });
 
         // 使用流式API获取响应
         const agentName = selectedAgent.name;
+        
+        console.log('开始流式请求，智能体:', agentName, '消息ID:', agentMessageId);
+        
+        // 设置流式状态
+        setMessages(prev => prev.map(msg => 
+          msg.id === agentMessageId 
+            ? { ...msg, isStreaming: true }
+            : msg
+        ));
+        
         try {
-          const response = await fetch(`${apiBase}/api/chat/stream`, {
+          const response = await fetch(getApiUrl('/api/chat/stream'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -515,52 +554,163 @@ const ChatPage: React.FC = () => {
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
             
+            console.log('收到原始数据块:', chunk);
+            console.log('解析后的行:', lines);
+            
             for (const line of lines) {
               if (line.trim() && line.startsWith('data: ')) {
+                console.log('处理SSE行:', line);
+                
+                // 处理特殊的SSE结束标记
+                if (line === 'data: [DONE]') {
+                  console.log('收到SSE结束标记');
+                  break;
+                }
                 try {
                   const data = JSON.parse(line.slice(6));
                   
-                  if (data.type === 'content' && data.content) {
-                    fullContent += data.content;
+                  if (data.type === 'final_response' && data.content) {
+                    // 最终响应：直接替换内容，不累加
+                    console.log('收到最终响应，直接替换内容');
+                    fullContent = data.content; // 直接替换，不累加
                     
-                    setMessages(prev => prev.map(msg => 
-                      msg.id === agentMessageId 
-                        ? { ...msg, content: fullContent }
-                        : msg
-                    ));
+                    // 实时更新消息内容
+                    setMessages(prev => {
+                      const updated = prev.map(msg => 
+                        msg.id === agentMessageId 
+                          ? { ...msg, content: fullContent }
+                          : msg
+                      );
+                      console.log('最终响应更新后消息数量:', updated.length);
+                      return updated;
+                    });
                     
+                    // 自动滚动到底部
                     if (messagesEndRef.current) {
-                      messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
+                      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
                     
-                  } else if (data.type === 'done') {
-                    // 流式响应完成，保存智能体回复消息到数据库
-                    if (!currentSession.isTemp && fullContent.trim()) {
-                      try {
-                        const messageResponse = await fetch(`${apiBase}/api/sessions/${currentSession.id}/messages`, {
-                          method: 'POST',
-                          headers: {
-                            'Content-Type': 'application/json',
-                          },
-                          body: JSON.stringify({
-                            session_id: currentSession.session_id, // 添加必需的session_id字段
-                            user_id: 'default_user',
-                            message_type: 'agent',
-                            content: fullContent,
-                            agent_name: selectedAgent.name,
-                            metadata: {}
-                          })
-                        });
-                        
-                        if (messageResponse.ok) {
-                          console.log('智能体回复消息保存成功');
-                        } else {
-                          console.error('保存智能体回复消息失败');
-                        }
-                      } catch (error) {
-                        console.error('保存智能体回复消息失败:', error);
+                  } else if (data.content) {
+                    // 直接使用content字段，支持多种数据格式
+                    fullContent += data.content;
+                    console.log('收到流式内容:', data.content, '累计内容:', fullContent);
+                    
+                    // 实时更新消息内容，显示流式效果
+                    setMessages(prev => {
+                      // 验证消息ID是否存在
+                      const targetMessage = prev.find(msg => msg.id === agentMessageId);
+                      if (!targetMessage) {
+                        console.error('警告：找不到目标消息ID:', agentMessageId);
+                        console.log('可用消息ID:', prev.map(msg => msg.id));
+                        return prev; // 如果找不到，不更新
                       }
+                      
+                      const updated = prev.map(msg => 
+                        msg.id === agentMessageId 
+                          ? { ...msg, content: fullContent }
+                          : msg
+                      );
+                      console.log('流式更新后消息数量:', updated.length);
+                      return updated;
+                    });
+                    
+                    // 自动滚动到底部
+                    if (messagesEndRef.current) {
+                      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
+                    
+                  } else if (data.type === 'content' && data.content) {
+                    // 兼容旧格式：type: 'content'
+                    fullContent += data.content;
+                    console.log('收到流式内容(旧格式):', data.content, '累计内容:', fullContent);
+                    
+                    // 实时更新消息内容，显示流式效果
+                    setMessages(prev => {
+                      const updated = prev.map(msg => 
+                        msg.id === agentMessageId 
+                          ? { ...msg, content: fullContent }
+                          : msg
+                      );
+                      console.log('流式更新后消息数量(旧格式):', updated.length);
+                      return updated;
+                    });
+                    
+                    // 自动滚动到底部
+                    if (messagesEndRef.current) {
+                      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+                    }
+                    
+                  } else if (data.message && data.message.content) {
+                    // Ollama格式：{message: {content: "..."}}
+                    const content = data.message.content;
+                    fullContent += content;
+                    console.log('收到Ollama流式内容:', content, '累计内容:', fullContent);
+                    
+                    // 实时更新消息内容，显示流式效果
+                    setMessages(prev => {
+                      const updated = prev.map(msg => 
+                        msg.id === agentMessageId 
+                          ? { ...msg, content: fullContent }
+                          : msg
+                      );
+                      console.log('流式更新后消息数量(Ollama格式):', updated.length);
+                      return updated;
+                    });
+                    
+                    // 自动滚动到底部
+                    if (messagesEndRef.current) {
+                      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+                    }
+                    
+                  } else if (data.is_end || data.type === 'done' || data.done) {
+                    // 流式响应完成，清除流式状态
+                    console.log('收到流式完成信号，类型:', data.is_end ? 'is_end' : data.type === 'done' ? 'type: done' : 'done: true');
+                    console.log('完成信号数据:', data);
+                    
+                    // 使用函数式更新，确保状态正确
+                    setMessages(prev => {
+                      console.log('函数式更新 - prev消息数量:', prev?.length || 0);
+                      console.log('函数式更新 - prev消息ID:', prev?.map(msg => msg.id) || []);
+                      
+                      // 状态保护：如果prev为空，说明状态异常
+                      if (!prev || prev.length === 0) {
+                        console.error('警告：消息状态异常，prev为空或长度为0');
+                        // 尝试恢复消息状态
+                        const recoveredMessage: Message = {
+                          id: agentMessageId,
+                          content: fullContent,
+                          type: 'agent',
+                          timestamp: new Date(),
+                          agentName: selectedAgent?.display_name || 'AI助手',
+                          isStreaming: false
+                        };
+                        console.log('尝试恢复消息状态:', recoveredMessage);
+                        return [recoveredMessage];
+                      }
+                      
+                      const updated = prev.map(msg => 
+                        msg.id === agentMessageId 
+                          ? { ...msg, isStreaming: false }
+                          : msg
+                      );
+                      console.log('流式完成更新后消息数量:', updated.length);
+                      return updated;
+                    });
+                    
+                    // 使用ref获取最新状态进行日志记录
+                    const currentMessages = messagesRef.current.filter(msg => msg.id === agentMessageId);
+                    console.log('最新消息状态，ID:', agentMessageId, '消息数量:', currentMessages.length);
+                    console.log('最新所有消息数量:', messagesRef.current.length);
+                    console.log('最新所有消息ID:', messagesRef.current.map(msg => msg.id));
+                    
+                    console.log('流式响应完成，消息ID:', agentMessageId, '累计内容长度:', fullContent.length);
+                    console.log('流式响应完成，累计内容:', fullContent);
+                    
+                    // 检查后端是否已经保存了消息，如果没有才手动保存
+                    // 注意：流式API通常会自动保存消息，这里只是备用方案
+                    
+                    // 可选：如果后端没有自动保存，可以在这里手动保存
+                    // 但通常不需要，因为流式API已经处理了
                   } else if (data.error) {
                     setMessages(prev => prev.map(msg => 
                       msg.id === agentMessageId 
@@ -672,7 +822,12 @@ const ChatPage: React.FC = () => {
                       </div>
                       <div className="message-text">
                         {message.type === 'agent' ? (
-                          <ThinkTagRenderer content={message.content} />
+                          <>
+                            <ThinkTagRenderer content={message.content} />
+                            {message.isStreaming && (
+                              <span className="streaming-indicator">▋</span>
+                            )}
+                          </>
                         ) : (
                           message.content
                         )}

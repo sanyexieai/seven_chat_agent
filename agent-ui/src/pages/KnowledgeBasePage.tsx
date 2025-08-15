@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_PATHS } from '../config/api';
 import { Button, Input, Modal, message, Card, Space, Tag, Popconfirm, Upload, Form, Select } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import './KnowledgeBasePage.css';
@@ -54,7 +55,7 @@ const KnowledgeBasePage: React.FC = () => {
     setLoading(true);
     try {
       console.log('获取知识库列表...');
-      const response = await fetch(`${API_BASE}/api/knowledge-base/?include_public=true`);
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE}?include_public=true`);
       console.log('知识库列表响应状态:', response.status);
       
       if (response.ok) {
@@ -76,7 +77,7 @@ const KnowledgeBasePage: React.FC = () => {
 
   const fetchDocuments = async (kbId: number) => {
     try {
-      const response = await fetch(`${API_BASE}/api/knowledge-base/${kbId}/documents`);
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_DOCUMENTS(kbId)}`);
       if (response.ok) {
         const data = await response.json();
         setDocuments(data);
@@ -108,7 +109,7 @@ const KnowledgeBasePage: React.FC = () => {
 
   const handleDeleteKb = async (kbId: number) => {
     try {
-      const response = await fetch(`${API_BASE}/api/knowledge-base/${kbId}`, {
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_BY_ID(kbId)}`, {
         method: 'DELETE'
       });
       if (response.ok) {
@@ -125,8 +126,8 @@ const KnowledgeBasePage: React.FC = () => {
   const handleSubmitKb = async (values: any) => {
     try {
       const url = editingKb 
-        ? `${API_BASE}/api/knowledge-base/${editingKb.id}`
-        : `${API_BASE}/api/knowledge-base/`;
+        ? `${API_BASE}${API_PATHS.KNOWLEDGE_BASE_BY_ID(editingKb.id)}`
+        : `${API_BASE}${API_PATHS.KNOWLEDGE_BASE}`;
       
       const method = editingKb ? 'PUT' : 'POST';
       
@@ -205,10 +206,10 @@ const KnowledgeBasePage: React.FC = () => {
         formData.append('metadata', values.metadata);
       }
 
-      console.log('准备发送请求到:', `${API_BASE}/api/knowledge-base/${selectedKb.id}/documents/upload`);
+              console.log('准备发送请求到:', `${API_BASE}${API_PATHS.KNOWLEDGE_BASE_UPLOAD(selectedKb.id)}`);
 
       const response = await fetch(
-        `${API_BASE}/api/knowledge-base/${selectedKb.id}/documents/upload`,
+                  `${API_BASE}${API_PATHS.KNOWLEDGE_BASE_UPLOAD(selectedKb.id)}`,
         {
           method: 'POST',
           body: formData
@@ -240,7 +241,7 @@ const KnowledgeBasePage: React.FC = () => {
 
   const handleDeleteDocument = async (docId: number) => {
     try {
-      const response = await fetch(`${API_BASE}/api/knowledge-base/documents/${docId}`, {
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_DOCUMENT(docId)}`, {
         method: 'DELETE'
       });
       if (response.ok) {

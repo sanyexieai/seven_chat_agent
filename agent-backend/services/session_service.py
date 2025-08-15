@@ -37,11 +37,11 @@ class SessionService:
     
     @staticmethod
     def get_user_sessions(db: Session, user_id: str) -> List[UserSession]:
-        """获取用户的所有会话"""
+        """获取用户的所有会话，按创建时间降序排列（最新的在最上面）"""
         return db.query(UserSession).filter(
             UserSession.user_id == user_id,
             UserSession.is_active == True
-        ).all()
+        ).order_by(UserSession.created_at.desc()).all()
     
     @staticmethod
     def update_session_title(db: Session, session_id: int, title: str) -> Optional[UserSession]:

@@ -35,6 +35,15 @@ async def create_knowledge_base(
         logger.error(f"创建知识库失败: {str(e)}")
         raise HTTPException(status_code=500, detail="创建知识库失败")
 
+@router.get("", response_model=List[KnowledgeBaseResponse])
+async def get_knowledge_bases_no_slash(
+    owner_id: Optional[str] = None,
+    include_public: bool = True,
+    db: Session = Depends(get_db)
+):
+    """获取知识库列表（不带斜杠）"""
+    return await get_knowledge_bases(owner_id, include_public, db)
+
 @router.get("/", response_model=List[KnowledgeBaseResponse])
 async def get_knowledge_bases(
     owner_id: Optional[str] = None,

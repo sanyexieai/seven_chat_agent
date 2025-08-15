@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_PATHS } from '../config/api';
 import { Card, Select, Button, Input, message, Space, Tag, Divider } from 'antd';
 import { BookOutlined, SearchOutlined, FileTextOutlined } from '@ant-design/icons';
 
@@ -49,7 +50,7 @@ const KnowledgeBaseChat: React.FC<KnowledgeBaseChatProps> = ({ onSendMessage }) 
 
   const fetchKnowledgeBases = async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/knowledge-base/?include_public=true`);
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE}?include_public=true`);
       if (response.ok) {
         const data = await response.json();
         setKnowledgeBases(data);
@@ -74,7 +75,7 @@ const KnowledgeBaseChat: React.FC<KnowledgeBaseChatProps> = ({ onSendMessage }) 
 
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/knowledge-base/${selectedKb}/query`, {
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_QUERY(selectedKb)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

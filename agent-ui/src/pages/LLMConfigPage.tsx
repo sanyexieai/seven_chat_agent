@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_PATHS } from '../config/api';
 import {
   Layout,
   Card,
@@ -61,7 +62,7 @@ const LLMConfigPage: React.FC = () => {
   const fetchConfigs = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/llm-config/');
+      const response = await fetch(API_PATHS.LLM_CONFIG);
       if (response.ok) {
         const data = await response.json();
         setConfigs(data);
@@ -102,7 +103,7 @@ const LLMConfigPage: React.FC = () => {
 
   const handleDelete = async (configId: number) => {
     try {
-      const response = await fetch(`/api/llm-config/${configId}`, {
+      const response = await fetch(API_PATHS.LLM_CONFIG_BY_ID(configId), {
         method: 'DELETE'
       });
       if (response.ok) {
@@ -121,7 +122,7 @@ const LLMConfigPage: React.FC = () => {
 
   const handleSetDefault = async (configId: number) => {
     try {
-      const response = await fetch(`/api/llm-config/${configId}/set-default`, {
+      const response = await fetch(API_PATHS.LLM_CONFIG_SET_DEFAULT(configId), {
         method: 'POST'
       });
       if (response.ok) {
@@ -141,7 +142,7 @@ const LLMConfigPage: React.FC = () => {
   const handleRefreshConfig = async () => {
     try {
       const loadingMessage = message.loading('正在刷新配置...', 0);
-      const response = await fetch('/api/llm-config/refresh', {
+      const response = await fetch(API_PATHS.LLM_CONFIG_REFRESH, {
         method: 'POST'
       });
       loadingMessage();
@@ -159,7 +160,7 @@ const LLMConfigPage: React.FC = () => {
   const handleReloadConfig = async () => {
     try {
       const loadingMessage = message.loading('正在重新加载配置...', 0);
-      const response = await fetch('/api/llm-config/reload', {
+      const response = await fetch(API_PATHS.LLM_CONFIG_RELOAD, {
         method: 'POST'
       });
       loadingMessage();
@@ -220,8 +221,8 @@ const LLMConfigPage: React.FC = () => {
       };
 
       const url = editingConfig 
-        ? `/api/llm-config/${editingConfig.id}`
-        : '/api/llm-config/';
+        ? API_PATHS.LLM_CONFIG_BY_ID(editingConfig.id)
+        : API_PATHS.LLM_CONFIG;
       
       const method = editingConfig ? 'PUT' : 'POST';
       

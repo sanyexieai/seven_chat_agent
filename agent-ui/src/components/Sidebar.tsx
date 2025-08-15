@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_PATHS } from '../config/api';
 import { 
   Layout, 
   Menu, 
@@ -69,9 +70,20 @@ const Sidebar: React.FC = () => {
     fetchSessions();
   }, []);
 
+  // 监听URL变化，更新选中的会话
+  useEffect(() => {
+    const pathSegments = location.pathname.split('/');
+    if (pathSegments.length > 2 && pathSegments[1] === 'chat') {
+      const sessionId = parseInt(pathSegments[2]);
+      if (!isNaN(sessionId)) {
+        setSelectedSession(sessionId);
+      }
+    }
+  }, [location.pathname]);
+
   const fetchAgents = async () => {
     try {
-      const response = await fetch('/api/agents/');
+      const response = await fetch(API_PATHS.AGENTS);
       const data = await response.json();
       // 确保data是数组
       setAgents(Array.isArray(data) ? data : []);
@@ -83,10 +95,10 @@ const Sidebar: React.FC = () => {
 
   const fetchSessions = async (agentId?: number) => {
     try {
-      // 使用正确的URL格式：/api/chat/sessions/{user_id}
-      const url = agentId 
-        ? `/api/chat/sessions/default_user?agent_id=${agentId}`
-        : '/api/chat/sessions/default_user';
+              // 使用正确的URL格式：/api/sessions?user_id=default_user
+        const url = agentId 
+          ? `${API_PATHS.GET_USER_SESSIONS('default_user')}&agent_id=${agentId}`
+          : API_PATHS.GET_USER_SESSIONS('default_user');
       const response = await fetch(url);
       const data = await response.json();
       
@@ -95,12 +107,21 @@ const Sidebar: React.FC = () => {
       // 处理新的API响应格式
       if (data.success && Array.isArray(data.sessions)) {
         setSessions(data.sessions);
+        // 自动选择第一条会话（最新的）
+        if (data.sessions.length > 0) {
+          setSelectedSession(data.sessions[0].id);
+        }
       } else if (Array.isArray(data)) {
         // 兼容旧格式
         setSessions(data);
+        // 自动选择第一条会话（最新的）
+        if (data.length > 0) {
+          setSelectedSession(data[0].id);
+        }
       } else {
         console.warn('会话数据格式不正确:', data);
         setSessions([]);
+        setSelectedSession(null);
       }
     } catch (error) {
       console.error('获取会话失败:', error);
@@ -119,7 +140,7 @@ const Sidebar: React.FC = () => {
   const handleCreateSessionDirect = async () => {
     try {
       // 直接创建新会话，标题为默认值
-      const response = await fetch('/api/chat/sessions', {
+      const response = await fetch(API_PATHS.CREATE_SESSION, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

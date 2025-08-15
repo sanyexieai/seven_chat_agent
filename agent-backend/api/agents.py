@@ -12,6 +12,14 @@ from fastapi import status
 logger = get_logger("agents_api")
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
+@router.get("", response_model=List[AgentResponse])
+async def get_agents_no_slash(
+    active_only: bool = True,
+    db: Session = Depends(get_db)
+):
+    """获取所有智能体（不带斜杠）"""
+    return await get_agents(active_only, db)
+
 @router.get("/", response_model=List[AgentResponse])
 async def get_agents(
     active_only: bool = True,

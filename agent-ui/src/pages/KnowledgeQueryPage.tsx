@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_PATHS } from '../config/api';
 import { Button, Input, Select, Card, Space, Tag, message, Spin, Empty, Divider } from 'antd';
 import { SearchOutlined, BookOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
 import './KnowledgeQueryPage.css';
@@ -47,7 +48,7 @@ const KnowledgeQueryPage: React.FC = () => {
 
   const fetchKnowledgeBases = async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/knowledge-base/?include_public=true`);
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE}?include_public=true`);
       if (response.ok) {
         const data = await response.json();
         setKnowledgeBases(data);
@@ -72,7 +73,7 @@ const KnowledgeQueryPage: React.FC = () => {
 
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/knowledge-base/${selectedKb}/query`, {
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_QUERY(selectedKb)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

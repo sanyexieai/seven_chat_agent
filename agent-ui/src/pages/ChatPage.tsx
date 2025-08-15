@@ -159,6 +159,8 @@ const ChatPage: React.FC = () => {
     try {
       // 检查是否有现有会话
       const response = await fetch(getApiUrl('/api/sessions?user_id=default_user'));
+      // 检查是否有现有会话
+      const response = await fetch(getApiUrl('/api/sessions?user_id=default_user'));
       if (response.ok) {
         const sessions = await response.json();
         
@@ -185,16 +187,40 @@ const ChatPage: React.FC = () => {
           navigate(`/chat/${latestSession.id}`);
         } else {
           // 没有现有会话，创建临时会话
-          createTempSession();
+          const tempSession = {
+            id: `temp_${Date.now()}`,
+            title: '新对话',
+            isTemp: true
+          };
+          setCurrentSession(tempSession);
+          
+          // 跳转到临时会话
+          navigate(`/chat/${tempSession.id}`);
         }
       } else {
         // API调用失败，创建临时会话
-        console.error('获取会话列表失败，创建临时会话');
-        createTempSession();
+        const tempSession = {
+          id: `temp_${Date.now()}`,
+          title: '新对话',
+          isTemp: true
+        };
+        setCurrentSession(tempSession);
+        
+        // 跳转到临时会话
+        navigate(`/chat/${tempSession.id}`);
       }
     } catch (error) {
-      console.error('检查现有会话失败，创建临时会话:', error);
-      createTempSession();
+      console.error('处理根路径访问失败:', error);
+      // 出错时创建临时会话
+      const tempSession = {
+        id: `temp_${Date.now()}`,
+        title: '新对话',
+        isTemp: true
+      };
+      setCurrentSession(tempSession);
+      
+      // 跳转到临时会话
+      navigate(`/chat/${tempSession.id}`);
     }
   };
 
@@ -287,20 +313,11 @@ const ChatPage: React.FC = () => {
         const session = await response.json();
         setCurrentSession(session);
         
-        // 确保有选中的智能体
-        if (!selectedAgent && agents.length > 0) {
-          setSelectedAgent(agents[0]);
-        }
-        
-        // 加载会话的历史消息
-        loadSessionMessages(sessionId);
-      } else {
-        console.error('加载会话失败');
-        message.error('加载会话失败');
+        // 加载会话消息
+        await loadSessionMessages(sessionId);
       }
     } catch (error) {
       console.error('加载会话失败:', error);
-      message.error('加载会话失败');
     }
   };
 
@@ -394,6 +411,8 @@ const ChatPage: React.FC = () => {
       const updated = [...prev, userMessage];
       return updated;
     });
+
+    // 清空输入框
     setInputValue('');
 
     try {
@@ -473,30 +492,30 @@ const ChatPage: React.FC = () => {
         return;
       }
 
-      // 如果是第一次发送消息，更新会话标题
-      if (messages.length === 0 && !currentSession.isTemp) {
-        const title = extractTitleFromMessage(inputValue);
-        // 更新会话标题
-        try {
-          await fetch(getApiUrl(`/api/sessions/${currentSession.id}/title?title=${encodeURIComponent(title)}`), {
-            method: 'PUT',
-          });
-        } catch (error) {
-          console.error('更新会话标题失败:', error);
-        }
+    // 如果是第一次发送消息，更新会话标题
+    if (messages.length === 0 && currentSession && !currentSession.isTemp) {
+      const title = extractTitleFromMessage(inputValue);
+      // 更新会话标题
+      try {
+        await fetch(getApiUrl(`/api/sessions/${currentSession.id}/title?title=${encodeURIComponent(title)}`), {
+          method: 'PUT',
+        });
+      } catch (error) {
+        console.error('更新会话标题失败:', error);
       }
+    }
 
-      // 发送消息到智能体
-      if (currentSession?.session_id) {
-        // 创建智能体消息占位符 - 使用更唯一的ID
-        const agentMessageId = `agent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const agentMessage: Message = {
-          id: agentMessageId,
-          content: '正在思考...',
-          type: 'agent',
-          timestamp: new Date(),
-          agentName: selectedAgent.display_name
-        };
+    // 发送消息到智能体
+    if (currentSession?.session_id) {
+      // 创建智能体消息占位符 - 使用更唯一的ID
+      const agentMessageId = `agent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const agentMessage: Message = {
+        id: agentMessageId,
+        content: '正在思考...',
+        type: 'agent',
+        timestamp: new Date(),
+        agentName: selectedAgent.display_name
+      };
 
         setMessages(prev => {
           const updated = [...prev, agentMessage];
@@ -531,22 +550,22 @@ const ChatPage: React.FC = () => {
             }),
           });
 
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
-          const reader = response.body?.getReader();
-          if (!reader) {
-            throw new Error('无法获取响应流');
-          }
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('无法获取响应流');
+        }
 
-          let fullContent = '';
-          const decoder = new TextDecoder(undefined, { fatal: false });
-          let buffer = '';
+        let fullContent = '';
+        const decoder = new TextDecoder(undefined, { fatal: false });
+        let buffer = '';
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
             const chunk = decoder.decode(value, { stream: true });
             buffer += chunk;

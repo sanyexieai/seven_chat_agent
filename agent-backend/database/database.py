@@ -144,7 +144,7 @@ def create_default_llm_configs():
                     "temperature": 0.7,
                     "max_tokens": 10240
                 },
-                "is_default": True
+                "is_default": False
             },
             {
                 "name": "ollama_llama",
@@ -158,7 +158,7 @@ def create_default_llm_configs():
                     "temperature": 0.7,
                     "max_tokens": 2048
                 },
-                "is_default": False
+                "is_default": True
             },
             {
                 "name": "ollama_mistral",

@@ -83,16 +83,14 @@ is_production = os.path.exists(static_dir) and os.path.isdir(static_dir)
 logger.info(f"环境检测: is_production={is_production}, static_dir={static_dir}")
 
 # 注册路由（根据环境自动调整前缀）
-api_prefix = "/api" if is_production else ""
-logger.info(f"使用API前缀: '{api_prefix}'")
-
-app.include_router(agents_router, prefix=api_prefix)
-app.include_router(sessions_router, prefix=api_prefix)
-app.include_router(chat_router, prefix=api_prefix)
-app.include_router(mcp_router, prefix=api_prefix)
-app.include_router(flows_router, prefix=api_prefix)
-app.include_router(llm_config_router, prefix=api_prefix)
-app.include_router(knowledge_base_router, prefix=api_prefix)
+# 注意：路由模块中已经定义了正确的prefix，这里不需要再添加
+app.include_router(agents_router)
+app.include_router(sessions_router)
+app.include_router(chat_router)
+app.include_router(mcp_router)
+app.include_router(flows_router)
+app.include_router(llm_config_router)
+app.include_router(knowledge_base_router)
 
 logger.info("所有路由已注册完成")
 
@@ -130,18 +128,17 @@ if is_production:
             return FileResponse(index_path)
         return {"message": "Static files not found"}
 
-# 动态注册根路径和健康检查（只在非生产环境或API前缀存在时）
-if not is_production or api_prefix:
-    @app.get(f"{api_prefix}/" if api_prefix else "/")
-    async def root():
-        """根路径"""
-        return {
-            "message": "Seven Chat Agent API",
-            "version": "1.0.0",
-            "status": "running"
-        }
+# 根路径和健康检查API
+@app.get("/api/")
+async def root():
+    """根路径"""
+    return {
+        "message": "Seven Chat Agent API",
+        "version": "1.0.0",
+        "status": "running"
+    }
 
-@app.get(f"{api_prefix}/health" if api_prefix else "/health")
+@app.get("/api/health")
 async def health_check():
     """健康检查"""
     return {

@@ -118,7 +118,7 @@ if is_production:
                 logger.info(f"{subindent}{file}")
     
     # 修复：将静态文件挂载到/static路径，而不是根路径
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    app.mount("/static", StaticFiles(directory=os.path.join(static_dir, "static")), name="static")
     logger.info("静态文件已挂载到 /static 路径")
     
     # 添加根路径处理，返回index.html

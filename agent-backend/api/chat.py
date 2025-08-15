@@ -154,6 +154,11 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             detail=f"处理聊天请求失败: {str(e)}"
         )
 
+@router.options("/stream")
+async def chat_stream_options():
+    """处理流式聊天API的OPTIONS请求"""
+    return {"message": "OK"}
+
 @router.post("/stream")
 async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
     """处理流式聊天请求"""

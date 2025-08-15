@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import asyncio
+import time
 from typing import Optional, Dict, Any, AsyncGenerator, List
 import json
 import httpx
@@ -505,6 +506,12 @@ class LLMHelper:
             connect_timeout, read_timeout = get_ollama_timeout(is_stream=True)
             retry_config = get_ollama_retry_config()
             
+            # 为服务器环境优化超时设置
+            server_connect_timeout = max(connect_timeout, 10)  # 最小10秒连接超时
+            server_read_timeout = max(read_timeout, 60)        # 最小60秒读取超时
+            
+            logger.info(f"服务器环境超时设置 - 连接: {server_connect_timeout}s, 读取: {server_read_timeout}s")
+            
             # 创建带连接池的session，提高连接稳定性
             session = requests.Session()
             session.mount('http://', requests.adapters.HTTPAdapter(
@@ -518,7 +525,7 @@ class LLMHelper:
                     f"{self._ollama_base_url}/api/chat",
                     json=data,
                     headers={"Content-Type": "application/json"},
-                    timeout=(connect_timeout, read_timeout),
+                    timeout=(server_connect_timeout, server_read_timeout),
                     stream=True
                 )
                 
@@ -528,12 +535,16 @@ class LLMHelper:
                 response.raise_for_status()
                 
                 # 处理流式响应
+                chunk_count = 0
+                start_time = time.time()
+                
                 for line in response.iter_lines():
                     if line:
                         try:
                             line_text = line.decode('utf-8').strip()
                             if line_text:
-                                logger.debug(f"收到流式数据行: {line_text}")
+                                chunk_count += 1
+                                logger.debug(f"收到流式数据行 #{chunk_count}: {line_text}")
                                 chunk_data = json.loads(line_text)
                                 
                                 # 检查是否是结束标记
@@ -545,7 +556,7 @@ class LLMHelper:
                                 if 'message' in chunk_data and 'content' in chunk_data['message']:
                                     content = chunk_data['message']['content']
                                     if content:  # 只yield非空内容
-                                        logger.debug(f"流式内容片段: {content}")
+                                        logger.debug(f"流式内容片段 #{chunk_count}: {content}")
                                         yield content
                                         
                         except json.JSONDecodeError as e:
@@ -554,6 +565,15 @@ class LLMHelper:
                         except Exception as e:
                             logger.warning(f"处理流式数据失败: {str(e)}")
                             continue
+                
+                # 流式处理完成后的统计
+                end_time = time.time()
+                duration = end_time - start_time
+                logger.info(f"流式处理完成 - 总块数: {chunk_count}, 耗时: {duration:.2f}s")
+                
+                # 如果块数太少，可能是降级了
+                if chunk_count <= 1:
+                    logger.warning("检测到可能的流式降级 - 块数过少，建议检查网络连接")
                             
             except requests.exceptions.Timeout:
                 logger.error("同步流式请求超时")

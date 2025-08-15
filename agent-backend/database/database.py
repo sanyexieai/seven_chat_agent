@@ -130,30 +130,30 @@ def create_default_llm_configs():
                     "temperature": 0.7,
                     "max_tokens": 2048
                 },
-                "is_default": True
+                "is_default": False
             },
             {
                 "name": "ollama_qwen",
                 "display_name": "Ollama Qwen 模型",
-                "description": "Ollama Qwen 模型配置",
+                "description": "Ollama Qwen 模型配置(开发环境 不一定可用)",
                 "provider": "ollama",
                 "model_name": "qwen3:32b",
                 "api_key": "",
-                "api_base": "http://localhost:11434",
+                "api_base": "http://192.168.1.39:11434",
                 "config": {
                     "temperature": 0.7,
-                    "max_tokens": 2048
+                    "max_tokens": 10240
                 },
-                "is_default": False
+                "is_default": True
             },
             {
                 "name": "ollama_llama",
                 "display_name": "Ollama Llama 模型",
-                "description": "Ollama Llama 模型配置",
+                "description": "Ollama Llama 模型配置(服务器cpu环境)",
                 "provider": "ollama",
-                "model_name": "llama3.2:3b",
+                "model_name": "llama3.2:latest",
                 "api_key": "",
-                "api_base": "http://localhost:11434",
+                "api_base": "http://192.168.1.48:11434",
                 "config": {
                     "temperature": 0.7,
                     "max_tokens": 2048

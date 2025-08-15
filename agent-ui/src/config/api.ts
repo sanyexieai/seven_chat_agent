@@ -10,7 +10,7 @@ export const API_PATHS = {
   SESSIONS: '/api/sessions',
   SESSION_BY_ID: (id: number | string) => `/api/sessions/${id}`,
   SESSION_MESSAGES: (id: number | string) => `/api/sessions/${id}/messages`,
-  SESSION_TITLE: (id: number | string) => `/api/sessions/${id}/title`,
+  SESSION_TITLE: (id: number | string | undefined,title:string) => `/api/sessions/${id}/title?title=${title}`,
   // 创建新会话 (POST only)
   CREATE_SESSION: '/api/chat/sessions',
   // 获取用户会话 (GET)

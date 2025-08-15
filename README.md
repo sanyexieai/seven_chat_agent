@@ -230,8 +230,8 @@ npm start
 ## API接口
 
 ### 智能体管理
-- `GET /api/agents/` - 获取智能体列表
-- `POST /api/agents/` - 创建智能体
+- `GET /api/agents` - 获取智能体列表
+- `POST /api/agents` - 创建智能体
 - `PUT /api/agents/{id}` - 更新智能体
 - `DELETE /api/agents/{id}` - 删除智能体
 

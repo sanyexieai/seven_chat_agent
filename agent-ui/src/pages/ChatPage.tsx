@@ -138,7 +138,7 @@ const ChatPage: React.FC = () => {
   // 获取智能体列表
   const fetchAgents = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/agents/'));
+      const response = await fetch(getApiUrl(API_PATHS.AGENTS));
       if (response.ok) {
         const data = await response.json();
         const agentsList = Array.isArray(data) ? data : [];
@@ -158,7 +158,7 @@ const ChatPage: React.FC = () => {
   const handleRootPathAccess = async () => {
     try {
       // 检查是否有现有会话
-      const response = await fetch(getApiUrl('/api/sessions?user_id=default_user'));
+      const response = await fetch(getApiUrl(API_PATHS.GET_USER_SESSIONS('default_user')));
       if (response.ok) {
         const sessions = await response.json();
         
@@ -225,7 +225,7 @@ const ChatPage: React.FC = () => {
   // 检查现有会话（保留用于其他用途）
   const checkExistingSessions = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/sessions?user_id=default_user'));
+      const response = await fetch(getApiUrl(API_PATHS.GET_USER_SESSIONS('default_user')));
       if (response.ok) {
         const sessions = await response.json();
         if (Array.isArray(sessions) && sessions.length > 0) {
@@ -306,7 +306,7 @@ const ChatPage: React.FC = () => {
     }
     
     try {
-      const response = await fetch(getApiUrl(`/api/sessions/${sessionId}`));
+      const response = await fetch(getApiUrl(API_PATHS.SESSION_BY_ID(sessionId)));
       if (response.ok) {
         const session = await response.json();
         setCurrentSession(session);
@@ -333,7 +333,7 @@ const ChatPage: React.FC = () => {
     }
     
     try {
-      const response = await fetch(getApiUrl(`/api/sessions/${sessionId}/messages`));
+      const response = await fetch(getApiUrl(API_PATHS.SESSION_MESSAGES(sessionId)));
       if (response.ok) {
         const messages = await response.json();
         
@@ -414,12 +414,6 @@ const ChatPage: React.FC = () => {
     setInputValue('');
 
     try {
-      // 检查是否选择了智能体
-      if (!selectedAgent) {
-        message.error('请先选择智能体');
-        return;
-      }
-
       // 如果是临时会话且是第一条消息，先创建真正的会话
       if (currentSession?.isTemp && messages.length === 0) {
           try {
@@ -449,7 +443,7 @@ const ChatPage: React.FC = () => {
               
               // 立即保存用户消息到数据库
               try {
-                const messageResponse = await fetch(getApiUrl(`/api/sessions/${sessionData.id}/messages`), {
+                const messageResponse = await fetch(getApiUrl(API_PATHS.SESSION_MESSAGES(sessionData.id)), {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
@@ -459,7 +453,7 @@ const ChatPage: React.FC = () => {
                     user_id: 'default_user',
                     message_type: 'user',
                     content: inputValue,
-                    agent_name: selectedAgent.name,
+                    agent_name: selectedAgent?.name || 'general_agent',
                     metadata: {}
                   })
                 });
@@ -495,7 +489,7 @@ const ChatPage: React.FC = () => {
       const title = extractTitleFromMessage(inputValue);
       // 更新会话标题
       try {
-        await fetch(getApiUrl(`/api/sessions/${currentSession.id}/title?title=${encodeURIComponent(title)}`), {
+        await fetch(getApiUrl(API_PATHS.SESSION_TITLE(currentSession.id,title)), {
           method: 'PUT',
         });
       } catch (error) {
@@ -512,7 +506,7 @@ const ChatPage: React.FC = () => {
         content: '正在思考...',
         type: 'agent',
         timestamp: new Date(),
-        agentName: selectedAgent.display_name
+        agentName: selectedAgent?.display_name || 'AI助手'
       };
 
         setMessages(prev => {
@@ -521,7 +515,8 @@ const ChatPage: React.FC = () => {
         });
 
         // 使用流式API获取响应
-        const agentName = selectedAgent.name;
+        const agentName = selectedAgent?.display_name || 'AI助手';
+        const agentType = selectedAgent?.name || 'general_agent';
         
         // 设置流式状态
         setMessages(prev => prev.map(msg => 
@@ -531,7 +526,7 @@ const ChatPage: React.FC = () => {
         ));
         
         try {
-          const response = await fetch(getApiUrl('/api/chat/stream'), {
+          const response = await fetch(getApiUrl(API_PATHS.CHAT_STREAM), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

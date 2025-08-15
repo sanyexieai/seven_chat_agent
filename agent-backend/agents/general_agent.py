@@ -422,7 +422,7 @@ class GeneralAgent(BaseAgent):
                         agent_name=self.name
                     )
             
-            # 发送最终响应
+            # 发送最终响应块，包含完整的响应内容
             yield StreamChunk(
                 chunk_id=f"{user_id}_final",
                 session_id=agent_context.session_id,
@@ -432,18 +432,26 @@ class GeneralAgent(BaseAgent):
                 agent_name=self.name
             )
             
-            # 创建并保存响应消息
-            response = self.create_message(
+            # 更新对话历史
+            agent_context.messages.append(AgentMessage(
+                message_id=str(uuid.uuid4()),
+                user_id=user_id,
+                type=MessageType.USER,
+                content=message,
+                timestamp=asyncio.get_event_loop().time()
+            ))
+            
+            agent_context.messages.append(AgentMessage(
+                message_id=str(uuid.uuid4()),
+                user_id=user_id,
+                type=MessageType.AGENT,
                 content=full_response,
-                message_type=MessageType.AGENT,
-                agent_name=self.name
-            )
+                timestamp=asyncio.get_event_loop().time(),
+                metadata={"tools_used": tools_used}
+            ))
             
-            # 更新上下文
-            agent_context.messages.append(response)
             self.update_context(user_id, agent_context)
-            
-            logger.info(f"通用智能体 {self.name} 流式处理消息完成，使用工具: {tools_used}")
+            logger.info(f"智能体 {self.name} 流式处理消息完成，响应长度: {len(full_response)}, 使用工具: {tools_used}")
             
         except Exception as e:
             logger.error(f"通用智能体流式处理消息失败: {str(e)}")

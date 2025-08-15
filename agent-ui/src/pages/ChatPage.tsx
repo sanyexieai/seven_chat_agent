@@ -478,11 +478,6 @@ const ChatPage: React.FC = () => {
           }
         }
 
-      // 确保有当前会话
-      if (!currentSession?.session_id) {
-        message.error('请先创建会话');
-        return;
-      }
 
     // 如果是第一次发送消息，更新会话标题
     if (messages.length === 0 && currentSession && !currentSession.isTemp) {
@@ -515,8 +510,8 @@ const ChatPage: React.FC = () => {
         });
 
         // 使用流式API获取响应
-        const agentName = selectedAgent?.display_name || 'AI助手';
-        const agentType = selectedAgent?.name || 'general_agent';
+        const agentName = selectedAgent?.name || 'general_agent';
+        const agentDisplayName = selectedAgent?.display_name || 'AI助手';
         
         // 设置流式状态
         setMessages(prev => prev.map(msg => 
@@ -538,7 +533,7 @@ const ChatPage: React.FC = () => {
               user_id: 'default_user',
               message: inputValue,
               session_id: currentSession.session_id,
-              agent_name: agentName,
+              agent_name: agentName,  // 使用name字段，不是display_name
               context: {}
             }),
           });

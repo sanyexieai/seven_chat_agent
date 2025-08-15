@@ -79,63 +79,82 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                         response_message = result.get('response', '抱歉，智能体处理消息时出现错误')
                         tools_used = result.get('tools_used', [])
                     
-                    # 保存聊天消息到数据库
-                    if request.session_id:
-                        try:
-                            from datetime import datetime
-                            # 保存用户消息
-                            from models.database_models import MessageCreate
-                            user_message_data = MessageCreate(
-                                session_id=request.session_id,
-                                user_id=request.user_id,
-                                message_type="user",
-                                content=request.message,
-                                agent_name=agent.description or agent.name
-                            )
-                            user_message = MessageService.create_message(db, user_message_data)
-                            
-                            # 保存助手回复
-                            assistant_message_data = MessageCreate(
-                                session_id=request.session_id,
-                                user_id=request.user_id,
-                                message_type="assistant",
-                                content=response_message,
-                                agent_name=agent.description or agent.name,
-                                metadata={"tools_used": tools_used}
-                            )
-                            assistant_message = MessageService.create_message(db, assistant_message_data)
-                            
-                            logger.info(f"保存聊天消息: 用户消息ID={user_message.message_id}, 助手消息ID={assistant_message.message_id}")
-                        except Exception as e:
-                            logger.warning(f"保存聊天消息失败: {str(e)}")
-                    
-                    from datetime import datetime
-                    response = ChatResponse(
-                        success=True,
-                        message=response_message,
-                        agent_name=agent.description or agent.name,
-                        tools_used=tools_used,
-                        timestamp=datetime.now().isoformat()
-                    )
+                    agent_name = agent.description or agent.name
                 else:
-                    logger.warning(f"未找到智能体: {request.agent_name}")
-                    # 返回错误响应
-                    response = ChatResponse(
-                        success=False,
-                        message=f"抱歉，未找到智能体 {request.agent_name}",
-                        agent_name="系统",
-                        tools_used=[],
-                        timestamp=datetime.now().isoformat()
-                    )
+                    logger.info(f"未找到智能体: {request.agent_name}，将直接调用LLM")
+                    # 如果没有找到智能体，直接调用LLM
+                    try:
+                        from utils.llm_helper import LLMHelper
+                        llm_helper = LLMHelper()
+                        
+                        # 直接调用LLM
+                        response_message = await llm_helper.call_llm(request.message)
+                        tools_used = []
+                        agent_name = "AI助手"
+                        
+                        logger.info("直接调用LLM完成")
+                    except Exception as e:
+                        logger.error(f"直接调用LLM失败: {str(e)}")
+                        response_message = "抱歉，AI处理消息时出现错误，请稍后重试"
+                        tools_used = []
+                        agent_name = "系统"
             else:
-                logger.error("智能体管理器未初始化")
-                response = ChatResponse(
-                    success=False,
-                    message="抱歉，智能体系统未初始化，请稍后重试",
-                    agent_name="系统",
-                    tools_used=[],
-                    timestamp=datetime.now().isoformat()
-                )
+                logger.info("智能体管理器未初始化，将直接调用LLM")
+                # 如果智能体管理器未初始化，直接调用LLM
+                try:
+                    from utils.llm_helper import LLMHelper
+                    llm_helper = LLMHelper()
+                    
+                    # 直接调用LLM
+                    response_message = await llm_helper.call_llm(request.message)
+                    tools_used = []
+                    agent_name = "AI助手"
+                    
+                    logger.info("直接调用LLM完成")
+                except Exception as e:
+                    logger.error(f"直接调用LLM失败: {str(e)}")
+                    response_message = "抱歉，AI处理消息时出现错误，请稍后重试"
+                    tools_used = []
+                    agent_name = "系统"
+            
+            # 保存聊天消息到数据库
+            if request.session_id:
+                try:
+                    from datetime import datetime
+                    # 保存用户消息
+                    from models.database_models import MessageCreate
+                    user_message_data = MessageCreate(
+                        session_id=request.session_id,
+                        user_id=request.user_id,
+                        message_type="user",
+                        content=request.message,
+                        agent_name=agent_name
+                    )
+                    user_message = MessageService.create_message(db, user_message_data)
+                    
+                    # 保存助手回复
+                    assistant_message_data = MessageCreate(
+                        session_id=request.session_id,
+                        user_id=request.user_id,
+                        message_type="assistant",
+                        content=response_message,
+                        agent_name=agent_name,
+                        metadata={"tools_used": tools_used}
+                    )
+                    assistant_message = MessageService.create_message(db, assistant_message_data)
+                    
+                    logger.info(f"保存聊天消息: 用户消息ID={user_message.message_id}, 助手消息ID={assistant_message.message_id}")
+                except Exception as e:
+                    logger.warning(f"保存聊天消息失败: {str(e)}")
+            
+            from datetime import datetime
+            response = ChatResponse(
+                success=True,
+                message=response_message,
+                agent_name=agent_name,
+                tools_used=tools_used,
+                timestamp=datetime.now().isoformat()
+            )
         except Exception as e:
             logger.error(f"调用智能体失败: {str(e)}")
             response = ChatResponse(
@@ -267,8 +286,8 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                             # 回退到简单的流式LLM调用
                             logger.warning(f"智能体 {agent.name} 没有process_message_stream方法，使用回退方案")
                             try:
-                                from utils.llm_helper import get_llm_helper
-                                llm_helper = get_llm_helper()
+                                from utils.llm_helper import LLMHelper
+                                llm_helper = LLMHelper()
                                 
                                 # 构建消息
                                 messages = []
@@ -291,11 +310,90 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                 yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
                         
                     else:
-                        logger.warning(f"未找到智能体: {request.agent_name}")
-                        yield f"data: {json.dumps({'error': f'抱歉，未找到智能体 {request.agent_name}'}, ensure_ascii=False)}\n\n"
+                        logger.info(f"未找到智能体: {request.agent_name}，将直接调用LLM")
+                        # 如果没有找到智能体，直接调用LLM
+                        try:
+                            from utils.llm_helper import LLMHelper
+                            llm_helper = LLMHelper()
+                            
+                            # 构建消息
+                            messages = [{"role": "user", "content": request.message}]
+                            
+                            # 流式调用LLM
+                            async for chunk in llm_helper.call_stream(messages):
+                                if chunk:
+                                    data_chunk = f"data: {json.dumps({'content': chunk, 'type': 'content'}, ensure_ascii=False)}\n\n"
+                                    yield data_chunk
+                            
+                            # 保存聊天消息到数据库
+                            if request.session_id:
+                                try:
+                                    from datetime import datetime
+                                    # 保存用户消息
+                                    from models.database_models import MessageCreate
+                                    user_message_data = MessageCreate(
+                                        session_id=request.session_id,
+                                        user_id=request.user_id,
+                                        message_type="user",
+                                        content=request.message,
+                                        agent_name="AI助手"
+                                    )
+                                    user_message = MessageService.create_message(db, user_message_data)
+                                    
+                                    # 保存助手回复（这里需要获取完整内容，暂时跳过）
+                                    logger.info(f"保存用户消息: 用户消息ID={user_message.message_id}")
+                                except Exception as e:
+                                    logger.warning(f"保存用户消息失败: {str(e)}")
+                            
+                            yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
+                            
+                        except Exception as llm_error:
+                            logger.error(f"直接调用LLM失败: {str(llm_error)}")
+                            error_message = f"抱歉，AI处理消息时出现错误: {str(llm_error)}"
+                            yield f"data: {json.dumps({'content': error_message, 'type': 'error'}, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
                 else:
-                    logger.error("智能体管理器未初始化")
-                    yield f"data: {json.dumps({'error': '抱歉，智能体系统未初始化，请稍后重试'}, ensure_ascii=False)}\n\n"
+                    logger.info("智能体管理器未初始化，将直接调用LLM")
+                    # 如果智能体管理器未初始化，直接调用LLM
+                    try:
+                        from utils.llm_helper import LLMHelper
+                        llm_helper = LLMHelper()
+                        
+                        # 构建消息
+                        messages = [{"role": "user", "content": request.message}]
+                        
+                        # 流式调用LLM
+                        async for chunk in llm_helper.call_stream(messages):
+                            if chunk:
+                                data_chunk = f"data: {json.dumps({'content': chunk, 'type': 'content'}, ensure_ascii=False)}\n\n"
+                                yield data_chunk
+                        
+                        # 保存聊天消息到数据库
+                        if request.session_id:
+                            try:
+                                from datetime import datetime
+                                # 保存用户消息
+                                from models.database_models import MessageCreate
+                                user_message_data = MessageCreate(
+                                    session_id=request.session_id,
+                                    user_id=request.user_id,
+                                    message_type="user",
+                                    content=request.message,
+                                    agent_name="AI助手"
+                                )
+                                user_message = MessageService.create_message(db, user_message_data)
+                                
+                                logger.info(f"保存用户消息: 用户消息ID={user_message.message_id}")
+                            except Exception as e:
+                                logger.warning(f"保存用户消息失败: {str(e)}")
+                        
+                        yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
+                        
+                    except Exception as llm_error:
+                        logger.error(f"直接调用LLM失败: {str(llm_error)}")
+                        error_message = f"抱歉，AI处理消息时出现错误: {str(llm_error)}"
+                        yield f"data: {json.dumps({'content': error_message, 'type': 'error'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
             except Exception as e:
                 logger.error(f"流式调用智能体失败: {str(e)}")
                 yield f"data: {json.dumps({'error': f'抱歉，智能体处理消息时出现错误: {str(e)}'}, ensure_ascii=False)}\n\n"

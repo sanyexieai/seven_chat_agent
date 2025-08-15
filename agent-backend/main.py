@@ -134,11 +134,8 @@ if is_production:
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         from fastapi.responses import FileResponse
-        # 如果是API请求，让FastAPI处理
-        if full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="API endpoint not found")
         
-        # 尝试提供其他静态文件（非/static路径）
+        # 尝试提供静态文件（非/static路径）
         file_path = os.path.join(static_dir, full_path)
         if os.path.exists(file_path) and os.path.isfile(file_path):
             return FileResponse(file_path)

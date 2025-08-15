@@ -119,6 +119,7 @@ jobs:
           WORKDIR /app
           COPY . .
           RUN pip install --no-deps --no-cache-dir -r requirements.txt
+          RUN pip install requests
           EXPOSE 8000
           CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
           EOF
@@ -155,9 +156,15 @@ jobs:
           echo "=== 检查配置文件 ==="
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system cat /app/static/config/config.json
           
+          echo "=== 检查静态文件 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/static/js/
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system ls -la /app/static/css/
+          
           echo "=== 测试静态文件访问 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/static/js/main.16f30cd7.js || echo "静态文件访问失败"
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/health || echo "API访问失败"
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system python3 -c "import os; print('静态文件检查:'); static_file='/app/static/js/main.16f30cd7.js'; print(f'文件存在: {os.path.exists(static_file)}'); print(f'文件大小: {os.path.getsize(static_file) if os.path.exists(static_file) else 0} bytes')" || echo "静态文件检查失败"
+          
+          echo "=== 测试API访问 ==="
+          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system python3 -c "import requests; response=requests.get('http://localhost:8000/api/health',timeout=5); print(f'API状态码: {response.status_code}'); print(f'响应: {response.text}')" || echo "API测试失败"
 
           # 健康检查（最多重试 5 次）
           for i in {1..5}; do

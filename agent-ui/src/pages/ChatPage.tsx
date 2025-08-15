@@ -61,6 +61,14 @@ const ChatPage: React.FC = () => {
   }>>([]);
   // 防止重复处理根路径访问的标志
   const [hasHandledRootPath, setHasHandledRootPath] = useState(false);
+  // 思考过程显示状态
+  const [thinkTagVisible, setThinkTagVisible] = useState(() => {
+    try {
+      return localStorage.getItem('think-tag-visible') !== 'false';
+    } catch {
+      return true;
+    }
+  });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
@@ -71,6 +79,26 @@ const ChatPage: React.FC = () => {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // 监听思考过程显示状态变化
+  useEffect(() => {
+    const handleStorageChange = () => {
+      try {
+        const newVisible = localStorage.getItem('think-tag-visible') !== 'false';
+        setThinkTagVisible(newVisible);
+      } catch {}
+    };
+
+    // 监听 storage 事件（跨标签页同步）
+    window.addEventListener('storage', handleStorageChange);
+    
+    // 初始化时检查一次状态
+    handleStorageChange();
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
 
   // 处理sessionId变化
   useEffect(() => {
@@ -910,17 +938,11 @@ const ChatPage: React.FC = () => {
               <Button 
                 type="text" 
                 icon={<BulbOutlined />}
-                className={`input-btn ${(() => {
-                  try {
-                    return localStorage.getItem('think-tag-visible') !== 'false' ? 'active' : 'inactive';
-                  } catch {
-                    return 'active';
-                  }
-                })()}`}
+                className={`input-btn ${thinkTagVisible ? 'active' : 'inactive'}`}
                 onClick={() => {
                   try {
-                    const currentVisible = localStorage.getItem('think-tag-visible') !== 'false';
-                    const newVisible = !currentVisible;
+                    const newVisible = !thinkTagVisible;
+                    setThinkTagVisible(newVisible);
                     localStorage.setItem('think-tag-visible', newVisible.toString());
                     // 触发页面重新渲染
                     window.dispatchEvent(new Event('storage'));

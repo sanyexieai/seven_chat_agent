@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/knowledge-base", tags=["知识库"])
 # 创建服务实例
 kb_service = KnowledgeBaseService()
 
-@router.post("/", response_model=KnowledgeBaseResponse)
+@router.post("", response_model=KnowledgeBaseResponse)
 async def create_knowledge_base(
     kb_data: KnowledgeBaseCreate,
     db: Session = Depends(get_db)

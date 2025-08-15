@@ -75,6 +75,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 添加请求日志中间件
+@app.middleware("http")
+async def log_requests(request, call_next):
+    """记录所有HTTP请求"""
+    logger.info(f"📥 请求: {request.method} {request.url.path}")
+    logger.info(f"  查询参数: {dict(request.query_params)}")
+    logger.info(f"  请求头: {dict(request.headers)}")
+    
+    # 记录请求体（如果是POST/PUT）
+    if request.method in ["POST", "PUT", "PATCH"]:
+        try:
+            body = await request.body()
+            if body:
+                logger.info(f"  请求体: {body.decode()[:200]}...")
+        except Exception as e:
+            logger.info(f"  请求体读取失败: {e}")
+    
+    # 处理请求
+    response = await call_next(request)
+    
+    logger.info(f"📤 响应: {request.method} {request.url.path} -> {response.status_code}")
+    return response
+
 # 自动检测并挂载静态文件
 import os
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -94,11 +117,59 @@ app.include_router(knowledge_base_router)
 
 logger.info("所有路由已注册完成")
 
+# 检测路由冲突
+def check_route_conflicts():
+    """检测路由冲突"""
+    logger.info("=== 检测路由冲突 ===")
+    routes_by_path = {}
+    
+    for route in app.routes:
+        if hasattr(route, 'path'):
+            path = route.path
+            methods = list(route.methods) if hasattr(route, 'methods') else []
+            endpoint = getattr(route, 'endpoint', 'N/A')
+            endpoint_name = getattr(endpoint, '__name__', str(endpoint)) if endpoint else 'N/A'
+            
+            if path not in routes_by_path:
+                routes_by_path[path] = []
+            
+            routes_by_path[path].append({
+                'methods': methods,
+                'endpoint': endpoint_name
+            })
+    
+    # 检查冲突
+    for path, route_list in routes_by_path.items():
+        if len(route_list) > 1:
+            logger.warning(f"⚠️  路由冲突检测到: {path}")
+            for i, route in enumerate(route_list):
+                logger.warning(f"  {i+1}. 方法: {route['methods']} -> {route['endpoint']}")
+        
+        # 特别检查知识库路由
+        if 'knowledge' in path.lower():
+            logger.info(f"🔍 知识库路由检查: {path}")
+            for i, route in enumerate(route_list):
+                logger.info(f"  {i+1}. 方法: {route['methods']} -> {route['endpoint']}")
+    
+    logger.info("=== 路由冲突检测完成 ===")
+
+# 执行路由冲突检测
+check_route_conflicts()
+
 # 显示所有注册的路由
 logger.info("=== 已注册的路由 ===")
 for route in app.routes:
     if hasattr(route, 'path'):
-        logger.info(f"路由: {route.path} [{', '.join(route.methods) if hasattr(route, 'methods') else 'N/A'}]")
+        methods = ', '.join(route.methods) if hasattr(route, 'methods') else 'N/A'
+        endpoint = getattr(route, 'endpoint', 'N/A')
+        endpoint_name = getattr(endpoint, '__name__', str(endpoint)) if endpoint else 'N/A'
+        logger.info(f"路由: {route.path} [{methods}] -> {endpoint_name}")
+        
+        # 特别检查知识库相关路由
+        if 'knowledge' in str(route.path).lower() or 'knowledge' in str(endpoint_name).lower():
+            logger.info(f"  *** 知识库路由详情: {route.path} [{methods}] -> {endpoint_name}")
+            if hasattr(route, 'methods'):
+                logger.info(f"  支持的方法: {list(route.methods)}")
 logger.info("==================")
 
 # 静态文件挂载必须在路由注册之后

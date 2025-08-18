@@ -138,12 +138,20 @@ def check_route_conflicts():
                 'endpoint': endpoint_name
             })
     
-    # 检查冲突
+    # 检查冲突（仅在同一路径上存在相同HTTP方法的重复绑定时告警）
     for path, route_list in routes_by_path.items():
-        if len(route_list) > 1:
+        method_to_endpoints = {}
+        for r in route_list:
+            for m in r['methods']:
+                method_to_endpoints.setdefault(m, []).append(r['endpoint'])
+        duplicated = {m: eps for m, eps in method_to_endpoints.items() if len(eps) > 1}
+        if duplicated:
             logger.warning(f"⚠️  路由冲突检测到: {path}")
-            for i, route in enumerate(route_list):
-                logger.warning(f"  {i+1}. 方法: {route['methods']} -> {route['endpoint']}")
+            idx = 0
+            for m, eps in duplicated.items():
+                for ep in eps:
+                    idx += 1
+                    logger.warning(f"  {idx}. 方法: ['{m}'] -> {ep}")
         
         # 特别检查知识库路由
         if 'knowledge' in path.lower():

@@ -167,6 +167,72 @@ class GeneralAgent(BaseAgent):
         
         return bound_tool_keys, tool_to_server
     
+    def _infer_default_tool_calls(self, user_message: str) -> List[str]:
+        """在LLM未显式发出 TOOL_CALL 时，根据已绑定工具推断一个或多个默认调用。
+        策略：优先选择名称中包含 'search' 的工具；否则选择第一个绑定工具。
+        返回形如 ['server_tool query=xxx'] 的调用列表。
+        """
+        if not self.bound_tools:
+            return []
+        candidate_calls: List[str] = []
+        fallback_call: str = ""
+        lower_msg = (user_message or "").strip()
+        for t in self.bound_tools:
+            if isinstance(t, str):
+                server_tool = t
+                if not fallback_call:
+                    fallback_call = f"{server_tool} {lower_msg}" if lower_msg else server_tool
+                if 'search' in server_tool.lower():
+                    candidate_calls.append(f"{server_tool} query={lower_msg}" if lower_msg else server_tool)
+            elif isinstance(t, dict):
+                server = t.get('server_name') or t.get('server')
+                name = t.get('name') or t.get('tool_name')
+                if server and name:
+                    server_tool = f"{server}_{name}"
+                    if not fallback_call:
+                        fallback_call = f"{server_tool} {lower_msg}" if lower_msg else server_tool
+                    if 'search' in name.lower() or 'search' in server.lower():
+                        candidate_calls.append(f"{server_tool} query={lower_msg}" if lower_msg else server_tool)
+        # 去重，保持顺序
+        seen = set()
+        ordered = [c for c in candidate_calls if not (c in seen or seen.add(c))]
+        if ordered:
+            return [ordered[0]]
+        return [fallback_call] if fallback_call else []
+
+    async def _satisfaction_check_and_refine(self, user_message: str, initial_answer: str, tool_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """让LLM评估是否已满足需求，必要时给出改进的查询。返回 { satisfied: bool, refined_query: Optional[str] }"""
+        try:
+            instruction = (
+                "你是一个审核助手。给定用户问题、初步回答以及工具检索结果，判断是否已足够回答用户。"
+                "仅返回JSON，格式为 {\"satisfied\": true|false, \"refined_query\": string|null}。"
+            )
+            payload = {
+                "role": "system",
+                "content": instruction
+            }
+            context_blob = {
+                "user_message": user_message,
+                "initial_answer": initial_answer,
+                "tool_results": tool_results,
+            }
+            resp = await self.llm_helper.call(messages=[payload, {"role": "user", "content": json.dumps(context_blob, ensure_ascii=False)}])
+            try:
+                parsed = json.loads(resp)
+                return {
+                    "satisfied": bool(parsed.get("satisfied", False)),
+                    "refined_query": parsed.get("refined_query")
+                }
+            except Exception:
+                lower = (resp or "").lower()
+                return {
+                    "satisfied": ("true" in lower and "false" not in lower),
+                    "refined_query": None
+                }
+        except Exception as e:
+            logger.warning(f"满意度评估失败: {str(e)}")
+            return {"satisfied": False, "refined_query": None}
+    
     async def _execute_tool_call(self, tool_call: str, bound_tool_keys: set, tool_to_server: Dict[str, str], mcp_helper) -> tuple[str, str]:
         """执行单个工具调用"""
         try:
@@ -267,35 +333,59 @@ class GeneralAgent(BaseAgent):
                 logger.warning(f"LLM调用失败，使用模拟响应: {str(e)}")
                 response_content = f"您好！我是{self.name}智能体。我收到了您的消息：'{message}'。如果您需要真实的AI响应，请确保LLM服务正在运行。"
             
-            # 检查是否需要工具调用
+            # 工具阶段：先解析显式调用，否则走默认推断
             tools_used = []
-            if self.bound_tools and "TOOL_CALL:" in response_content:
-                try:
-                    # 解析工具调用
+            tool_results_pack = []
+            tool_calls = []
+            if self.bound_tools:
+                if "TOOL_CALL:" in response_content:
                     tool_calls = self._parse_tool_calls(response_content)
+                if not tool_calls:
+                    tool_calls = self._infer_default_tool_calls(message)
                     if tool_calls:
-                        # 构建工具映射
+                        logger.info(f"未发现显式工具调用，已自动推断调用: {tool_calls}")
+                try:
+                    if tool_calls:
                         bound_tool_keys, tool_to_server = self._build_tool_mapping()
-                        
-                        # 获取MCP助手
                         from main import agent_manager
                         if agent_manager and hasattr(agent_manager, 'mcp_helper'):
                             mcp_helper = agent_manager.mcp_helper
-                            
-                            # 执行工具调用
-                            for tool_call in tool_calls:
-                                tool_result, tool_name = await self._execute_tool_call(
-                                    tool_call, bound_tool_keys, tool_to_server, mcp_helper
-                                )
+                            for tc in tool_calls:
+                                tool_result, tool_name = await self._execute_tool_call(tc, bound_tool_keys, tool_to_server, mcp_helper)
                                 if tool_name:
                                     response_content += f"\n\n🔍 工具 {tool_name} 执行结果:\n{tool_result}"
                                     tools_used.append(tool_name)
+                                    tool_results_pack.append({"tool": tool_name, "query": tc, "result": tool_result})
                         else:
                             logger.warning("MCP助手未初始化，无法执行工具调用")
                 except Exception as e:
                     logger.error(f"工具调用处理失败: {str(e)}")
                     response_content += f"\n\n工具调用失败: {str(e)}"
-            
+
+            # 满意度检查与一次性优化重试
+            if tool_results_pack:
+                check = await self._satisfaction_check_and_refine(message, response_content, tool_results_pack)
+                if not check.get("satisfied") and check.get("refined_query"):
+                    refined = check["refined_query"]
+                    secondary_calls = self._infer_default_tool_calls(refined)
+                    try:
+                        if secondary_calls:
+                            bound_tool_keys, tool_to_server = self._build_tool_mapping()
+                            from main import agent_manager
+                            if agent_manager and hasattr(agent_manager, 'mcp_helper'):
+                                mcp_helper = agent_manager.mcp_helper
+                                for tc in secondary_calls:
+                                    tool_result, tool_name = await self._execute_tool_call(tc, bound_tool_keys, tool_to_server, mcp_helper)
+                                    if tool_name:
+                                        response_content += f"\n\n🔁 二次检索 {tool_name}（优化查询）执行结果:\n{tool_result}"
+                                        tools_used.append(tool_name)
+                                        tool_results_pack.append({"tool": tool_name, "query": tc, "result": tool_result, "refined": True})
+                            else:
+                                logger.warning("MCP助手未初始化，无法执行工具调用（优化轮次）")
+                    except Exception as e:
+                        logger.error(f"优化轮次工具调用失败: {str(e)}")
+                        response_content += f"\n\n优化轮次工具调用失败: {str(e)}"
+
             # 创建响应消息
             response = self.create_message(
                 content=response_content,
@@ -378,29 +468,29 @@ class GeneralAgent(BaseAgent):
                     agent_name=self.name
                 )
             
-            # 检查是否需要工具调用
+            # 工具阶段：先解析显式调用，否则走默认推断
             tools_used = []
-            if self.bound_tools and "TOOL_CALL:" in full_response:
-                try:
-                    # 解析工具调用
+            tool_results_pack = []
+            tool_calls = []
+            if self.bound_tools:
+                if "TOOL_CALL:" in full_response:
                     tool_calls = self._parse_tool_calls(full_response)
+                if not tool_calls:
+                    tool_calls = self._infer_default_tool_calls(message)
                     if tool_calls:
-                        # 构建工具映射
+                        logger.info(f"未发现显式工具调用，已自动推断调用: {tool_calls}")
+                try:
+                    if tool_calls:
                         bound_tool_keys, tool_to_server = self._build_tool_mapping()
-                        
-                        # 获取MCP助手
                         from main import agent_manager
                         if agent_manager and hasattr(agent_manager, 'mcp_helper'):
                             mcp_helper = agent_manager.mcp_helper
-                            
-                            # 执行工具调用
-                            for tool_call in tool_calls:
-                                tool_result, tool_name = await self._execute_tool_call(
-                                    tool_call, bound_tool_keys, tool_to_server, mcp_helper
-                                )
+                            for tc in tool_calls:
+                                tool_result, tool_name = await self._execute_tool_call(tc, bound_tool_keys, tool_to_server, mcp_helper)
                                 if tool_name:
-                                    # 流式发送工具执行结果
                                     formatted_result = f"\n\n🔍 工具 {tool_name} 执行结果:\n{tool_result}\n"
+                                    # 将工具结果也累积到最终全文中，确保前端即便只展示最终块也能看到
+                                    full_response += formatted_result
                                     yield StreamChunk(
                                         chunk_id=f"{user_id}_tool_{tool_name}",
                                         session_id=agent_context.session_id,
@@ -409,7 +499,16 @@ class GeneralAgent(BaseAgent):
                                         metadata={"tool_name": tool_name},
                                         agent_name=self.name
                                     )
+                                    # 兼容前端仅展示 content 类型的情况，再追加一条内容块
+                                    yield StreamChunk(
+                                        chunk_id=f"{user_id}_tool_{tool_name}_content",
+                                        session_id=agent_context.session_id,
+                                        type="content",
+                                        content=formatted_result,
+                                        agent_name=self.name
+                                    )
                                     tools_used.append(tool_name)
+                                    tool_results_pack.append({"tool": tool_name, "query": tc, "result": tool_result})
                         else:
                             logger.warning("MCP助手未初始化，无法执行工具调用")
                 except Exception as e:
@@ -421,7 +520,54 @@ class GeneralAgent(BaseAgent):
                         content=f"\n\n工具调用失败: {str(e)}",
                         agent_name=self.name
                     )
-            
+
+            # 满意度检查与一次优化轮
+            if tool_results_pack:
+                check = await self._satisfaction_check_and_refine(message, full_response, tool_results_pack)
+                if not check.get("satisfied") and check.get("refined_query"):
+                    refined = check["refined_query"]
+                    secondary_calls = self._infer_default_tool_calls(refined)
+                    try:
+                        if secondary_calls:
+                            bound_tool_keys, tool_to_server = self._build_tool_mapping()
+                            from main import agent_manager
+                            if agent_manager and hasattr(agent_manager, 'mcp_helper'):
+                                mcp_helper = agent_manager.mcp_helper
+                                for tc in secondary_calls:
+                                    tool_result, tool_name = await self._execute_tool_call(tc, bound_tool_keys, tool_to_server, mcp_helper)
+                                    if tool_name:
+                                        formatted_result = f"\n\n🔁 二次检索 {tool_name}（优化查询）执行结果:\n{tool_result}\n"
+                                        full_response += formatted_result
+                                        yield StreamChunk(
+                                            chunk_id=f"{user_id}_tool2_{tool_name}",
+                                            session_id=agent_context.session_id,
+                                            type="tool_result",
+                                            content=formatted_result,
+                                            metadata={"tool_name": tool_name, "refined": True},
+                                            agent_name=self.name
+                                        )
+                                        # 兼容前端仅展示 content 类型的情况，再追加一条内容块
+                                        yield StreamChunk(
+                                            chunk_id=f"{user_id}_tool2_{tool_name}_content",
+                                            session_id=agent_context.session_id,
+                                            type="content",
+                                            content=formatted_result,
+                                            agent_name=self.name
+                                        )
+                                        tools_used.append(tool_name)
+                                        tool_results_pack.append({"tool": tool_name, "query": tc, "result": tool_result, "refined": True})
+                            else:
+                                logger.warning("MCP助手未初始化，无法执行工具调用（优化轮次）")
+                    except Exception as e:
+                        logger.error(f"优化轮次工具调用失败: {str(e)}")
+                        yield StreamChunk(
+                            chunk_id=f"{user_id}_tool2_error",
+                            session_id=agent_context.session_id,
+                            type="tool_error",
+                            content=f"\n\n优化轮次工具调用失败: {str(e)}",
+                            agent_name=self.name
+                        )
+
             # 发送最终响应块，包含完整的响应内容
             yield StreamChunk(
                 chunk_id=f"{user_id}_final",

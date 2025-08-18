@@ -183,7 +183,8 @@ async def get_all_mcp_tools(
 async def get_mcp_tools(
     server_id: int,
     active_only: bool = True,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    agent_manager: AgentManager = Depends(get_agent_manager)
 ):
     """获取MCP服务器的工具列表"""
     try:
@@ -191,7 +192,26 @@ async def get_mcp_tools(
         if active_only:
             query = query.filter(MCPTool.is_active == True)
         tools = query.all()
+        
+        # 如果数据库中暂时没有工具，尝试触发一次同步并重试
+        if not tools:
+            server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+            if not server:
+                raise HTTPException(status_code=404, detail="MCP服务器不存在")
+            try:
+                success = await agent_manager.sync_mcp_tools(server.name)
+                if success:
+                    # 同步成功后重新查询
+                    query = db.query(MCPTool).filter(MCPTool.server_id == server_id)
+                    if active_only:
+                        query = query.filter(MCPTool.is_active == True)
+                    tools = query.all()
+            except Exception as e:
+                logger.warning(f"懒加载同步MCP工具失败: {str(e)}")
+        
         return tools
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"获取MCP工具失败: {str(e)}")
         raise HTTPException(status_code=500, detail="获取MCP工具失败")

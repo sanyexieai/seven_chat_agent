@@ -242,6 +242,27 @@ class AgentManager:
     async def _initialize_mcp_helper(self):
         """初始化MCP助手"""
         try:
+            # 如果当前没有任何MCP配置，尝试自动创建/同步默认MCP服务
+            if not self.mcp_configs:
+                logger.warning("没有MCP配置，尝试自动创建/同步默认MCP服务...")
+                try:
+                    from database.migrations import create_default_mcp_servers
+                    create_default_mcp_servers()
+                    logger.info("默认MCP服务器创建完成，重新加载配置...")
+                    await self._load_mcp_configs()
+                except Exception as e:
+                    logger.warning(f"创建默认MCP服务器失败: {str(e)}")
+                
+                # 如果仍然没有配置，使用内置回退配置并尝试持久化
+                if not self.mcp_configs:
+                    logger.info("仍无MCP配置，使用回退配置并尝试保存到数据库...")
+                    await self._create_fallback_mcp_configs()
+                    try:
+                        await self._save_default_mcp_configs(self.mcp_configs)
+                        await self._load_mcp_configs()
+                    except Exception as e:
+                        logger.warning(f"保存回退MCP配置失败: {str(e)}")
+            
             if self.mcp_configs:
                 # 将配置转换为MCP助手需要的格式
                 mcp_config = {
@@ -267,7 +288,7 @@ class AgentManager:
                     available_services = await self.mcp_helper.get_available_services()
                     logger.info(f"可用的MCP服务: {available_services}")
                     
-                    # 为每个可用服务加载工具
+                    # 为每个可用服务加载工具并更新内存
                     for service_name in available_services:
                         try:
                             logger.info(f"正在从服务器 {service_name} 加载工具...")
@@ -306,10 +327,17 @@ class AgentManager:
                             logger.error(f"错误堆栈: {traceback.format_exc()}")
                             # 继续处理其他服务器，不中断整个流程
                             continue
+                    
+                    # 在内存更新后，执行一次数据库层的同步，确保工具持久化
+                    for service_name in available_services:
+                        try:
+                            await self.sync_mcp_tools(service_name)
+                            logger.info(f"已同步MCP服务器 {service_name} 的工具到数据库")
+                        except Exception as e:
+                            logger.warning(f"同步MCP服务器 {service_name} 工具到数据库失败: {str(e)}")
                 except Exception as e:
                     logger.error(f"MCP服务连接测试失败: {str(e)}")
                     logger.warning("MCP工具加载失败，但系统将继续运行")
-                
             else:
                 logger.warning("没有MCP配置，跳过MCP助手初始化")
         except Exception as e:

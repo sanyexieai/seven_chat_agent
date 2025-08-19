@@ -437,26 +437,191 @@ class FlowDrivenAgent(BaseAgent):
         return await self.execute_flow(user_id, message, context)
     
     async def process_message_stream(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AsyncGenerator[StreamChunk, None]:
-        """流式处理用户消息"""
+        """流式处理用户消息：按节点执行并逐步输出。
+        - LLM 节点：使用 call_stream 按块输出 type="content"
+        - TOOL 节点：工具执行完成后输出 type="tool_result"
+        - 其他节点：整体内容作为一段 type="content"
+        - 最终：输出 type="final"
+        """
         try:
-            result = await self.execute_flow(user_id, message, context)
-            
-            # 将结果转换为流式输出
+            flow_state = self._get_flow_state(context)
+            base_vars = {"message": message}
+
+            if not self.start_node_id:
+                yield StreamChunk(
+                    chunk_id=str(uuid.uuid4()),
+                    session_id=(context or {}).get('session_id', ''),
+                    type="error",
+                    content="流程图未配置起始节点，无法执行。",
+                    agent_name=self.name,
+                    metadata={'flow_executed': False, 'error': 'no_start_node'},
+                    is_end=True
+                )
+                return
+
+            current_id = self.start_node_id
+            step_guard = 0
+
+            while current_id and step_guard < 1000:
+                step_guard += 1
+                node = self.nodes.get(current_id)
+                if not node:
+                    break
+
+                vars_all = {**flow_state, **base_vars}
+
+                if node.type == NodeType.LLM:
+                    # 渲染提示
+                    system_prompt = self._render_template_value(node.config.get('system_prompt', ''), vars_all)
+                    user_prompt = self._render_template_value(node.config.get('user_prompt', message), vars_all)
+                    save_as = node.config.get('save_as', 'last_output')
+
+                    try:
+                        msgs = []
+                        if system_prompt:
+                            msgs.append({"role": "system", "content": system_prompt})
+                        msgs.append({"role": "user", "content": user_prompt})
+
+                        acc = ""
+                        async for piece in self.llm_helper.call_stream(messages=msgs):
+                            if not piece:
+                                continue
+                            acc += piece
+                            flow_state['last_output'] = flow_state.get('last_output', '') + piece
+                            # 流式输出
+                            yield StreamChunk(
+                                chunk_id=str(uuid.uuid4()),
+                                session_id=(context or {}).get('session_id', ''),
+                                type="content",
+                                content=piece,
+                                agent_name=self.name
+                            )
+                        flow_state[save_as] = acc
+                    except Exception as e:
+                        yield StreamChunk(
+                            chunk_id=str(uuid.uuid4()),
+                            session_id=(context or {}).get('session_id', ''),
+                            type="error",
+                            content=f"LLM节点执行失败: {str(e)}",
+                            agent_name=self.name
+                        )
+                    # 下一个
+                    nexts = node.connections or []
+                    current_id = nexts[0] if nexts else None
+                    continue
+
+                if node.type == NodeType.TOOL:
+                    server = self._render_template_value(node.config.get('server'), vars_all)
+                    tool = self._render_template_value(node.config.get('tool'), vars_all)
+                    params_raw = node.config.get('params', {})
+                    params = self._render_template_value(params_raw, vars_all)
+                    save_as = node.config.get('save_as', 'last_output')
+                    append_to_output = node.config.get('append_to_output', True)
+
+                    try:
+                        from main import agent_manager
+                        if not agent_manager or not getattr(agent_manager, 'mcp_helper', None):
+                            raise RuntimeError("MCP助手未初始化")
+                        mcp = agent_manager.mcp_helper
+
+                        actual_server = server
+                        actual_tool = tool
+                        if tool and '_' in tool and not server:
+                            parts = tool.split('_', 1)
+                            actual_server = parts[0]
+                            actual_tool = parts[1]
+                        if not actual_server:
+                            services = await mcp.get_available_services()
+                            if not services:
+                                raise RuntimeError("没有可用的MCP服务")
+                            actual_server = services[0]
+
+                        result = await mcp.call_tool(
+                            server_name=actual_server,
+                            tool_name=actual_tool,
+                            **(params if isinstance(params, dict) else {"query": str(params)})
+                        )
+                        try:
+                            import json as _json
+                            result_text = _json.dumps(result, ensure_ascii=False)
+                        except Exception:
+                            result_text = str(result)
+
+                        flow_state[save_as] = result
+                        formatted = result_text
+                        if append_to_output:
+                            flow_state['last_output'] = flow_state.get('last_output', '') + "\n" + result_text
+
+                        # 输出工具结果
+                        yield StreamChunk(
+                            chunk_id=str(uuid.uuid4()),
+                            session_id=(context or {}).get('session_id', ''),
+                            type="tool_result",
+                            content=formatted,
+                            metadata={"tool_name": f"{actual_server}_{actual_tool}"},
+                            agent_name=self.name
+                        )
+                    except Exception as e:
+                        yield StreamChunk(
+                            chunk_id=str(uuid.uuid4()),
+                            session_id=(context or {}).get('session_id', ''),
+                            type="tool_error",
+                            content=f"工具节点执行失败: {str(e)}",
+                            agent_name=self.name
+                        )
+                    nexts = node.connections or []
+                    current_id = nexts[0] if nexts else None
+                    continue
+
+                if node.type == NodeType.CONDITION:
+                    # 复用现有实现，不输出内容，仅决定路线
+                    cond_msg = await self._execute_condition_node(node, user_id, message, context)
+                    # 简单解析 true/false
+                    text = (cond_msg.content or '').strip().lower()
+                    is_true = ('true' in text) and ('false' not in text)
+                    nexts = node.connections or []
+                    if is_true and nexts:
+                        current_id = nexts[0]
+                    elif len(nexts) > 1:
+                        current_id = nexts[1]
+                    else:
+                        current_id = None
+                    continue
+
+                if node.type == NodeType.AGENT:
+                    # 调用目标智能体（非流式），整体作为一段内容输出
+                    agent_resp = await self._execute_agent_node(node, user_id, message, context)
+                    flow_state['last_output'] = flow_state.get('last_output', '') + (agent_resp.content or '')
+                    yield StreamChunk(
+                        chunk_id=str(uuid.uuid4()),
+                        session_id=(context or {}).get('session_id', ''),
+                        type="content",
+                        content=agent_resp.content or '',
+                        agent_name=self.name
+                    )
+                    nexts = node.connections or []
+                    current_id = nexts[0] if nexts else None
+                    continue
+
+                # 未知节点，结束
+                break
+
+            # 最终输出
             yield StreamChunk(
                 chunk_id=str(uuid.uuid4()),
-                session_id=context.get('session_id', ''),
-                type=MessageType.AGENT,
-                content=result.content,
-                agent_name=result.agent_name,
-                metadata=result.metadata,
+                session_id=(context or {}).get('session_id', ''),
+                type="final",
+                content=flow_state.get('last_output', ''),
+                agent_name=self.name,
+                metadata={},
                 is_end=True
             )
         except Exception as e:
             logger.error(f"流式处理消息失败: {str(e)}")
             yield StreamChunk(
                 chunk_id=str(uuid.uuid4()),
-                session_id=context.get('session_id', ''),
-                type=MessageType.AGENT,
+                session_id=(context or {}).get('session_id', ''),
+                type="error",
                 content=f"处理消息时发生错误: {str(e)}",
                 agent_name=self.name,
                 metadata={'error': str(e)},

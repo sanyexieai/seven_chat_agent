@@ -16,7 +16,8 @@ import {
   Checkbox,
   Modal,
   Form,
-  message
+  message,
+  TreeSelect
 } from 'antd';
 import {
   PlusOutlined,
@@ -366,6 +367,15 @@ const FlowEditorPage: React.FC = () => {
   const [importModalVisible, setImportModalVisible] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
   const [currentAgentId, setCurrentAgentId] = useState<number | null>(null);
+  
+  // 设置抽屉相关状态（参考通用智能体，除提示词外）
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSubmitting, setSettingsSubmitting] = useState(false);
+  const [settingsForm] = Form.useForm();
+  const [llmConfigs, setLlmConfigs] = useState<any[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
+  const [toolTreeData, setToolTreeData] = useState<any[]>([]);
 
   useEffect(() => {
     fetchAgents();
@@ -427,6 +437,18 @@ const FlowEditorPage: React.FC = () => {
     console.log('设置基本信息完成:', {
       name: agent.display_name || agent.name,
       description: agent.description || ''
+    });
+    
+    // 规范化旧 bound_tools（对象 -> "server_tool" 字符串）
+    const normalizedBoundTools = Array.isArray(agent.bound_tools)
+      ? agent.bound_tools
+          .map((t: any) => typeof t === 'string' ? t : (t && t.server && t.tool ? `${t.server}_${t.tool}` : null))
+          .filter((v: any) => !!v)
+      : [];
+    settingsForm.setFieldsValue({
+      llm_config_id: agent.llm_config_id || undefined,
+      bound_tools: normalizedBoundTools,
+      bound_knowledge_bases: Array.isArray(agent.bound_knowledge_bases) ? agent.bound_knowledge_bases : []
     });
     
     // 如果有流程图配置，加载节点和边
@@ -498,15 +520,192 @@ const FlowEditorPage: React.FC = () => {
         console.log('edges变量:', edges);
       }
     } else {
-      console.log('没有找到流程图配置');
-      console.log('agent.flow_config:', agent.flow_config);
+      console.log('该智能体没有流程图配置');
     }
-    
+
     // 记录当前正在编辑的智能体ID
-    setCurrentAgentId(agent.id);
-    console.log('设置当前智能体ID:', agent.id);
-    
-    message.success(`已加载智能体: ${agent.display_name || agent.name}`);
+    if (agent && typeof agent.id !== 'undefined') {
+      setCurrentAgentId(agent.id);
+      console.log('设置当前智能体ID:', agent.id);
+      message.success(`已加载智能体: ${agent.display_name || agent.name}`);
+    }
+  };
+
+  // =========== 设置抽屉相关逻辑（除提示词外） ===========
+  const fetchLlmConfigs = async () => {
+    const res = await axios.get(API_PATHS.LLM_CONFIG);
+    return res.data || [];
+  };
+  const fetchKnowledgeBases = async () => {
+    const res = await axios.get(API_PATHS.KNOWLEDGE_BASE);
+    return res.data || [];
+  };
+  const fetchMcpServers = async () => {
+    const res = await axios.get(API_PATHS.MCP_SERVERS);
+    return res.data || [];
+  };
+
+  const openSettings = async () => {
+    try {
+      setSettingsVisible(true);
+      setSettingsLoading(true);
+      const [llms, kbs, servers] = await Promise.all([
+        fetchLlmConfigs(),
+        fetchKnowledgeBases(),
+        fetchMcpServers(),
+      ]);
+      setLlmConfigs(llms);
+      setKnowledgeBases(kbs);
+      // 基于服务器及其内嵌工具生成树形数据（与通用智能体一致）
+      const treeData: any[] = (servers || []).map((srv: any) => ({
+        title: srv.display_name || srv.name,
+        key: `server_${srv.id}`,
+        value: `server_${srv.id}`,
+        children: (srv.tools || []).map((tool: any) => ({
+          title: tool.display_name || tool.name,
+          key: `${srv.name}_${tool.name}`,
+          value: `${srv.name}_${tool.name}`,
+          isLeaf: true,
+        }))
+      }));
+      setToolTreeData(treeData);
+
+      // 编辑模式下进一步获取最新的智能体配置
+      if (currentAgentId) {
+        try {
+          const detail = await axios.get(API_PATHS.AGENT_BY_ID(currentAgentId));
+          const ag = detail.data || {};
+          console.log('从数据库获取的智能体配置:', ag);
+          
+          const normalizedBoundTools = Array.isArray(ag.bound_tools)
+            ? ag.bound_tools
+                .map((t: any) => typeof t === 'string' ? t : (t && t.server && t.tool ? `${t.server}_${t.tool}` : null))
+                .filter((v: any) => !!v)
+            : [];
+          
+          const formValues = {
+            llm_config_id: ag.llm_config_id || undefined,
+            bound_tools: normalizedBoundTools,
+            bound_knowledge_bases: Array.isArray(ag.bound_knowledge_bases) ? ag.bound_knowledge_bases : []
+          };
+          
+          console.log('设置表单值:', formValues);
+          settingsForm.setFieldsValue(formValues);
+        } catch (e) {
+          console.error('获取智能体配置失败:', e);
+        }
+      } else {
+        // 新建模式下，设置默认值
+        settingsForm.setFieldsValue({
+          llm_config_id: undefined,
+          bound_tools: [],
+          bound_knowledge_bases: []
+        });
+      }
+    } catch (e) {
+      console.error(e);
+      message.error('加载设置失败');
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const closeSettings = () => setSettingsVisible(false);
+
+  // 保存智能体时一并带上设置（除提示词外）
+  // 右侧按钮：保存/更新 智能体（flow_driven）
+  const saveAgent = async () => {
+    if (!flowName.trim()) {
+      message.error('请输入流程图名称');
+      return;
+    }
+    try {
+      setLoading(true);
+      const flowConfig = {
+        nodes: nodes.map(node => ({
+          id: node.id,
+          type: node.data.nodeType,
+          position: node.position,
+          data: { ...node.data, isStartNode: node.data.isStartNode || false }
+        })),
+        edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+        metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
+      };
+
+      // 从设置表单获取配置
+      const settings = await settingsForm.validateFields();
+      console.log('获取到的设置数据:', settings);
+      
+      const payloadBase: any = {
+        display_name: flowName,
+        description: flowDescription,
+        agent_type: 'flow_driven',
+        flow_config: flowConfig,
+      };
+      
+      // 添加设置配置到提交数据
+      if (settings) {
+        if (typeof settings.llm_config_id !== 'undefined') {
+          payloadBase.llm_config_id = settings.llm_config_id;
+          console.log('设置 LLM 配置 ID:', settings.llm_config_id);
+        }
+        if (Array.isArray(settings.bound_tools)) {
+          payloadBase.bound_tools = settings.bound_tools;
+          console.log('设置绑定工具:', settings.bound_tools);
+        }
+        if (Array.isArray(settings.bound_knowledge_bases)) {
+          payloadBase.bound_knowledge_bases = settings.bound_knowledge_bases;
+          console.log('设置绑定知识库:', settings.bound_knowledge_bases);
+        }
+      }
+      
+      console.log('最终提交的数据:', payloadBase);
+
+      if (currentAgentId) {
+        // 更新现有智能体
+        const response = await fetch(API_PATHS.AGENT_BY_ID(currentAgentId), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payloadBase)
+        });
+        if (response.ok) {
+          message.success('智能体已更新');
+          // 重新加载智能体信息以确认更新
+          try {
+            const detail = await axios.get(API_PATHS.AGENT_BY_ID(currentAgentId));
+            console.log('更新后的智能体数据:', detail.data);
+          } catch (e) {
+            console.log('重新加载智能体信息失败:', e);
+          }
+        } else {
+          const error = await response.json();
+          message.error(`更新智能体失败: ${error.detail || '未知错误'}`);
+        }
+      } else {
+        // 创建新智能体
+        const response = await fetch(API_PATHS.AGENTS, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: (flowName || 'agent') + '_' + Date.now(),
+            ...payloadBase
+          })
+        });
+        if (response.ok) {
+          const result = await response.json();
+          setCurrentAgentId(result.id);
+          message.success('智能体已创建');
+        } else {
+          const error = await response.json();
+          message.error(`创建智能体失败: ${error.detail || '未知错误'}`);
+        }
+      }
+    } catch (e) {
+      console.error('保存智能体失败:', e);
+      message.error('保存智能体失败');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const onConnect = useCallback(
@@ -744,77 +943,6 @@ const FlowEditorPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  // 右侧按钮：保存/更新 智能体（flow_driven）
-  const saveAgent = async () => {
-    if (!flowName.trim()) {
-      message.error('请输入流程图名称');
-      return;
-    }
-    try {
-      setLoading(true);
-      const flowConfig = {
-        nodes: nodes.map(node => ({
-          id: node.id,
-          type: node.data.nodeType,
-          position: node.position,
-          data: { ...node.data, isStartNode: node.data.isStartNode || false }
-        })),
-        edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
-        metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
-      };
-      if (currentAgentId) {
-        // 更新现有智能体
-        const response = await fetch(API_PATHS.AGENT_BY_ID(currentAgentId), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            display_name: flowName,
-            description: flowDescription,
-            agent_type: 'flow_driven',
-            flow_config: flowConfig
-          })
-        });
-        if (response.ok) {
-          message.success('智能体已更新');
-        } else {
-          const error = await response.json();
-          message.error(`更新智能体失败: ${error.detail || '未知错误'}`);
-        }
-      } else {
-        // 创建新智能体
-        const response = await fetch(API_PATHS.AGENTS, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: (flowName || 'agent') + '_' + Date.now(),
-            display_name: flowName || '新流程智能体',
-            description: flowDescription || '',
-            agent_type: 'flow_driven',
-            flow_config: flowConfig
-          })
-        });
-        if (response.ok) {
-          const result = await response.json();
-          setCurrentAgentId(result.id);
-          message.success('智能体已创建');
-        } else {
-          const error = await response.json();
-          message.error(`创建智能体失败: ${error.detail || '未知错误'}`);
-        }
-      }
-    } catch (e) {
-      console.error(e);
-      message.error('保存智能体失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const openSettings = () => {
-    // 打开设置抽屉或模态框
-    message.info('设置功能开发中...');
   };
 
   const deleteFlow = async (flowId: number) => {
@@ -1344,6 +1472,94 @@ const FlowEditorPage: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* 设置抽屉（除提示词外） */}
+      <Drawer
+        title="智能体设置"
+        placement="right"
+        width={520}
+        open={settingsVisible}
+        onClose={closeSettings}
+        destroyOnClose
+      >
+        <Form layout="vertical" form={settingsForm}>
+          <Form.Item name="llm_config_id" label="LLM配置" extra="选择智能体使用的LLM配置（可选）">
+            <Select placeholder="选择LLM配置（可选）" allowClear loading={settingsLoading}>
+              {llmConfigs.map((cfg: any) => (
+                <Select.Option key={cfg.id} value={cfg.id}>
+                  <Space>
+                    {cfg.display_name || cfg.name}
+                    {cfg.provider && <Tag color="blue">{cfg.provider}</Tag>}
+                    {cfg.model_name && <Tag color="green">{cfg.model_name}</Tag>}
+                    {cfg.is_default && <Tag color="orange">默认</Tag>}
+                  </Space>
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+
+          <Form.Item name="bound_tools" label="绑定工具" extra="选择智能体可用工具（可选，多选）">
+            <TreeSelect
+              treeData={toolTreeData}
+              placeholder="选择要绑定的工具"
+              treeCheckable
+              showCheckedStrategy={TreeSelect.SHOW_CHILD}
+              allowClear
+              style={{ width: '100%' }}
+              dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+              treeDefaultExpandAll
+            />
+          </Form.Item>
+
+          <Form.Item name="bound_knowledge_bases" label="绑定知识库" extra="选择智能体可查询的知识库（可多选）">
+            <Select
+              mode="multiple"
+              placeholder="选择知识库"
+              allowClear
+              loading={settingsLoading}
+              options={(knowledgeBases || []).map((kb: any) => ({
+                label: kb.display_name || kb.name,
+                value: kb.id
+              }))}
+            />
+          </Form.Item>
+
+          <Divider />
+          <Space>
+            <Button onClick={closeSettings}>取消</Button>
+            <Button type="primary" loading={settingsSubmitting} onClick={async () => {
+              if (!currentAgentId) {
+                message.warning('请先保存智能体后再更新设置');
+                return;
+              }
+              try {
+                setSettingsSubmitting(true);
+                const values = await settingsForm.validateFields();
+                const payload: any = {};
+                if (typeof values.llm_config_id !== 'undefined') payload.llm_config_id = values.llm_config_id;
+                if (Array.isArray(values.bound_tools)) payload.bound_tools = values.bound_tools;
+                if (Array.isArray(values.bound_knowledge_bases)) payload.bound_knowledge_bases = values.bound_knowledge_bases;
+                const resp = await fetch(API_PATHS.AGENT_BY_ID(currentAgentId), {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload)
+                });
+                if (resp.ok) {
+                  message.success('设置已更新');
+                  closeSettings();
+                } else {
+                  const err = await resp.json().catch(() => ({}));
+                  message.error(`更新失败: ${err.detail || '未知错误'}`);
+                }
+              } catch (e) {
+                console.error(e);
+              } finally {
+                setSettingsSubmitting(false);
+              }
+            }}>确定</Button>
+          </Space>
+        </Form>
+      </Drawer>
 
       {/* 导入流程 JSON 模态框 */}
       <Modal

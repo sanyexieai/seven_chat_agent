@@ -198,6 +198,78 @@ const ActionNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
+const LlmNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#e8f5e9', position: 'relative' }}>
+    <Handle type="target" position={Position.Top} />
+    <div style={{ textAlign: 'center' }}>
+      <RobotOutlined style={{ fontSize: '20px', color: '#389e0d' }} />
+      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
+  </div>
+);
+
+const ToolNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fffbe6', position: 'relative' }}>
+    <Handle type="target" position={Position.Top} />
+    <div style={{ textAlign: 'center' }}>
+      <SettingOutlined style={{ fontSize: '20px', color: '#d48806' }} />
+      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
+  </div>
+);
+
 const InputNode = ({ data, id }: { data: any; id: string }) => (
   <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#e6f7ff', position: 'relative' }}>
     <div style={{ textAlign: 'center' }}>
@@ -271,7 +343,9 @@ const OutputNode = ({ data, id }: { data: any; id: string }) => (
 const nodeTypes: NodeTypes = {
   agent: AgentNode,
   condition: ConditionNode,
-  action: ActionNode
+  action: ActionNode,
+  llm: LlmNode,
+  tool: ToolNode
 };
 
 const FlowEditorPage: React.FC = () => {
@@ -289,6 +363,9 @@ const FlowEditorPage: React.FC = () => {
   const [configForm] = Form.useForm();
   const [isStartNode, setIsStartNode] = useState(false);
   const [configModalVisible, setConfigModalVisible] = useState(false);
+  const [importModalVisible, setImportModalVisible] = useState(false);
+  const [importJsonText, setImportJsonText] = useState('');
+  const [currentAgentId, setCurrentAgentId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchAgents();
@@ -425,8 +502,8 @@ const FlowEditorPage: React.FC = () => {
       console.log('agent.flow_config:', agent.flow_config);
     }
     
-    // 设置当前智能体ID（用于后续保存）
-    setCurrentFlowId(agent.id);
+    // 记录当前正在编辑的智能体ID
+    setCurrentAgentId(agent.id);
     console.log('设置当前智能体ID:', agent.id);
     
     message.success(`已加载智能体: ${agent.display_name || agent.name}`);
@@ -457,6 +534,8 @@ const FlowEditorPage: React.FC = () => {
       case 'agent': return '智能体';
       case 'condition': return '条件';
       case 'action': return '动作';
+      case 'llm': return 'LLM';
+      case 'tool': return '工具';
       case 'input': return '输入';
       case 'output': return '输出';
       default: return '节点';
@@ -471,6 +550,13 @@ const FlowEditorPage: React.FC = () => {
       agent_name: node.data.config?.agent_name || '',
       condition: node.data.config?.condition || '',
       action: node.data.config?.action || '',
+      system_prompt: node.data.nodeType === 'llm' ? (node.data.config?.system_prompt || '') : undefined,
+      user_prompt: node.data.nodeType === 'llm' ? (node.data.config?.user_prompt || '') : undefined,
+      save_as: node.data.nodeType === 'llm' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'tool' ? (node.data.config?.save_as || 'last_output') : undefined),
+      server: node.data.nodeType === 'tool' ? (node.data.config?.server || '') : undefined,
+      tool: node.data.nodeType === 'tool' ? (node.data.config?.tool || '') : undefined,
+      params: node.data.nodeType === 'tool' ? (typeof node.data.config?.params === 'object' ? JSON.stringify(node.data.config?.params, null, 2) : (node.data.config?.params || '')) : undefined,
+      append_to_output: node.data.nodeType === 'tool' ? (node.data.config?.append_to_output !== false) : undefined,
       config: JSON.stringify(node.data.config || {}, null, 2)
     });
     setConfigModalVisible(true);
@@ -501,6 +587,25 @@ const FlowEditorPage: React.FC = () => {
       } else if (selectedNode.data.nodeType === 'action') {
         // 保留动作相关配置
         config.action = values.action;
+      } else if (selectedNode.data.nodeType === 'llm') {
+        // LLM 节点配置
+        config.system_prompt = values.system_prompt || '';
+        config.user_prompt = values.user_prompt || '{{message}}';
+        if (values.save_as) config.save_as = values.save_as;
+      } else if (selectedNode.data.nodeType === 'tool') {
+        // 工具 节点配置
+        if (values.server) config.server = values.server;
+        if (values.tool) config.tool = values.tool;
+        if (typeof values.append_to_output !== 'undefined') config.append_to_output = !!values.append_to_output;
+        if (values.save_as) config.save_as = values.save_as;
+        if (typeof values.params !== 'undefined') {
+          try {
+            const parsed = JSON.parse(values.params);
+            config.params = parsed;
+          } catch (e) {
+            config.params = values.params; // 允许简单字符串
+          }
+        }
       }
       
       setNodes((nds) =>
@@ -533,6 +638,7 @@ const FlowEditorPage: React.FC = () => {
     message.success('节点已删除');
   };
 
+  // 左侧保存：若已有 flowId 则更新流程；否则创建新流程
   const saveFlow = async () => {
     if (!flowName.trim()) {
       message.error('请输入流程图名称');
@@ -546,65 +652,49 @@ const FlowEditorPage: React.FC = () => {
           id: node.id,
           type: node.data.nodeType,
           position: node.position,
-          data: {
-            ...node.data,
-            isStartNode: node.data.isStartNode || false
-          }
+          data: { ...node.data, isStartNode: node.data.isStartNode || false }
         })),
-        edges: edges.map(edge => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          type: edge.type
-        })),
-        metadata: {
-          name: flowName,
-          description: flowDescription,
-          version: '1.0.0'
-        }
+        edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+        metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
       };
 
-      // 如果有当前智能体ID，说明是编辑模式，更新智能体
+      // 左侧保存：若已有 flowId 则更新流程；否则创建新流程
       if (currentFlowId) {
-        const response = await fetch(API_PATHS.AGENT_BY_ID(currentFlowId), {
+        const response = await fetch(API_PATHS.FLOW_BY_ID(currentFlowId), {
           method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             display_name: flowName,
             description: flowDescription,
             flow_config: flowConfig
-          }),
+          })
         });
-
         if (response.ok) {
-          message.success('智能体已更新');
-          console.log('更新结果:', response);
+          const result = await response.json();
+          message.success('流程图已更新');
+          console.log('更新结果:', result);
+          try { fetchFlows(); } catch (e) { /* noop */ }
         } else {
           const error = await response.json();
           message.error(`更新失败: ${error.detail || '未知错误'}`);
         }
       } else {
-        // 否则创建新的流程图
         const response = await fetch(API_PATHS.FLOWS, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name: flowName,
-            display_name: flowName,
-            description: flowDescription,
+            name: flowName || `flow_${Date.now()}`,
+            display_name: flowName || '新流程',
+            description: flowDescription || '',
             flow_config: flowConfig
-          }),
+          })
         });
-
         if (response.ok) {
           const result = await response.json();
           setCurrentFlowId(result.id);
           message.success('流程图已保存');
           console.log('保存结果:', result);
+          try { fetchFlows(); } catch (e) { /* noop */ }
         } else {
           const error = await response.json();
           message.error(`保存失败: ${error.detail || '未知错误'}`);
@@ -651,6 +741,72 @@ const FlowEditorPage: React.FC = () => {
     } catch (error) {
       console.error('测试流程图失败:', error);
       message.error('测试流程图失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 右侧按钮：保存/更新 智能体（flow_driven）
+  const saveAgent = async () => {
+    if (!flowName.trim()) {
+      message.error('请输入流程图名称');
+      return;
+    }
+    try {
+      setLoading(true);
+      const flowConfig = {
+        nodes: nodes.map(node => ({
+          id: node.id,
+          type: node.data.nodeType,
+          position: node.position,
+          data: { ...node.data, isStartNode: node.data.isStartNode || false }
+        })),
+        edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+        metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
+      };
+      if (currentAgentId) {
+        // 更新现有智能体
+        const response = await fetch(API_PATHS.AGENT_BY_ID(currentAgentId), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            display_name: flowName,
+            description: flowDescription,
+            agent_type: 'flow_driven',
+            flow_config: flowConfig
+          })
+        });
+        if (response.ok) {
+          message.success('智能体已更新');
+        } else {
+          const error = await response.json();
+          message.error(`更新智能体失败: ${error.detail || '未知错误'}`);
+        }
+      } else {
+        // 创建新智能体
+        const response = await fetch(API_PATHS.AGENTS, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: (flowName || 'agent') + '_' + Date.now(),
+            display_name: flowName || '新流程智能体',
+            description: flowDescription || '',
+            agent_type: 'flow_driven',
+            flow_config: flowConfig
+          })
+        });
+        if (response.ok) {
+          const result = await response.json();
+          setCurrentAgentId(result.id);
+          message.success('智能体已创建');
+        } else {
+          const error = await response.json();
+          message.error(`创建智能体失败: ${error.detail || '未知错误'}`);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      message.error('保存智能体失败');
     } finally {
       setLoading(false);
     }
@@ -823,6 +979,62 @@ const FlowEditorPage: React.FC = () => {
             <Title level={3} style={{ margin: 0 }}>
               {currentMode === 'edit' ? '编辑流程图智能体' : '流程图编辑器'}
             </Title>
+            <Space style={{ marginTop: 8 }}>
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                onClick={saveFlow}
+                loading={loading}
+              >
+                保存流程图
+              </Button>
+              <Button
+                icon={<SaveOutlined />}
+                onClick={async () => {
+                  // 强制走创建流程，而不是更新
+                  try {
+                    setLoading(true);
+                    const flowConfig = {
+                      nodes: nodes.map(node => ({
+                        id: node.id,
+                        type: node.data.nodeType,
+                        position: node.position,
+                        data: { ...node.data, isStartNode: node.data.isStartNode || false }
+                      })),
+                      edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+                      metadata: { name: flowName || '新流程', description: flowDescription || '', version: '1.0.0' }
+                    };
+                    const response = await fetch(API_PATHS.FLOWS, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        name: (flowName || 'new_flow') + '_' + Date.now(),
+                        display_name: flowName || '新流程',
+                        description: flowDescription || '',
+                        flow_config: flowConfig
+                      }),
+                    });
+                    if (response.ok) {
+                      const result = await response.json();
+                      setCurrentFlowId(result.id);
+                      setCurrentMode('create');
+                      message.success('已另存为新流程图');
+                      fetchFlows();
+                    } else {
+                      const error = await response.json();
+                      message.error(`另存失败: ${error.detail || '未知错误'}`);
+                    }
+                  } catch (e) {
+                    console.error(e);
+                    message.error('另存失败');
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                另存为新流程图
+              </Button>
+            </Space>
           </Col>
           <Col>
             <Space direction="vertical" size="small" style={{ width: '100%' }}>
@@ -833,13 +1045,13 @@ const FlowEditorPage: React.FC = () => {
                   onChange={(e) => setFlowName(e.target.value)}
                   style={{ width: 200 }}
                 />
-                              <Button
+                <Button
                 type="primary"
                 icon={<SaveOutlined />}
-                onClick={saveFlow}
+                onClick={saveAgent}
                 loading={loading}
               >
-                {currentMode === 'edit' ? '更新智能体' : '保存流程图'}
+                {currentAgentId ? '更新智能体' : '保存智能体'}
               </Button>
               </Space>
               <Input.TextArea
@@ -876,6 +1088,9 @@ const FlowEditorPage: React.FC = () => {
               )}
               <Button icon={<DeleteOutlined />} onClick={clearFlow}>
                 清空
+              </Button>
+              <Button icon={<ImportOutlined />} onClick={() => setImportModalVisible(true)}>
+                导入JSON
               </Button>
               <Button 
                 type="primary" 
@@ -918,6 +1133,13 @@ const FlowEditorPage: React.FC = () => {
               智能体节点
             </Button>
             <Button
+              icon={<RobotOutlined />}
+              block
+              onClick={() => addNode('llm', { x: 100, y: 150 })}
+            >
+              LLM 节点
+            </Button>
+            <Button
               icon={<BranchesOutlined />}
               block
               onClick={() => addNode('condition', { x: 100, y: 200 })}
@@ -930,6 +1152,13 @@ const FlowEditorPage: React.FC = () => {
               onClick={() => addNode('action', { x: 100, y: 300 })}
             >
               动作节点
+            </Button>
+            <Button
+              icon={<SettingOutlined />}
+              block
+              onClick={() => addNode('tool', { x: 100, y: 350 })}
+            >
+              工具节点
             </Button>
           </Space>
 
@@ -1071,6 +1300,42 @@ const FlowEditorPage: React.FC = () => {
             </Form.Item>
           )}
 
+          {selectedNode?.data.nodeType === 'llm' && (
+            <>
+              <Form.Item name="system_prompt" label="系统提示词">
+                <Input.TextArea rows={3} placeholder="可选：系统提示词，支持 {{message}} 与 {{last_output}} 模板" />
+              </Form.Item>
+              <Form.Item name="user_prompt" label="用户提示词" rules={[{ required: true, message: '请输入用户提示词' }]}
+              >
+                <Input.TextArea rows={3} placeholder="必填：用户提示词，默认 {{message}}" />
+              </Form.Item>
+              <Form.Item name="save_as" label="保存变量名">
+                <Input placeholder="默认 last_output" />
+              </Form.Item>
+            </>
+          )}
+
+          {selectedNode?.data.nodeType === 'tool' && (
+            <>
+              <Form.Item name="server" label="服务名">
+                <Input placeholder="例如：ddg（可选，若工具名为 server_tool 可省略）" />
+              </Form.Item>
+              <Form.Item name="tool" label="工具名" rules={[{ required: true, message: '请输入工具名' }]}
+              >
+                <Input placeholder="例如：search 或 ddg_search" />
+              </Form.Item>
+              <Form.Item name="params" label="参数（JSON或字符串）">
+                <Input.TextArea rows={3} placeholder='例如：{"query": "{{message}}"}' />
+              </Form.Item>
+              <Form.Item name="append_to_output" label="附加到输出" valuePropName="checked">
+                <Checkbox defaultChecked>将结果附加到 last_output</Checkbox>
+              </Form.Item>
+              <Form.Item name="save_as" label="保存变量名">
+                <Input placeholder="默认 last_output" />
+              </Form.Item>
+            </>
+          )}
+
           <Form.Item
             name="config"
             label="高级配置"
@@ -1078,6 +1343,54 @@ const FlowEditorPage: React.FC = () => {
             <Input.TextArea rows={4} placeholder="请输入节点配置（JSON格式）" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 导入流程 JSON 模态框 */}
+      <Modal
+        title="导入流程JSON"
+        open={importModalVisible}
+        onOk={async () => {
+          try {
+            const parsed = JSON.parse(importJsonText);
+            // 允许两种形态：完整 flow_config 或仅 nodes/edges
+            const flowConfig = {
+              nodes: parsed.nodes || (parsed.flow_config && parsed.flow_config.nodes) || [],
+              edges: parsed.edges || (parsed.flow_config && parsed.flow_config.edges) || [],
+              metadata: parsed.metadata || parsed.flow_config?.metadata || {}
+            } as any;
+            if (!Array.isArray(flowConfig.nodes) || !Array.isArray(flowConfig.edges)) {
+              message.error('JSON 格式不正确：缺少 nodes/edges');
+              return;
+            }
+            // 应用到编辑器
+            if (flowConfig.metadata?.name) setFlowName(flowConfig.metadata.name);
+            if (typeof flowConfig.metadata?.description === 'string') setFlowDescription(flowConfig.metadata.description);
+            const nodesWithDelete = flowConfig.nodes.map((node: any) => ({
+              ...node,
+              data: {
+                ...node.data,
+                onDelete: deleteNode
+              }
+            }));
+            setNodes(nodesWithDelete);
+            setEdges(flowConfig.edges);
+            setImportModalVisible(false);
+            setImportJsonText('');
+            message.success('流程JSON已导入');
+          } catch (e) {
+            console.error(e);
+            message.error('解析JSON失败，请检查格式');
+          }
+        }}
+        onCancel={() => setImportModalVisible(false)}
+        width={700}
+      >
+        <Input.TextArea
+          rows={12}
+          value={importJsonText}
+          onChange={(e) => setImportJsonText(e.target.value)}
+          placeholder="粘贴 flow_config JSON（包含 nodes/edges/metadata）"
+        />
       </Modal>
     </div>
   );

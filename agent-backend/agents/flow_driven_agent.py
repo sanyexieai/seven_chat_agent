@@ -15,6 +15,8 @@ class NodeType(str, Enum):
     AGENT = "agent"           # 智能体节点
     CONDITION = "condition"    # 条件节点
     ACTION = "action"         # 动作节点
+    LLM = "llm"               # LLM 调用节点
+    TOOL = "tool"             # 工具调用节点
 
 class FlowNode:
     """流程图节点"""
@@ -176,11 +178,159 @@ class FlowDrivenAgent(BaseAgent):
                 return await self._execute_condition_node(node, user_id, message, context)
             elif node.type == NodeType.ACTION:
                 return await self._execute_action_node(node, user_id, message, context)
+            elif node.type == NodeType.LLM:
+                return await self._execute_llm_node(node, user_id, message, context)
+            elif node.type == NodeType.TOOL:
+                return await self._execute_tool_node(node, user_id, message, context)
             else:
                 raise ValueError(f"不支持的节点类型: {node.type}")
         except Exception as e:
             logger.error(f"执行节点 {node_id} 失败: {str(e)}")
             raise
+
+    def _get_flow_state(self, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """从上下文获取/初始化流程状态容器。"""
+        if context is None:
+            context = {}
+        state = context.get('flow_state')
+        if state is None:
+            state = {}
+            context['flow_state'] = state
+        return state
+
+    def _render_template_value(self, value: Any, variables: Dict[str, Any]) -> Any:
+        """渲染字符串中的 {{var}} 模板；对 dict/list 递归处理。"""
+        if isinstance(value, str):
+            result = value
+            for k, v in variables.items():
+                placeholder = f"{{{{{k}}}}}"
+                try:
+                    result = result.replace(placeholder, str(v))
+                except Exception:
+                    pass
+            return result
+        if isinstance(value, dict):
+            return {k: self._render_template_value(v, variables) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._render_template_value(v, variables) for v in value]
+        return value
+
+    async def _execute_llm_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
+        """执行 LLM 节点。
+        配置：
+        - system_prompt: 可选，系统提示词模板
+        - user_prompt: 可选，用户提示词模板；若缺省则使用传入 message
+        - save_as: 可选，将输出保存到 flow_state 的变量名，默认 'last_output'
+        """
+        flow_state = self._get_flow_state(context)
+        variables = {**flow_state, 'message': message}
+        system_prompt = self._render_template_value(node.config.get('system_prompt', ''), variables)
+        user_prompt = self._render_template_value(node.config.get('user_prompt', message), variables)
+        save_as = node.config.get('save_as', 'last_output')
+        
+        logger.info(f"LLM节点 {node.id} 开始执行")
+        try:
+            if system_prompt:
+                content = await self.llm_helper.call(messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ])
+            else:
+                content = await self.llm_helper.call(messages=[
+                    {"role": "user", "content": user_prompt}
+                ])
+            flow_state[save_as] = content
+            flow_state['last_output'] = content
+            logger.info(f"LLM节点 {node.id} 执行完成，保存为 {save_as}")
+        except Exception as e:
+            logger.error(f"LLM节点执行失败: {str(e)}")
+            content = f"LLM节点执行失败: {str(e)}"
+            flow_state[save_as] = content
+            flow_state['last_output'] = content
+        
+        # 跳转到下一个节点或返回
+        if node.connections:
+            next_node_id = node.connections[0]
+            return await self._execute_node(next_node_id, user_id, message, context)
+        return AgentMessage(
+            id=str(uuid.uuid4()),
+            type=MessageType.AGENT,
+            content=flow_state['last_output'],
+            agent_name=self.name,
+            metadata={'node_id': node.id, 'node_type': node.type.value}
+        )
+
+    async def _execute_tool_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
+        """执行 工具 节点。
+        配置：
+        - server: 服务名（可选，如果工具名包含 server_ 前缀可缺省）
+        - tool: 工具名（必填）
+        - params: dict/str 参数模板，支持 {{message}} / {{last_output}} / 其它 flow_state 变量
+        - save_as: 可选，保存结果变量名，默认 'last_output'
+        - append_to_output: bool，可选，是否将结果附加到 last_output（默认 True）
+        """
+        flow_state = self._get_flow_state(context)
+        variables = {**flow_state, 'message': message}
+        server = self._render_template_value(node.config.get('server'), variables)
+        tool = self._render_template_value(node.config.get('tool'), variables)
+        raw_params = node.config.get('params', {})
+        params = self._render_template_value(raw_params, variables)
+        save_as = node.config.get('save_as', 'last_output')
+        append_to_output = node.config.get('append_to_output', True)
+        
+        if not tool:
+            raise ValueError(f"工具节点 {node.id} 未配置 tool 名称")
+        
+        try:
+            from main import agent_manager
+            if not agent_manager or not getattr(agent_manager, 'mcp_helper', None):
+                raise RuntimeError("MCP助手未初始化")
+            mcp_helper = agent_manager.mcp_helper
+            actual_server = server
+            actual_tool = tool
+            # 如果 tool 类似 server_tool 合并在一起，则拆分
+            if '_' in tool and not server:
+                parts = tool.split('_', 1)
+                actual_server = parts[0]
+                actual_tool = parts[1]
+            if not actual_server:
+                # 若仍无服务名，选第一个可用服务
+                services = await mcp_helper.get_available_services()
+                if not services:
+                    raise RuntimeError("没有可用的MCP服务")
+                actual_server = services[0]
+            logger.info(f"工具节点 {node.id} 调用: {actual_server}.{actual_tool} 参数: {params}")
+            result = await mcp_helper.call_tool(server_name=actual_server, tool_name=actual_tool, **(params if isinstance(params, dict) else {"query": str(params)}))
+            try:
+                serializable = json.dumps(result, ensure_ascii=False)
+                result_text = serializable
+            except Exception:
+                result_text = str(result)
+            
+            # 保存结果
+            flow_state[save_as] = result
+            if append_to_output:
+                prev = str(flow_state.get('last_output', ''))
+                flow_state['last_output'] = f"{prev}\n\n🔧 工具 {actual_server}_{actual_tool} 结果:\n{result_text}" if prev else result_text
+            else:
+                flow_state['last_output'] = result_text
+            logger.info(f"工具节点 {node.id} 执行完成，结果已保存为 {save_as}")
+        except Exception as e:
+            logger.error(f"工具节点执行失败: {str(e)}")
+            flow_state['last_output'] = f"工具节点执行失败: {str(e)}"
+            flow_state[save_as] = None
+        
+        # 跳转到下一个节点或返回
+        if node.connections:
+            next_node_id = node.connections[0]
+            return await self._execute_node(next_node_id, user_id, message, context)
+        return AgentMessage(
+            id=str(uuid.uuid4()),
+            type=MessageType.AGENT,
+            content=str(flow_state.get('last_output', '')),
+            agent_name=self.name,
+            metadata={'node_id': node.id, 'node_type': node.type.value}
+        )
     
     async def _execute_agent_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
         """执行智能体节点"""
@@ -199,9 +349,8 @@ class FlowDrivenAgent(BaseAgent):
             else:
                 # 如果找不到智能体，使用LLM模拟
                 prompt = f"作为智能体 '{agent_name}'，请处理以下用户消息：\n{message}"
-                response = await self.llm_helper.chat_completion(
-                    messages=[{"role": "user", "content": prompt}],
-                    stream=False
+                response = await self.llm_helper.call(
+                    messages=[{"role": "user", "content": prompt}]
                 )
                 
                 return AgentMessage(
@@ -221,13 +370,20 @@ class FlowDrivenAgent(BaseAgent):
         if not condition:
             raise ValueError(f"条件节点 {node.id} 未配置条件")
         
-        # 使用LLM判断条件
-        prompt = f"判断以下条件是否成立：\n条件：{condition}\n用户消息：{message}\n请回答 'true' 或 'false'"
+        # 使用LLM判断条件，支持引用 flow_state
+        flow_state = self._get_flow_state(context)
+        variables = {**flow_state, 'message': message}
+        rendered_condition = self._render_template_value(condition, variables)
+        prompt = (
+            "请基于以下信息判断条件是否成立，严格只回答 true 或 false。\n"
+            f"条件：{rendered_condition}\n"
+            f"用户消息：{message}\n"
+            f"流程状态（JSON）：{json.dumps(flow_state, ensure_ascii=False)}\n"
+        )
         
         try:
-            response = await self.llm_helper.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                stream=False
+            response = await self.llm_helper.call(
+                messages=[{"role": "user", "content": prompt}]
             )
             
             # 解析结果

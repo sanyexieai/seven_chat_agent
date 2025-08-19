@@ -46,7 +46,7 @@ async def get_flow(flow_id: int, db: Session = Depends(get_db)):
             detail=f"获取流程图失败: {str(e)}"
         )
 
-@router.post("/", response_model=FlowResponse)
+@router.post("", response_model=FlowResponse)
 async def create_flow(flow: FlowCreate, db: Session = Depends(get_db)):
     """创建流程图"""
     try:
@@ -86,6 +86,7 @@ async def create_flow(flow: FlowCreate, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"创建流程图失败: {str(e)}"
         )
+
 
 @router.put("/{flow_id}", response_model=FlowResponse)
 async def update_flow(flow_id: int, flow: FlowUpdate, db: Session = Depends(get_db)):

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { API_PATHS } from '../config/api';
 import {
   Card,
@@ -21,6 +21,7 @@ import {
 } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import { apiConfigManager, getApiUrl } from '../utils/apiConfig';
+import './ChatPage.css';
 
 const { TextArea } = Input;
 const { Title, Paragraph } = Typography;
@@ -50,11 +51,19 @@ const AgentTestPage: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // 初始化API配置
   useEffect(() => {
     apiConfigManager.initialize();
   }, []);
+
+  // 自动滚动到底部
+  useEffect(() => {
+    try {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    } catch {}
+  }, [messages, loading, streaming]);
 
   useEffect(() => {
     fetchAgents();
@@ -112,7 +121,7 @@ const AgentTestPage: React.FC = () => {
         body: JSON.stringify({
           user_id: 'test_user',
           message: userMessage.content,
-          agent_type: getSelectedAgentName(),
+          agent_name: getSelectedAgentName(),
           context: {}
         }),
       });
@@ -167,7 +176,7 @@ const AgentTestPage: React.FC = () => {
         body: JSON.stringify({
           user_id: 'test_user',
           message: userMessage.content,
-          agent_type: getSelectedAgentName(),
+          agent_name: getSelectedAgentName(),
           context: {}
         }),
       });
@@ -226,7 +235,12 @@ const AgentTestPage: React.FC = () => {
                   );
                   return newMessages;
                 });
-                
+              } else if ((data.type === 'final' || data.type === 'final_response') && data.content) {
+                // 最终响应内容
+                fullContent = data.content;
+                setMessages(prev => prev.map(msg => 
+                  msg.id === agentMessage.id ? { ...msg, content: fullContent } : msg
+                ));
               } else if (data.type === 'done') {
                 console.log('流式响应完成，使用的工具:', data.tools_used);
                 
@@ -350,7 +364,9 @@ const AgentTestPage: React.FC = () => {
                       background: message.type === 'user' ? '#f0f8ff' : '#f6ffed',
                       padding: '12px',
                       borderRadius: '8px',
-                      border: `1px solid ${message.type === 'user' ? '#d6e4ff' : '#b7eb8f'}`
+                      border: `1px solid ${message.type === 'user' ? '#d6e4ff' : '#b7eb8f'}`,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word'
                     }}>
                       {message.content}
                     </div>
@@ -362,6 +378,7 @@ const AgentTestPage: React.FC = () => {
               </List.Item>
             )}
           />
+          <div ref={messagesEndRef} />
           {(loading || streaming) && (
             <div style={{ display: 'flex', alignItems: 'center', padding: '12px' }}>
               <LoadingOutlined style={{ marginRight: '8px' }} />

@@ -374,6 +374,20 @@ class AgentManager:
                     # 流程图驱动智能体
                     logger.info(f"加载流程图驱动智能体 {db_agent.name}，流程图: {db_agent.flow_config}")
                     agent = FlowDrivenAgent(db_agent.name, db_agent.display_name, db_agent.flow_config)
+                    # 注入绑定工具（server_tool 字符串数组）
+                    try:
+                        if db_agent.bound_tools and hasattr(agent, 'bound_tools'):
+                            # 归一化为字符串
+                            norm = []
+                            for t in db_agent.bound_tools:
+                                if isinstance(t, str):
+                                    norm.append(t)
+                                elif isinstance(t, dict) and t.get('server') and t.get('tool'):
+                                    norm.append(f"{t['server']}_{t['tool']}")
+                            agent.bound_tools = norm
+                            logger.info(f"流程图智能体 {db_agent.name} 注入绑定工具: {len(norm)} 个")
+                    except Exception as e:
+                        logger.warning(f"注入绑定工具失败: {str(e)}")
                 else:
                     # 默认使用通用智能体
                     agent = GeneralAgent(db_agent.name, db_agent.display_name, "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")

@@ -121,6 +121,21 @@ async def update_agent(
                     from agents.flow_driven_agent import FlowDrivenAgent
                     flow_config = agent_data.flow_config or {}
                     flow_agent = FlowDrivenAgent(agent.name, agent.display_name, flow_config)
+                    # 注入最新绑定工具
+                    try:
+                        if agent.bound_tools and hasattr(flow_agent, 'bound_tools'):
+                            flow_agent.bound_tools = agent.bound_tools
+                            logger.info(f"flow_driven 注入绑定工具: {len(agent.bound_tools)} 个")
+                    except Exception as _:
+                        pass
+                    # 注入 mcp_helper 以便工具可用
+                    try:
+                        from main import agent_manager as _am
+                        if _am and getattr(_am, 'mcp_helper', None):
+                            flow_agent.mcp_helper = _am.mcp_helper
+                            logger.info("flow_driven 已注入 MCP 助手")
+                    except Exception:
+                        pass
                     agent_manager.agents[agent.name] = flow_agent
                     logger.info(f"智能体 {agent.name} 已重新加载到agent_manager")
                 

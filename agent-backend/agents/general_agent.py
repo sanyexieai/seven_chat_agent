@@ -200,6 +200,44 @@ class GeneralAgent(BaseAgent):
             return [ordered[0]]
         return [fallback_call] if fallback_call else []
 
+    async def _should_use_tools(self, user_message: str, draft_answer: str) -> bool:
+        """基于意图识别决定是否需要调用工具。优先用LLM判断，失败则回退启发式判断。"""
+        try:
+            instruction = (
+                "你是一个意图分类器。判定是否需要使用外部工具（如网络搜索、文件读取、结构化检索）。"
+                "只返回JSON：{\"use_tools\": true|false}。当问题可由通识或给定内容直接回答时返回 false；"
+                "当需要最新/实时信息、联网搜索、访问本地/远程文件或结构化数据时返回 true。"
+            )
+            messages = [
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": json.dumps({
+                    "query": user_message,
+                    "draft_answer": draft_answer
+                }, ensure_ascii=False)}
+            ]
+            resp = await self.llm_helper.call(messages=messages)
+            try:
+                parsed = json.loads(resp)
+                return bool(parsed.get("use_tools", False))
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"意图识别失败，使用启发式规则: {str(e)}")
+        return self._heuristic_need_tools(user_message)
+
+    def _heuristic_need_tools(self, user_message: str) -> bool:
+        """启发式判断是否需要工具：出现明显“联网/检索/文件/结构化数据”等意图关键词时启用工具。"""
+        text = (user_message or "").lower()
+        keywords = [
+            "搜索", "查", "最新", "实时", "新闻", "天气", "价格", "股价", "官网", "网址",
+            "http", "www", "下载", "文件", "读取", "路径", "目录", "本地", "csv", "excel",
+            "统计", "图表", "数据库", "sql", "查询"
+        ]
+        for kw in keywords:
+            if kw in text:
+                return True
+        return False
+
     async def _satisfaction_check_and_refine(self, user_message: str, initial_answer: str, tool_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """让LLM评估是否已满足需求，必要时给出改进的查询。返回 { satisfied: bool, refined_query: Optional[str] }"""
         try:
@@ -333,17 +371,20 @@ class GeneralAgent(BaseAgent):
                 logger.warning(f"LLM调用失败，使用模拟响应: {str(e)}")
                 response_content = f"您好！我是{self.name}智能体。我收到了您的消息：'{message}'。如果您需要真实的AI响应，请确保LLM服务正在运行。"
             
-            # 工具阶段：先解析显式调用，否则走默认推断
+            # 工具阶段：显式优先；否则先做意图识别
             tools_used = []
             tool_results_pack = []
             tool_calls = []
             if self.bound_tools:
-                if "TOOL_CALL:" in response_content:
+                explicit = "TOOL_CALL:" in response_content
+                if explicit:
                     tool_calls = self._parse_tool_calls(response_content)
-                if not tool_calls:
-                    tool_calls = self._infer_default_tool_calls(message)
-                    if tool_calls:
-                        logger.info(f"未发现显式工具调用，已自动推断调用: {tool_calls}")
+                else:
+                    use_tools = await self._should_use_tools(message, response_content)
+                    if use_tools:
+                        tool_calls = self._infer_default_tool_calls(message)
+                        if tool_calls:
+                            logger.info(f"意图识别为需要调用工具，自动推断: {tool_calls}")
                 try:
                     if tool_calls:
                         bound_tool_keys, tool_to_server = self._build_tool_mapping()
@@ -468,17 +509,20 @@ class GeneralAgent(BaseAgent):
                     agent_name=self.name
                 )
             
-            # 工具阶段：先解析显式调用，否则走默认推断
+            # 工具阶段：显式优先；否则先做意图识别
             tools_used = []
             tool_results_pack = []
             tool_calls = []
             if self.bound_tools:
-                if "TOOL_CALL:" in full_response:
+                explicit = "TOOL_CALL:" in full_response
+                if explicit:
                     tool_calls = self._parse_tool_calls(full_response)
-                if not tool_calls:
-                    tool_calls = self._infer_default_tool_calls(message)
-                    if tool_calls:
-                        logger.info(f"未发现显式工具调用，已自动推断调用: {tool_calls}")
+                else:
+                    use_tools = await self._should_use_tools(message, full_response)
+                    if use_tools:
+                        tool_calls = self._infer_default_tool_calls(message)
+                        if tool_calls:
+                            logger.info(f"意图识别为需要调用工具，自动推断: {tool_calls}")
                 try:
                     if tool_calls:
                         bound_tool_keys, tool_to_server = self._build_tool_mapping()

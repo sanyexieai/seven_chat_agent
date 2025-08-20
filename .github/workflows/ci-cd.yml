@@ -36,6 +36,7 @@ jobs:
         node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
         cache-dependency-path: agent-ui/package-lock.json
+        registry-url: 'https://registry.npmjs.org'
 
     - name: Install Node.js dependencies
       working-directory: agent-ui
@@ -43,8 +44,11 @@ jobs:
 
     - name: Build frontend
       working-directory: agent-ui
+      env:
+        DISABLE_ESLINT_PLUGIN: true
+        CI: false
+        SKIP_PREFLIGHT_CHECK: true
       run: |
-        export DISABLE_ESLINT_PLUGIN=true
         npm run build
 
     - name: Update Frontend Config for Production

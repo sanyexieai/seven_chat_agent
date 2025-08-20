@@ -1,12 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message, Select, Modal } from 'antd';
-import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined, BulbOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
+import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined, BulbOutlined, EyeOutlined, EyeInvisibleOutlined, MenuUnfoldOutlined, MenuFoldOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
 import ThinkTagRenderer from '../components/ThinkTagRenderer';
 import { API_PATHS } from '../config/api';
 import { getApiUrl, apiConfigManager } from '../utils/apiConfig';
 import './ChatPage.css';
+import WorkspacePanel, { WorkspaceTabItem } from '../components/WorkspacePanel';
 
 const { Header, Content, Sider } = Layout;
 const { TextArea } = Input;
@@ -69,6 +70,15 @@ const ChatPage: React.FC = () => {
       return true;
     }
   });
+
+  // 右侧工作空间：用于展示每次工具执行的结果
+  const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTabItem[]>([
+    { key: 'live_follow', title: '实时跟随', content: '', createdAt: new Date(), closable: false },
+    { key: 'browser', title: '浏览器', content: '这里可展示网页预览或抓取结果', createdAt: new Date(), closable: false },
+    { key: 'files', title: '文件', content: '这里显示相关文件/下载链接', createdAt: new Date(), closable: false },
+  ]);
+  const [activeWorkspaceKey, setActiveWorkspaceKey] = useState<string | undefined>('live_follow');
+  const [workspaceCollapsed, setWorkspaceCollapsed] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
@@ -571,7 +581,26 @@ const ChatPage: React.FC = () => {
                 try {
                   const data = JSON.parse(line.slice(6));
                   
-                  if (data.type === 'final_response' && data.content) {
+                  if (data.type === 'tool_result' && data.content) {
+                    // 收到工具结果：在右侧工作空间新增/更新一个标签
+                    const toolName = data.tool_name || '工具';
+                    const appendText = typeof data.content === 'string' ? data.content : JSON.stringify(data.content);
+                    setWorkspaceTabs(prev => prev.map(t => 
+                      t.key === 'live_follow' 
+                        ? { ...t, content: (t.content ? t.content + '\n\n' : '') + `[${toolName}]\n` + appendText }
+                        : t
+                    ));
+                    setActiveWorkspaceKey('live_follow');
+
+                    // 兼容：也将工具结果拼到聊天内容里
+                    fullContent += `\n\n${typeof data.content === 'string' ? data.content : JSON.stringify(data.content)}`;
+                    setMessages(prev => prev.map(msg => 
+                      msg.id === agentMessageId 
+                        ? { ...msg, content: fullContent }
+                        : msg
+                    ));
+
+                  } else if (data.type === 'final_response' && data.content) {
                     // 最终响应：直接替换内容，不累加
                     fullContent = data.content; // 直接替换，不累加
                     
@@ -731,187 +760,214 @@ const ChatPage: React.FC = () => {
     <div className="chat-layout">
       {/* 主聊天区域 */}
       <div className="chat-main">
-        {/* 聊天头部 */}
-        <div className="chat-header">
-          <div className="header-left">
-            <Avatar icon={<RobotOutlined />} />
-            <div className="header-info">
-              <Text strong>{selectedAgent?.display_name || 'AI助手'}</Text>
-              <Text type="secondary" className="status-text">
-                {currentSession?.title || '新对话'} • {isConnected ? '在线' : '离线'}
-              </Text>
+        {/* 左侧：聊天区 */}
+        <div className="chat-left" style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          {/* 聊天头部 */}
+          <div className="chat-header">
+            <div className="header-left">
+              <Avatar icon={<RobotOutlined />} />
+              <div className="header-info">
+                <Text strong>{selectedAgent?.display_name || 'AI助手'}</Text>
+                <Text type="secondary" className="status-text">
+                  {currentSession?.title || '新对话'} • {isConnected ? '在线' : '离线'}
+                </Text>
+              </div>
+            </div>
+            <div className="header-right">
+              {workspaceCollapsed && (
+                <Button type="primary" size="small" icon={<MenuUnfoldOutlined />} onClick={() => setWorkspaceCollapsed(false)} style={{ marginRight: 8 }}>
+                  展开工作空间
+                </Button>
+              )}
+              <Button icon={<SettingOutlined />} type="text" />
             </div>
           </div>
-          <div className="header-right">
-            <Button icon={<SettingOutlined />} type="text" />
-          </div>
-        </div>
 
-
-
-        {/* 消息列表 */}
-        <div className="messages-container">
-          {loading ? (
-            <div className="loading-container">
-              <Spin size="large" />
-            </div>
-          ) : (
-            <div className="messages-list">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`message-wrapper ${message.type === 'user' ? 'user' : 'agent'}`}
-                >
-                  <div className="message-content">
-                    <Avatar 
-                      icon={message.type === 'user' 
-                        ? <UserOutlined style={{ color: '#fff' }} /> 
-                        : <RobotOutlined style={{ color: '#1890ff' }} />}
-                      size={36}
-                      className="message-avatar"
-                      style={message.type === 'user' 
-                        ? { backgroundColor: '#1890ff' }
-                        : { backgroundColor: '#e6f6ff', border: '1px solid #91d5ff' }}
-                    />
-                    <div className="message-bubble">
-                      <div className="message-header">
-                        <Text className="message-name">
-                          {message.agentName || (message.type === 'user' ? '我' : 'AI助手')}
-                        </Text>
-                      </div>
-                      <div className="message-text">
-                        {message.type === 'agent' ? (
-                          <>
-                            <ThinkTagRenderer content={message.content} />
-                            {message.isStreaming && (
-                              <span className="streaming-indicator">▋</span>
-                            )}
-                          </>
-                        ) : (
-                          message.content
-                        )}
-                      </div>
-                      <div className="message-time">
-                        {formatTime(message.timestamp)}
+          {/* 消息列表 */}
+          <div className="messages-container">
+            {loading ? (
+              <div className="loading-container">
+                <Spin size="large" />
+              </div>
+            ) : (
+              <div className="messages-list">
+                {messages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`message-wrapper ${message.type === 'user' ? 'user' : 'agent'}`}
+                  >
+                    <div className="message-content">
+                      <Avatar 
+                        icon={message.type === 'user' 
+                          ? <UserOutlined style={{ color: '#fff' }} /> 
+                          : <RobotOutlined style={{ color: '#1890ff' }} />}
+                        size={36}
+                        className="message-avatar"
+                        style={message.type === 'user' 
+                          ? { backgroundColor: '#1890ff' }
+                          : { backgroundColor: '#e6f6ff', border: '1px solid #91d5ff' }}
+                      />
+                      <div className="message-bubble">
+                        <div className="message-header">
+                          <Text className="message-name">
+                            {message.agentName || (message.type === 'user' ? '我' : 'AI助手')}
+                          </Text>
+                        </div>
+                        <div className="message-text">
+                          {message.type === 'agent' ? (
+                            <>
+                              <ThinkTagRenderer content={message.content} />
+                              {message.isStreaming && (
+                                <span className="streaming-indicator">▋</span>
+                              )}
+                            </>
+                          ) : (
+                            message.content
+                          )}
+                        </div>
+                        <div className="message-time">
+                          {formatTime(message.timestamp)}
+                        </div>
                       </div>
                     </div>
                   </div>
+                ))}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </div>
+
+          {/* 智能体选择器弹窗 */}
+          <Modal
+            title="选择智能体"
+            open={agentSelectorVisible}
+            onCancel={() => setAgentSelectorVisible(false)}
+            footer={null}
+            width={600}
+            className="agent-selector-modal"
+          >
+            <div className="agent-grid">
+              {agents.map((agent) => (
+                <div 
+                  key={agent.id}
+                  className={`agent-card ${selectedAgent?.name === agent.name ? 'selected' : ''}`}
+                  onClick={() => {
+                    setSelectedAgent({
+                      id: agent.id,
+                      name: agent.name,
+                      display_name: agent.display_name,
+                      description: agent.description
+                    });
+                    setAgentSelectorVisible(false);
+                  }}
+                >
+                  <div className="agent-icon">
+                    {agent.name === 'general_agent' ? '🤖' :
+                     agent.name === 'code_agent' ? '💻' :
+                     agent.name === 'writing_agent' ? '✍️' :
+                     agent.name === 'finance_agent' ? '💰' : '🤖'}
+                  </div>
+                  <div className="agent-title">{agent.display_name}</div>
+                  <div className="agent-desc">{agent.description || '智能体'}</div>
                 </div>
               ))}
-              <div ref={messagesEndRef} />
             </div>
-          )}
-        </div>
+          </Modal>
 
-        {/* 智能体选择器弹窗 */}
-        <Modal
-          title="选择智能体"
-          open={agentSelectorVisible}
-          onCancel={() => setAgentSelectorVisible(false)}
-          footer={null}
-          width={600}
-          className="agent-selector-modal"
-        >
-          <div className="agent-grid">
-            {agents.map((agent) => (
-              <div 
-                key={agent.id}
-                className={`agent-card ${selectedAgent?.name === agent.name ? 'selected' : ''}`}
-                onClick={() => {
-                  setSelectedAgent({
-                    id: agent.id,
-                    name: agent.name,
-                    display_name: agent.display_name,
-                    description: agent.description
-                  });
-                  setAgentSelectorVisible(false);
-                }}
-              >
-                <div className="agent-icon">
-                  {agent.name === 'general_agent' ? '🤖' :
-                   agent.name === 'code_agent' ? '💻' :
-                   agent.name === 'writing_agent' ? '✍️' :
-                   agent.name === 'finance_agent' ? '💰' : '🤖'}
-                </div>
-                <div className="agent-title">{agent.display_name}</div>
-                <div className="agent-desc">{agent.description || '智能体'}</div>
+          {/* 输入区域 */}
+          <div className="input-container">
+            <div className="input-wrapper">
+              <div className="input-left-buttons">
+                <Button 
+                  type="text" 
+                  icon={<RobotOutlined />}
+                  className="input-btn"
+                  onClick={() => setAgentSelectorVisible(true)}
+                >
+                  @智能体
+                </Button>
+                <Button 
+                  type="text" 
+                  icon={<SettingOutlined />}
+                  className="input-btn"
+                >
+                  #上下文
+                </Button>
+                <Button 
+                  type="text" 
+                  icon={<PictureOutlined />}
+                  className="input-btn"
+                >
+                  图片
+                </Button>
+                <Button 
+                  type="text" 
+                  icon={<BulbOutlined />}
+                  className={`input-btn ${thinkTagVisible ? 'active' : 'inactive'}`}
+                  onClick={() => {
+                    try {
+                      const newVisible = !thinkTagVisible;
+                      setThinkTagVisible(newVisible);
+                      localStorage.setItem('think-tag-visible', newVisible.toString());
+                      // 触发页面重新渲染
+                      window.dispatchEvent(new Event('storage'));
+                    } catch {}
+                  }}
+                >
+                  思考过程
+                </Button>
               </div>
-            ))}
-          </div>
-        </Modal>
-
-        {/* 输入区域 */}
-        <div className="input-container">
-          <div className="input-wrapper">
-            <div className="input-left-buttons">
-              <Button 
-                type="text" 
-                icon={<RobotOutlined />}
-                className="input-btn"
-                onClick={() => setAgentSelectorVisible(true)}
-              >
-                @智能体
-              </Button>
-              <Button 
-                type="text" 
-                icon={<SettingOutlined />}
-                className="input-btn"
-              >
-                #上下文
-              </Button>
-              <Button 
-                type="text" 
-                icon={<PictureOutlined />}
-                className="input-btn"
-              >
-                图片
-              </Button>
-              <Button 
-                type="text" 
-                icon={<BulbOutlined />}
-                className={`input-btn ${thinkTagVisible ? 'active' : 'inactive'}`}
-                onClick={() => {
-                  try {
-                    const newVisible = !thinkTagVisible;
-                    setThinkTagVisible(newVisible);
-                    localStorage.setItem('think-tag-visible', newVisible.toString());
-                    // 触发页面重新渲染
-                    window.dispatchEvent(new Event('storage'));
-                  } catch {}
-                }}
-              >
-                思考过程
-              </Button>
-            </div>
-            <TextArea
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="输入消息..."
-              autoSize={{ minRows: 1, maxRows: 4 }}
-              className="message-input"
-            />
-            <div className="input-right-buttons">
-              <Button
-                type="text"
-                className="auto-btn"
-                style={{ marginRight: 8 }}
-              >
-                Auto
-                <span className="auto-dot"></span>
-              </Button>
-              <Button
-                type="primary"
-                icon={<SendOutlined />}
-                onClick={handleSend}
-                disabled={!inputValue.trim()}
-                className="send-button"
-              >
-                发送
-              </Button>
+              <TextArea
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyPress={handleKeyPress}
+                placeholder="输入消息..."
+                autoSize={{ minRows: 1, maxRows: 4 }}
+                className="message-input"
+              />
+              <div className="input-right-buttons">
+                <Button
+                  type="text"
+                  className="auto-btn"
+                  style={{ marginRight: 8 }}
+                >
+                  Auto
+                  <span className="auto-dot"></span>
+                </Button>
+                <Button
+                  type="primary"
+                  icon={<SendOutlined />}
+                  onClick={handleSend}
+                  disabled={!inputValue.trim()}
+                  className="send-button"
+                >
+                  发送
+                </Button>
+              </div>
             </div>
           </div>
         </div>
+
+        {/* 右侧：工作空间 */}
+        {workspaceCollapsed ? (
+          <div className="workspace-collapsed-handle" onClick={() => setWorkspaceCollapsed(false)} title="展开工作空间">
+            »
+          </div>
+        ) : (
+          <WorkspacePanel
+            tabs={workspaceTabs}
+            activeKey={activeWorkspaceKey}
+            onChange={(key) => setActiveWorkspaceKey(key)}
+            onClose={(key) => {
+              setWorkspaceTabs(prev => prev.filter(t => t.key !== key || t.closable === false));
+              if (activeWorkspaceKey === key) {
+                setActiveWorkspaceKey('live_follow');
+              }
+            }}
+            onClear={() => { setWorkspaceTabs(prev => prev.map(t => t.key === 'live_follow' ? { ...t, content: '' } : t)); setActiveWorkspaceKey('live_follow'); }}
+            onCollapse={() => setWorkspaceCollapsed(true)}
+          />
+        )}
       </div>
     </div>
   );

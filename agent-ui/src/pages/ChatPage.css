@@ -23,7 +23,7 @@ html, body, #root {
 .chat-main {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background-color: #fff;
   border-radius: 8px;
   margin: 16px;
@@ -462,6 +462,67 @@ html, body, #root {
 .messages-list::-webkit-scrollbar {
   display: block;
   width: 8px;
+}
+
+/* 右侧工作空间样式 */
+.workspace-panel {
+  width: 420px;
+  border-left: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  background: #fafafa;
+}
+
+.workspace-header {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
+}
+
+.workspace-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 12px;
+}
+
+.workspace-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.workspace-pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 折叠把手 */
+.workspace-collapsed-handle {
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  background: #fff;
+  border-left: 1px solid #f0f0f0;
+  color: #999;
+}
+
+.workspace-collapsed-handle:hover {
+  color: #333;
+}
+
+@media (max-width: 992px) {
+  .workspace-panel {
+    display: none;
+  }
 }
 
  

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Tabs, Empty, Button, Typography } from 'antd';
 
 const { Text } = Typography;
@@ -22,6 +22,16 @@ interface WorkspacePanelProps {
 }
 
 const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ tabs, activeKey, onChange, onClose, onClear, onCollapse }) => {
+	const bodyRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		if (bodyRef.current) {
+			try {
+				bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+			} catch {}
+		}
+	}, [tabs, activeKey]);
+
 	if (!tabs || tabs.length === 0) {
 		return (
 			<div className="workspace-panel">
@@ -31,7 +41,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ tabs, activeKey, onChan
 						<Button size="small" onClick={onCollapse}>收起</Button>
 					</div>
 				</div>
-				<div className="workspace-body">
+				<div className="workspace-body" ref={bodyRef}>
 					<Empty description="工具执行结果会显示在这里" />
 				</div>
 			</div>
@@ -47,7 +57,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ tabs, activeKey, onChan
 					<Button size="small" onClick={onCollapse}>收起</Button>
 				</div>
 			</div>
-			<div className="workspace-body">
+			<div className="workspace-body" ref={bodyRef}>
 				<Tabs
 					type="editable-card"
 					hideAdd

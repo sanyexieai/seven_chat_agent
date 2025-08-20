@@ -166,4 +166,54 @@ async def delete_message(
         raise
     except Exception as e:
         logger.error(f"删除消息失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="删除消息失败") 
+        raise HTTPException(status_code=500, detail="删除消息失败")
+
+
+@router.delete("/{session_id}/workspace_messages")
+async def clear_workspace_messages(
+    session_id: int,
+    db: Session = Depends(get_db)
+):
+    """清空某会话的工作空间相关消息（workspace_summary 与 tool），进行硬删"""
+    try:
+        session = SessionService.get_session_by_id(db, session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        # 查出相关消息并逐条硬删
+        from models.database_models import ChatMessage
+        msgs = db.query(ChatMessage).filter(
+            ChatMessage.session_id == session.session_id,
+            ChatMessage.message_type.in_(["workspace_summary", "tool"])  # type: ignore
+        ).all()
+        count = 0
+        for m in msgs:
+            # 直接物理删除，不再软删
+            db.delete(m)
+            count += 1
+        db.commit()
+        return {"deleted": count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"清空工作空间消息失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="清空工作空间消息失败") 
+
+@router.get("/{session_id}/workspace_summary", response_model=MessageResponse)
+async def get_workspace_summary(
+    session_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取会话最近一条工作空间汇总（workspace_summary）"""
+    try:
+        session = SessionService.get_session_by_id(db, session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        summary = MessageService.get_last_workspace_summary(db, session.session_id)
+        if not summary:
+            raise HTTPException(status_code=404, detail="暂无汇总")
+        return summary
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取工作空间汇总失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取工作空间汇总失败") 

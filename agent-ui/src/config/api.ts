@@ -11,6 +11,8 @@ export const API_PATHS = {
   SESSION_BY_ID: (id: number | string) => `/api/sessions/${id}`,
   SESSION_MESSAGES: (id: number | string) => `/api/sessions/${id}/messages`,
   SESSION_TITLE: (id: number | string | undefined,title:string) => `/api/sessions/${id}/title?title=${title}`,
+  WORKSPACE_SUMMARY: (id: number | string) => `/api/sessions/${id}/workspace_summary`,
+  WORKSPACE_CLEAR: (id: number | string) => `/api/sessions/${id}/workspace_messages`,
   // 创建新会话 (POST only)
   CREATE_SESSION: '/api/chat/sessions',
   // 获取用户会话 (GET)

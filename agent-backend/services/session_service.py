@@ -103,10 +103,13 @@ class MessageService:
     
     @staticmethod
     def get_session_messages(db: Session, session_id: int, limit: int = 100) -> List['MessageResponse']:
-        """获取会话的所有消息"""
-        messages = db.query(ChatMessage).filter(
+        """获取会话的最近消息（优先包含最新的workspace_summary等）"""
+        # 先按时间倒序获取更多条数，再过滤软删，然后取前limit条并升序返回
+        recent = db.query(ChatMessage).filter(
             ChatMessage.session_id == session_id
-        ).order_by(ChatMessage.created_at).limit(limit).all()
+        ).order_by(ChatMessage.created_at.desc()).limit(limit * 2).all()
+        filtered = [m for m in recent if not ((m.message_metadata or {}).get('deleted') is True)]
+        messages = list(reversed(filtered[:limit]))
         
         # 转换为Pydantic模型
         from models.database_models import MessageResponse
@@ -137,8 +140,95 @@ class MessageService:
         """删除消息"""
         message = db.query(ChatMessage).filter(ChatMessage.message_id == message_id).first()
         if message:
-            db.delete(message)
+            try:
+                # 软删：写入metadata标记
+                meta = message.message_metadata or {}
+                meta.update({"deleted": True, "deleted_at": datetime.utcnow().isoformat()})
+                message.message_metadata = meta
+                db.commit()
+                logger.info(f"软删消息: {message_id}")
+                return True
+            except Exception:
+                # 兜底物理删除
+                db.delete(message)
+                db.commit()
+                logger.info(f"物理删除消息: {message_id}")
+                return True
+        return False
+
+    @staticmethod
+    def get_last_workspace_summary(db: Session, session_uuid: str) -> Optional['MessageResponse']:
+        """获取会话最近一条 workspace_summary"""
+        msgs = db.query(ChatMessage).filter(
+            ChatMessage.session_id == session_uuid,
+            ChatMessage.message_type == "workspace_summary"
+        ).order_by(ChatMessage.created_at.desc()).limit(50).all()
+        msg = None
+        for m in msgs:
+            if not ((m.message_metadata or {}).get('deleted') is True):
+                msg = m
+                break
+        if not msg:
+            return None
+        from models.database_models import MessageResponse
+        return MessageResponse(
+            id=msg.id,
+            message_id=msg.message_id,
+            session_id=msg.session_id,
+            user_id=msg.user_id,
+            message_type=msg.message_type,
+            content=msg.content,
+            agent_name=msg.agent_name,
+            metadata=msg.message_metadata,
+            created_at=msg.created_at
+        )
+
+    @staticmethod
+    def upsert_workspace_summary(
+        db: Session,
+        session_uuid: str,
+        user_id: str,
+        content: str,
+        agent_name: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> 'MessageResponse':
+        """若存在最近一条未删除的 workspace_summary 则更新，否则创建"""
+        existing = db.query(ChatMessage).filter(
+            ChatMessage.session_id == session_uuid,
+            ChatMessage.message_type == "workspace_summary"
+        ).order_by(ChatMessage.created_at.desc()).first()
+        
+        if existing and not ((existing.message_metadata or {}).get('deleted') is True):
+            # 更新现有记录
+            existing.content = content
+            meta = existing.message_metadata or {}
+            if metadata:
+                meta.update(metadata)
+            meta['updated_at'] = datetime.utcnow().isoformat()
+            existing.message_metadata = meta
+            if agent_name:
+                existing.agent_name = agent_name
             db.commit()
-            logger.info(f"删除消息: {message_id}")
-            return True
-        return False 
+            db.refresh(existing)
+            from models.database_models import MessageResponse
+            return MessageResponse(
+                id=existing.id,
+                message_id=existing.message_id,
+                session_id=existing.session_id,
+                user_id=existing.user_id,
+                message_type=existing.message_type,
+                content=existing.content,
+                agent_name=existing.agent_name,
+                metadata=existing.message_metadata,
+                created_at=existing.created_at
+            )
+        else:
+            # 创建新记录
+            return MessageService.create_message(db, MessageCreate(
+                session_id=session_uuid,
+                user_id=user_id,
+                message_type="workspace_summary",
+                content=content,
+                agent_name=agent_name,
+                metadata=metadata
+            )) 

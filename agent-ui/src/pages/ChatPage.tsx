@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message, Select, Modal } from 'antd';
+import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message, Select, Modal, Tag } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined, BulbOutlined, EyeOutlined, EyeInvisibleOutlined, MenuUnfoldOutlined, MenuFoldOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
@@ -20,6 +20,9 @@ interface Message {
   timestamp: Date;
   agentName?: string;
   isStreaming?: boolean; // 流式状态指示器
+  metadata?: any;
+  toolName?: string;
+  rawType?: string; // 后端原始 message_type
 }
 
 interface Session {
@@ -79,6 +82,88 @@ const ChatPage: React.FC = () => {
   ]);
   const [activeWorkspaceKey, setActiveWorkspaceKey] = useState<string | undefined>('live_follow');
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState<boolean>(false);
+  // 标记工作空间是否已被清空，清空后不再从其他消息中提取内容
+  const [workspaceCleared, setWorkspaceCleared] = useState<boolean>(false);
+
+  // 工具分类辅助
+  const isBrowserTool = (toolName: string) => {
+    const name = (toolName || '').toLowerCase();
+    return ['browser', 'fetch', 'http', 'url', 'web', 'crawl', 'search'].some(k => name.includes(k));
+  };
+  const isFileTool = (toolName: string) => {
+    const name = (toolName || '').toLowerCase();
+    return ['file', 'download', 'save', 'export', 'write', 'read', 'pdf', 'doc', 'excel'].some(k => name.includes(k));
+  };
+
+  // 前端不再重复保存到后端，避免重复插入
+  // 后端已在流式响应结束时保存 workspace_summary
+
+  const appendToolToTabs = (toolName: string, content: string) => {
+    // 如果工作空间已被清空，不再添加新的工具执行结果
+    if (workspaceCleared) {
+      return;
+    }
+    
+    setWorkspaceTabs(prev => {
+      const next = prev.map(t => {
+        if (t.key === 'live_follow') {
+          return { ...t, content: (t.content ? t.content + '\n\n' : '') + `[${toolName}]\n` + content };
+        }
+        if (t.key === 'browser' && isBrowserTool(toolName)) {
+          return { ...t, content: (t.content ? t.content + '\n\n' : '') + content };
+        }
+        if (t.key === 'files' && isFileTool(toolName)) {
+          return { ...t, content: (t.content ? t.content + '\n\n' : '') + content };
+        }
+        return t;
+      });
+      // 不再写入本地缓存，避免清空后刷新又出现
+      // try {
+      //   const key = getWorkspaceCacheKey();
+      //   if (key) localStorage.setItem(key, JSON.stringify(next.map(({ key, title, content }) => ({ key, title, content }))));
+      // } catch {}
+        // 不再异步保存到后端，避免重复插入
+  // scheduleSaveWorkspaceSummary(next);
+      return next;
+    });
+  };
+
+  // 不再使用本地缓存
+  // const getWorkspaceCacheKey = (): string | undefined => {
+  //   const sid = (currentSession && (currentSession as any).session_id) || (currentSession && currentSession.id);
+  //   if (!sid) return undefined;
+  //   return `workspace-tabs-${sid}`;
+  // };
+
+  // 不再使用本地缓存
+  // const loadWorkspaceFromCache = () => {
+  //   try {
+  //     const key = getWorkspaceCacheKey();
+  //     if (!key) return;
+  //     const raw = localStorage.getItem(key);
+  //     if (!raw) return;
+  //     const cached: Array<{ key: string; title: string; content: string }> = JSON.parse(raw);
+  //     setWorkspaceTabs(prev => prev.map(t => {
+  //       const c = cached.find(x => x.key === t.key);
+  //       // return c ? { ...t, content: c.content } : t;
+  //     }));
+  //   } catch {}
+  // };
+
+  // 不再保存到本地缓存
+  // const saveWorkspaceToCache = (tabs: WorkspaceTabItem[]) => {
+  //   try {
+  //     const key = getWorkspaceCacheKey();
+  //     if (!key) return;
+  //     localStorage.setItem(key, JSON.stringify(tabs.map(({ key, title, content }) => ({ key, title, content }))));
+  //   } catch {}
+  // };
+
+  // 不再从本地缓存恢复
+  // useEffect(() => {
+  //   loadWorkspaceFromCache();
+  //   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // }, [currentSession?.session_id, currentSession?.id]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { sendMessage, isConnected } = useChat();
@@ -321,6 +406,9 @@ const ChatPage: React.FC = () => {
         const session = await response.json();
         setCurrentSession(session);
         
+        // 重置工作空间清空状态，新会话可以正常工作
+        setWorkspaceCleared(false);
+        
         // 加载会话消息
         await loadSessionMessages(sessionId);
       }
@@ -343,6 +431,25 @@ const ChatPage: React.FC = () => {
     }
     
     try {
+      // 优先请求服务端的 workspace_summary
+      try {
+        console.debug('[Workspace] fetching summary:', getApiUrl(API_PATHS.WORKSPACE_SUMMARY(sessionId)));
+        const summaryResp = await fetch(getApiUrl(API_PATHS.WORKSPACE_SUMMARY(sessionId)));
+        if (summaryResp.ok) {
+          const summary = await summaryResp.json();
+          const text = summary?.content || '';
+          if (text) {
+            console.debug('[Workspace] summary loaded, length:', text.length);
+            setWorkspaceTabs(prev => {
+              const next = prev.map(t => t.key === 'live_follow' ? { ...t, content: text } : t);
+              return next;
+            });
+          }
+        } else {
+          console.debug('[Workspace] summary not found, status:', summaryResp.status);
+        }
+      } catch {}
+
       const response = await fetch(getApiUrl(API_PATHS.SESSION_MESSAGES(sessionId)));
       if (response.ok) {
         const messages = await response.json();
@@ -354,9 +461,14 @@ const ChatPage: React.FC = () => {
             content: msg.content,
             type: msg.message_type === 'user' ? 'user' : 'agent',
             timestamp: new Date(msg.created_at),
-            agentName: msg.agent_name
+            agentName: msg.agent_name,
+            metadata: msg.metadata,
+            toolName: msg.metadata && msg.metadata.tool_name ? msg.metadata.tool_name : undefined,
+            rawType: msg.message_type
           }));
           setMessages(formattedMessages);
+          
+          // 工作空间内容只从 workspace_summary 接口获取，不再从其他消息中提取
         } else {
           // 没有消息，显示空消息列表
           setMessages([]);
@@ -585,11 +697,7 @@ const ChatPage: React.FC = () => {
                     // 收到工具结果：在右侧工作空间新增/更新一个标签
                     const toolName = data.tool_name || '工具';
                     const appendText = typeof data.content === 'string' ? data.content : JSON.stringify(data.content);
-                    setWorkspaceTabs(prev => prev.map(t => 
-                      t.key === 'live_follow' 
-                        ? { ...t, content: (t.content ? t.content + '\n\n' : '') + `[${toolName}]\n` + appendText }
-                        : t
-                    ));
+                    appendToolToTabs(toolName, appendText);
                     setActiveWorkspaceKey('live_follow');
 
                     // 兼容：也将工具结果拼到聊天内容里
@@ -808,10 +916,13 @@ const ChatPage: React.FC = () => {
                           : { backgroundColor: '#e6f6ff', border: '1px solid #91d5ff' }}
                       />
                       <div className="message-bubble">
-                        <div className="message-header">
+                        <div className="message-header" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <Text className="message-name">
                             {message.agentName || (message.type === 'user' ? '我' : 'AI助手')}
                           </Text>
+                          {message.toolName && (
+                            <Tag color="blue">工具: {message.toolName}</Tag>
+                          )}
                         </div>
                         <div className="message-text">
                           {message.type === 'agent' ? (
@@ -964,7 +1075,24 @@ const ChatPage: React.FC = () => {
                 setActiveWorkspaceKey('live_follow');
               }
             }}
-            onClear={() => { setWorkspaceTabs(prev => prev.map(t => t.key === 'live_follow' ? { ...t, content: '' } : t)); setActiveWorkspaceKey('live_follow'); }}
+            onClear={async () => {
+              setWorkspaceTabs(prev => {
+                const next = prev.map(t => t.key === 'live_follow' ? { ...t, content: '' } : t);
+                // 不再保存到本地缓存
+                // saveWorkspaceToCache(next);
+                // 不再重复保存到后端
+                // scheduleSaveWorkspaceSummary(next);
+                return next;
+              });
+              setActiveWorkspaceKey('live_follow');
+              // 标记工作空间已被清空
+              setWorkspaceCleared(true);
+              try {
+                if (currentSession && currentSession.id) {
+                  await fetch(getApiUrl(API_PATHS.WORKSPACE_CLEAR(currentSession.id as any)), { method: 'DELETE' });
+                }
+              } catch {}
+            }}
             onCollapse={() => setWorkspaceCollapsed(true)}
           />
         )}

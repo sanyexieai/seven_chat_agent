@@ -217,6 +217,7 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                 
                                 # 调用智能体的process_message_stream方法
                                 tools_used = []
+                                live_follow_segments: list[str] = []
                                 async for chunk in agent.process_message_stream(request.user_id, request.message, enhanced_context):
                                     if chunk.type == "content":
                                         # 发送内容块
@@ -227,6 +228,26 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                         data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'tool_result', 'tool_name': chunk.metadata.get('tool_name', '')}, ensure_ascii=False)}\n\n"
                                         yield data_chunk
                                         tools_used.append(chunk.metadata.get('tool_name', ''))
+                                        try:
+                                            tool_name = chunk.metadata.get('tool_name', '')
+                                            content_str = chunk.content if isinstance(chunk.content, str) else json.dumps(chunk.content, ensure_ascii=False)
+                                            live_follow_segments.append(f"[{tool_name}]\n{content_str}")
+                                        except Exception:
+                                            pass
+                                        # 将工具执行记录保存到数据库
+                                        if request.session_id:
+                                            try:
+                                                tool_message_data = MessageCreate(
+                                                    session_id=request.session_id,
+                                                    user_id=request.user_id,
+                                                    message_type="tool",
+                                                    content=chunk.content if isinstance(chunk.content, str) else json.dumps(chunk.content, ensure_ascii=False),
+                                                    agent_name=agent.description or agent.name,
+                                                    metadata={"tool_name": chunk.metadata.get('tool_name', '')}
+                                                )
+                                                MessageService.create_message(db, tool_message_data)
+                                            except Exception as e:
+                                                logger.warning(f"保存工具执行结果失败: {str(e)}")
                                     elif chunk.type == "tool_error":
                                         # 发送工具错误
                                         data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'tool_error'}, ensure_ascii=False)}\n\n"
@@ -260,6 +281,21 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                                     metadata={"tools_used": tools_used}
                                                 )
                                                 assistant_message = MessageService.create_message(db, assistant_message_data)
+
+                                                # 保存实时跟随汇总（若存在则更新）
+                                                try:
+                                                    if live_follow_segments:
+                                                        summary_text = "\n\n".join(live_follow_segments)
+                                                        MessageService.upsert_workspace_summary(
+                                                            db=db,
+                                                            session_uuid=request.session_id,
+                                                            user_id=request.user_id,
+                                                            content=summary_text,
+                                                            agent_name=agent.description or agent.name,
+                                                            metadata={"tools_used": tools_used, "source": "stream"}
+                                                        )
+                                                except Exception as e:
+                                                    logger.warning(f"保存实时跟随汇总失败: {str(e)}")
                                                 
                                                 logger.info(f"保存流式聊天消息: 用户消息ID={user_message.message_id}, 助手消息ID={assistant_message.message_id}")
                                             except Exception as e:

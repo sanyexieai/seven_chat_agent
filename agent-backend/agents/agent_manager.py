@@ -384,6 +384,8 @@ class AgentManager:
                                     norm.append(t)
                                 elif isinstance(t, dict) and t.get('server') and t.get('tool'):
                                     norm.append(f"{t['server']}_{t['tool']}")
+                                elif isinstance(t, dict) and t.get('server_name') and t.get('name'):
+                                    norm.append(f"{t['server_name']}_{t['name']}")
                             agent.bound_tools = norm
                             logger.info(f"流程图智能体 {db_agent.name} 注入绑定工具: {len(norm)} 个")
                     except Exception as e:
@@ -411,7 +413,7 @@ class AgentManager:
                         logger.info(f"智能体 {db_agent.name} 不设置MCP助手")
                 
                 # 设置知识库绑定（通用智能体）
-                if db_agent.agent_type == "general" and db_agent.bound_knowledge_bases:
+                if db_agent.bound_knowledge_bases:
                     try:
                         # 获取知识库详细信息
                         from services.knowledge_base_service import KnowledgeBaseService

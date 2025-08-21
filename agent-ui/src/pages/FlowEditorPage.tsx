@@ -427,6 +427,34 @@ const FlowEditorPage: React.FC = () => {
     }
   };
 
+  const exportFlowAsJSON = () => {
+    try {
+      const flowConfig = {
+        nodes: nodes.map(node => ({
+          id: node.id,
+          type: node.data.nodeType,
+          position: node.position,
+          data: { ...node.data, isStartNode: node.data.isStartNode || false }
+        })),
+        edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+        metadata: { name: flowName || '新流程', description: flowDescription || '', version: '1.0.0' }
+      };
+      const jsonStr = JSON.stringify(flowConfig, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const filename = `${(flowName || 'flow')}_${Date.now()}.json`;
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success('流程JSON已导出');
+    } catch (e) {
+      console.error(e);
+      message.error('导出失败');
+    }
+  };
+
   const loadAgentInfo = (agent: any) => {
     console.log('开始加载智能体信息:', agent);
     
@@ -1219,6 +1247,9 @@ const FlowEditorPage: React.FC = () => {
               </Button>
               <Button icon={<ImportOutlined />} onClick={() => setImportModalVisible(true)}>
                 导入JSON
+              </Button>
+              <Button icon={<ExportOutlined />} onClick={exportFlowAsJSON} disabled={nodes.length === 0}>
+                导出JSON
               </Button>
               <Button 
                 type="primary" 

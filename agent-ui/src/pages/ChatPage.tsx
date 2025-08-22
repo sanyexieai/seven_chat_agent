@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message, Select, Modal, Tag } from 'antd';
-import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined, BulbOutlined, EyeOutlined, EyeInvisibleOutlined, MenuUnfoldOutlined, MenuFoldOutlined } from '@ant-design/icons';
+import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined, BulbOutlined, EyeOutlined, EyeInvisibleOutlined, MenuUnfoldOutlined, MenuFoldOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
 import ThinkTagRenderer from '../components/ThinkTagRenderer';
@@ -79,11 +79,74 @@ const ChatPage: React.FC = () => {
     { key: 'live_follow', title: '实时跟随', content: '', createdAt: new Date(), closable: false },
     { key: 'browser', title: '浏览器', content: '这里可展示网页预览或抓取结果', createdAt: new Date(), closable: false },
     { key: 'files', title: '文件', content: '这里显示相关文件/下载链接', createdAt: new Date(), closable: false },
+    { key: 'todolist', title: '待办', content: '', createdAt: new Date(), closable: false },
   ]);
   const [activeWorkspaceKey, setActiveWorkspaceKey] = useState<string | undefined>('live_follow');
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState<boolean>(false);
   // 标记工作空间是否已被清空，清空后不再从其他消息中提取内容
   const [workspaceCleared, setWorkspaceCleared] = useState<boolean>(false);
+
+  // 从后端获取智能体流程图配置
+  const fetchAgentFlowConfig = async (agentName: string) => {
+    try {
+      // 首先获取智能体信息
+      const response = await fetch(getApiUrl('/api/agents'));
+      if (!response.ok) {
+        throw new Error('获取智能体列表失败');
+      }
+      
+      const agents = await response.json();
+      const agent = agents.find((a: any) => a.name === agentName);
+      
+      if (!agent) {
+        console.warn(`未找到智能体: ${agentName}`);
+        return null;
+      }
+      
+      // 如果智能体有flow_config，直接使用
+      if (agent.flow_config && agent.flow_config.nodes && agent.flow_config.nodes.length > 0) {
+        console.log(`从智能体配置中获取流程图: ${agentName}`, agent.flow_config);
+        return {
+          nodes: agent.flow_config.nodes.map((node: any) => ({
+            id: node.id,
+            label: node.data?.label || node.name || node.id,
+            nodeType: node.type || node.data?.type || 'default',
+            status: 'pending' as 'completed' | 'pending' | 'running' | 'failed'
+          })),
+          edges: agent.flow_config.edges || []
+        };
+      }
+      
+      // 如果没有flow_config，返回null（使用默认流程图）
+      console.log(`智能体 ${agentName} 没有流程图配置`);
+      return null;
+      
+    } catch (error) {
+      console.error('获取智能体流程图配置失败:', error);
+      return null;
+    }
+  };
+
+  // 流程图数据状态
+  const [flowData, setFlowData] = useState({
+    nodes: [] as Array<{
+      id: string;
+      label: string;
+      nodeType: string;
+      status: 'completed' | 'pending' | 'running' | 'failed';
+    }>,
+    edges: [] as Array<{
+      id: string;
+      source: string;
+      target: string;
+    }>,
+    executionState: {
+      isRunning: false,
+      currentNodeId: undefined as string | undefined,
+      completedNodes: [] as string[],
+      failedNodes: [] as string[]
+    }
+  });
 
   // 工具分类辅助
   const isBrowserTool = (toolName: string) => {
@@ -95,6 +158,153 @@ const ChatPage: React.FC = () => {
     return ['file', 'download', 'save', 'export', 'write', 'read', 'pdf', 'doc', 'excel'].some(k => name.includes(k));
   };
 
+  // 更新流程图状态
+  const updateFlowExecution = (nodeId: string, status: 'pending' | 'running' | 'completed' | 'failed') => {
+    setFlowData(prev => ({
+      ...prev,
+      nodes: prev.nodes.map(node => 
+        node.id === nodeId ? { ...node, status } : node
+      ),
+      executionState: {
+        ...prev.executionState,
+        currentNodeId: status === 'running' ? nodeId : undefined,
+        completedNodes: status === 'completed' 
+          ? [...prev.executionState.completedNodes, nodeId]
+          : prev.executionState.completedNodes.filter(id => id !== nodeId),
+        failedNodes: status === 'failed'
+          ? [...prev.executionState.failedNodes, nodeId]
+          : prev.executionState.failedNodes.filter(id => id !== nodeId)
+      }
+    }));
+  };
+
+  // 根据消息内容自动更新流程图状态
+  const updateFlowFromMessage = (message: Message) => {
+    if (message.type === 'agent') {
+      // 智能体开始处理 - 更新开始节点为完成状态，LLM节点为运行状态
+      updateFlowExecution('start', 'completed');
+      updateFlowExecution('llm', 'running');
+      
+      setFlowData(prev => ({
+        ...prev,
+        executionState: {
+          ...prev.executionState,
+          isRunning: true,
+          currentNodeId: 'llm'
+        }
+      }));
+    }
+  };
+
+  // 智能体完成LLM分析
+  const completeLLMAnalysis = () => {
+    updateFlowExecution('llm', 'completed');
+    setFlowData(prev => ({
+      ...prev,
+      executionState: {
+        ...prev.executionState,
+        currentNodeId: undefined,
+        completedNodes: [...prev.executionState.completedNodes, 'llm']
+      }
+    }));
+  };
+
+  // 智能体开始工具调用
+  const startToolExecution = () => {
+    updateFlowExecution('tool', 'running');
+    setFlowData(prev => ({
+      ...prev,
+      executionState: {
+        ...prev.executionState,
+        currentNodeId: 'tool'
+      }
+    }));
+  };
+
+  // 智能体完成工具调用
+  const completeToolExecution = () => {
+    updateFlowExecution('tool', 'completed');
+    updateFlowExecution('end', 'running');
+    setFlowData(prev => ({
+      ...prev,
+      executionState: {
+        ...prev.executionState,
+        currentNodeId: 'end',
+        completedNodes: [...prev.executionState.completedNodes, 'tool']
+      }
+    }));
+  };
+
+  // 智能体完成整个流程
+  const completeFlow = () => {
+    updateFlowExecution('end', 'completed');
+    setFlowData(prev => ({
+      ...prev,
+      executionState: {
+        ...prev.executionState,
+        isRunning: false,
+        currentNodeId: undefined,
+        completedNodes: [...prev.executionState.completedNodes, 'end']
+      }
+    }));
+  };
+
+  // 当选择智能体时更新流程图
+  const updateFlowForAgent = async (agentName: string) => {
+    const newFlow = await fetchAgentFlowConfig(agentName);
+    if (newFlow) {
+      setFlowData({
+        ...newFlow,
+        executionState: {
+          isRunning: false,
+          currentNodeId: undefined,
+          completedNodes: [],
+          failedNodes: []
+        }
+      });
+    } else {
+      // 如果没有获取到流程图配置，显示提示信息
+      setFlowData({
+        nodes: [{
+          id: 'no-flow',
+          label: `${agentName} 没有流程图配置`,
+          nodeType: 'info',
+          status: 'pending' as const
+        }],
+        edges: [],
+        executionState: {
+          isRunning: false,
+          currentNodeId: undefined,
+          completedNodes: [],
+          failedNodes: []
+        }
+      });
+    }
+  };
+
+  // 根据工具执行结果更新流程图
+  const updateFlowFromToolExecution = (toolName: string, success: boolean) => {
+    if (success) {
+      updateFlowExecution('tool', 'completed');
+      // 工具执行完成后，进入结束阶段
+      setTimeout(() => {
+        updateFlowExecution('end', 'running');
+        setTimeout(() => {
+          updateFlowExecution('end', 'completed');
+          setFlowData(prev => ({
+            ...prev,
+            executionState: {
+              ...prev.executionState,
+              isRunning: false
+            }
+          }));
+        }, 500);
+      }, 500);
+    } else {
+      updateFlowExecution('tool', 'failed');
+    }
+  };
+
   // 前端不再重复保存到后端，避免重复插入
   // 后端已在流式响应结束时保存 workspace_summary
 
@@ -103,7 +313,7 @@ const ChatPage: React.FC = () => {
     if (workspaceCleared) {
       return;
     }
-    
+    const name = (toolName || '').toLowerCase();
     setWorkspaceTabs(prev => {
       const next = prev.map(t => {
         if (t.key === 'live_follow') {
@@ -115,15 +325,11 @@ const ChatPage: React.FC = () => {
         if (t.key === 'files' && isFileTool(toolName)) {
           return { ...t, content: (t.content ? t.content + '\n\n' : '') + content };
         }
+        if (t.key === 'todolist' && (name.includes('todo') || name === 'todolist')) {
+          return { ...t, content: (t.content ? t.content + '\n' : '') + content };
+        }
         return t;
       });
-      // 不再写入本地缓存，避免清空后刷新又出现
-      // try {
-      //   const key = getWorkspaceCacheKey();
-      //   if (key) localStorage.setItem(key, JSON.stringify(next.map(({ key, title, content }) => ({ key, title, content }))));
-      // } catch {}
-        // 不再异步保存到后端，避免重复插入
-  // scheduleSaveWorkspaceSummary(next);
       return next;
     });
   };
@@ -242,12 +448,21 @@ const ChatPage: React.FC = () => {
         // 如果没有选中的智能体，设置第一个作为默认值
         if (agentsList.length > 0 && !selectedAgent) {
           setSelectedAgent(agentsList[0]);
+          // 加载第一个智能体的流程图
+          await updateFlowForAgent(agentsList[0].name);
         }
       }
     } catch (error) {
       console.error('获取智能体列表失败:', error);
     }
   };
+
+  // 当选择的智能体变化时，更新流程图
+  useEffect(() => {
+    if (selectedAgent) {
+      updateFlowForAgent(selectedAgent.name);
+    }
+  }, [selectedAgent]);
 
   // 处理根路径访问
   const handleRootPathAccess = async () => {
@@ -631,6 +846,9 @@ const ChatPage: React.FC = () => {
           return updated;
         });
 
+        // 更新流程图状态 - 智能体开始处理
+        updateFlowFromMessage(agentMessage);
+
         // 使用流式API获取响应
         const agentName = selectedAgent?.name || 'general_agent';
         const agentDisplayName = selectedAgent?.display_name || 'AI助手';
@@ -700,6 +918,9 @@ const ChatPage: React.FC = () => {
                     appendToolToTabs(toolName, appendText);
                     setActiveWorkspaceKey('live_follow');
 
+                    // 更新流程图状态 - 工具执行完成
+                    updateFlowFromToolExecution(toolName, true);
+
                     // 兼容：也将工具结果拼到聊天内容里
                     fullContent += `\n\n${typeof data.content === 'string' ? data.content : JSON.stringify(data.content)}`;
                     setMessages(prev => prev.map(msg => 
@@ -721,6 +942,9 @@ const ChatPage: React.FC = () => {
                       );
                       return updated;
                     });
+                    
+                    // 更新流程图状态 - 智能体响应完成
+                    updateFlowExecution('llm', 'completed');
                     
                     // 自动滚动到底部
                     if (messagesEndRef.current) {
@@ -806,6 +1030,25 @@ const ChatPage: React.FC = () => {
                       );
                       return updated;
                     });
+
+                    // 流式响应完成，更新流程图状态
+                    if (!fullContent.includes('工具') && !fullContent.includes('调用')) {
+                      // 如果没有工具调用，直接完成整个流程
+                      updateFlowExecution('llm', 'completed');
+                      setTimeout(() => {
+                        updateFlowExecution('end', 'running');
+                        setTimeout(() => {
+                          updateFlowExecution('end', 'completed');
+                          setFlowData(prev => ({
+                            ...prev,
+                            executionState: {
+                              ...prev.executionState,
+                              isRunning: false
+                            }
+                          }));
+                        }, 500);
+                      }, 500);
+                    }
                     
                   } else if (data.error) {
                     setMessages(prev => prev.map(msg => 
@@ -1027,6 +1270,9 @@ const ChatPage: React.FC = () => {
                 >
                   思考过程
                 </Button>
+                
+
+
               </div>
               <TextArea
                 value={inputValue}
@@ -1094,6 +1340,7 @@ const ChatPage: React.FC = () => {
               } catch {}
             }}
             onCollapse={() => setWorkspaceCollapsed(true)}
+            flowData={flowData}
           />
         )}
       </div>

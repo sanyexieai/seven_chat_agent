@@ -368,6 +368,24 @@ const FlowEditorPage: React.FC = () => {
   const [importJsonText, setImportJsonText] = useState('');
   const [currentAgentId, setCurrentAgentId] = useState<number | null>(null);
   
+  const createStartNode = () => {
+    const hasStart = nodes.some((n: any) => n?.data?.isStartNode);
+    if (hasStart) return;
+    const startNode: Node = {
+      id: `start_${Date.now()}`,
+      type: 'llm',
+      position: { x: 120, y: 60 },
+      data: {
+        label: '开始',
+        nodeType: 'llm',
+        config: {},
+        isStartNode: true,
+        onDelete: deleteNode
+      }
+    } as any;
+    setNodes((nds) => [startNode, ...nds]);
+  };
+  
   // 设置抽屉相关状态（参考通用智能体，除提示词外）
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
@@ -402,6 +420,8 @@ const FlowEditorPage: React.FC = () => {
     } else if (mode === 'create') {
       console.log('设置为创建模式');
       setCurrentMode('create');
+      // 创建默认开始节点
+      setTimeout(() => createStartNode(), 0);
     } else {
       console.log('未找到有效的模式参数');
     }
@@ -860,6 +880,11 @@ const FlowEditorPage: React.FC = () => {
   };
 
   const deleteNode = (nodeId: string) => {
+    const target = nodes.find((n: any) => n.id === nodeId);
+    if (target && target.data && target.data.isStartNode) {
+      message.error('开始节点不可删除');
+      return;
+    }
     setNodes((nds: Node[]) => nds.filter((node: Node) => node.id !== nodeId));
     setEdges((eds: Edge[]) => eds.filter((edge: Edge) => edge.source !== nodeId && edge.target !== nodeId));
     message.success('节点已删除');
@@ -1049,6 +1074,8 @@ const FlowEditorPage: React.FC = () => {
     setFlowName('');
     setFlowDescription('');
     setCurrentFlowId(null);
+    // 重新创建开始节点
+    setTimeout(() => createStartNode(), 0);
     message.success('流程图已清空');
   };
 

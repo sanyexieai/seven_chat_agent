@@ -54,7 +54,18 @@ class FlowDrivenAgent(BaseAgent):
 		
 		# 加载流程图配置
 		self._load_flow_config()
+		# 知识库绑定占位
+		self.bound_knowledge_bases: List[Dict[str, Any]] = []
 		logger.info(f"流程图驱动智能体 {name} 初始化完成")
+
+	def set_knowledge_bases(self, knowledge_bases: List[Dict[str, Any]]):
+		"""设置绑定的知识库（与通用智能体对齐接口）。"""
+		self.bound_knowledge_bases = knowledge_bases or []
+		try:
+			names = [kb.get('name', 'Unknown') for kb in self.bound_knowledge_bases]
+			logger.info(f"流程图智能体 {self.name} 绑定知识库: {names}")
+		except Exception:
+			pass
 
 	def _merge_json_into_flow_state(self, text: str, flow_state: Dict[str, Any]):
 		"""尝试从 LLM 文本中提取 JSON 并合并到 flow_state 中。"""
@@ -440,6 +451,89 @@ class FlowDrivenAgent(BaseAgent):
 		try:
 			flow_state = self._get_flow_state(context)
 			base_vars = {"message": message}
+
+			# 开始节点预处理阶段：判断是否可直接回答 / 规划工具 / 添加todolist
+			try:
+				judge_prompt = (
+					"你是一个判断器。给定用户问题，判断是否可以在不查询外部数据、工具或知识库的前提下给出可靠回答。\n"
+					"严格输出JSON：{\"can_direct_answer\": true|false, \"answer\": string}。\n"
+					f"用户问题：{message}"
+				)
+				judge_resp = await self.llm_helper.call(messages=[{"role": "user", "content": judge_prompt}])
+				parsed = None
+				try:
+					parsed = json.loads(judge_resp)
+				except Exception:
+					parsed = None
+				if isinstance(parsed, dict) and parsed.get("can_direct_answer") and parsed.get("answer"):
+					# 直接回答并结束
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="final",
+						content=str(parsed.get("answer", "")),
+						agent_name=self.name,
+						metadata={"direct": True},
+						is_end=True
+					)
+					return
+
+				# 需要外部数据：规划工具
+				from main import agent_manager
+				mcp = getattr(agent_manager, 'mcp_helper', None) if agent_manager else None
+				bound_tools = list(getattr(self, 'bound_tools', []) or [])
+				selected_tool = None  # (server, tool)
+				if mcp and bound_tools:
+					# 先尝试首选绑定工具（简单启发式）
+					for t in bound_tools:
+						if isinstance(t, str) and '_' in t:
+							server, tool = t.split('_', 1)
+							selected_tool = (server, tool)
+							break
+				
+				if mcp and selected_tool:
+					try:
+						server, tool = selected_tool
+						result = await mcp.call_tool(
+							server_name=server,
+							tool_name=tool,
+							query=str(message)
+						)
+						try:
+							result_text = json.dumps(result, ensure_ascii=False)
+						except Exception:
+							result_text = str(result)
+						flow_state['last_output'] = flow_state.get('last_output', '') + ("\n" if flow_state.get('last_output') else "") + result_text
+						yield StreamChunk(
+							chunk_id=str(uuid.uuid4()),
+							session_id=(context or {}).get('session_id', ''),
+							type="tool_result",
+							content=result_text,
+							metadata={"tool_name": f"{server}_{tool}"},
+							agent_name=self.name
+						)
+					except Exception as e:
+						yield StreamChunk(
+							chunk_id=str(uuid.uuid4()),
+							session_id=(context or {}).get('session_id', ''),
+							type="tool_error",
+							content=f"开始阶段工具调用失败: {str(e)}",
+							agent_name=self.name
+						)
+				else:
+					# 无可用工具：添加todolist项
+					todo_reason = "现有工具无法满足需求，请添加适配该问题的工具或接入数据源。"
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="tool_result",
+						content=f"[TODO] {todo_reason}",
+						metadata={"tool_name": "todolist"},
+						agent_name=self.name
+					)
+			except Exception as _e:
+				# 开始阶段失败不阻断主流程
+				logger.warning(f"开始阶段处理失败: {str(_e)}")
 
 			if not self.start_node_id:
 				yield StreamChunk(

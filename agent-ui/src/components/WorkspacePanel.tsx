@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Tabs, Empty, Typography, Card, Button } from 'antd';
+import { Tabs, Empty, Typography, Card, Button, Space } from 'antd';
 import ReactFlow, {
   Node,
   Edge,
@@ -15,7 +15,7 @@ import ReactFlow, {
   Position
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { RobotOutlined, SettingOutlined, BranchesOutlined, ThunderboltOutlined, ImportOutlined, ExportOutlined } from '@ant-design/icons';
+import { RobotOutlined, SettingOutlined, BranchesOutlined, ThunderboltOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
@@ -23,7 +23,7 @@ const { Text } = Typography;
 const StartNode = ({ data }: { data: any }) => (
   <div style={{ padding: '10px', border: '2px solid #389e0d', borderRadius: '8px', background: '#f6ffed', minWidth: '80px' }}>
     <div style={{ textAlign: 'center' }}>
-      <ImportOutlined style={{ fontSize: '16px', color: '#52c41a', marginBottom: '4px' }} />
+      <div style={{ fontSize: '16px', color: '#52c41a', marginBottom: '4px', fontWeight: 'bold' }}>▶</div>
       <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
     </div>
     <Handle type="source" position={Position.Bottom} id="source-0" />
@@ -80,7 +80,7 @@ const EndNode = ({ data }: { data: any }) => (
   <div style={{ padding: '10px', border: '2px solid #531dab', borderRadius: '8px', background: '#f9f0ff', minWidth: '80px' }}>
     <Handle type="target" position={Position.Top} />
     <div style={{ textAlign: 'center' }}>
-      <ExportOutlined style={{ fontSize: '16px', color: '#722ed1', marginBottom: '4px' }} />
+      <div style={{ fontSize: '16px', color: '#722ed1', marginBottom: '4px', fontWeight: 'bold' }}>●</div>
       <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
     </div>
   </div>
@@ -190,124 +190,126 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 		nodeStatuses: []
 	});
 
+
+
+	// 智能布局算法 - 支持分支结构
+	const calculateNodePositions = (nodes: any[], edges: any[]) => {
+		const nodeMap = new Map();
+		const inDegree = new Map();
+		const outDegree = new Map();
+		const levels = new Map();
+		
+		// 初始化节点信息
+		nodes.forEach(node => {
+			nodeMap.set(node.id, node);
+			inDegree.set(node.id, 0);
+			outDegree.set(node.id, 0);
+		});
+		
+		// 计算入度和出度
+		edges.forEach(edge => {
+			inDegree.set(edge.target, inDegree.get(edge.target) + 1);
+			outDegree.set(edge.source, inDegree.get(edge.source) + 1);
+		});
+		
+		// 拓扑排序计算层级
+		const queue: string[] = [];
+		nodes.forEach(node => {
+			if (inDegree.get(node.id) === 0) {
+				levels.set(node.id, 0);
+				queue.push(node.id);
+			}
+		});
+		
+		while (queue.length > 0) {
+			const currentId = queue.shift()!;
+			const currentLevel = levels.get(currentId);
+			
+			edges.forEach(edge => {
+				if (edge.source === currentId) {
+					const targetLevel = Math.max(levels.get(edge.target) || 0, currentLevel + 1);
+					levels.set(edge.target, targetLevel);
+					
+					inDegree.set(edge.target, inDegree.get(edge.target) - 1);
+					if (inDegree.get(edge.target) === 0) {
+						queue.push(edge.target);
+					}
+				}
+			});
+		}
+		
+		// 按层级分组节点
+		const levelGroups = new Map();
+		levels.forEach((level, nodeId) => {
+			if (!levelGroups.has(level)) {
+				levelGroups.set(level, []);
+			}
+			levelGroups.get(level).push(nodeId);
+		});
+		
+		// 计算节点位置 - 智能布局避免重叠
+		const positions = new Map();
+		const levelHeight = 200; // 增加层级间距
+		const nodeWidth = 120; // 节点宽度
+		const minNodeSpacing = 180; // 最小节点间距
+		const containerWidth = 1400; // 增加容器宽度
+		
+		levelGroups.forEach((nodeIds, level) => {
+			const y = 80 + level * levelHeight;
+			
+			// 智能计算间距：根据节点数量动态调整
+			let spacing = minNodeSpacing;
+			if (nodeIds.length > 3) {
+				spacing = Math.max(minNodeSpacing, (containerWidth - nodeWidth) / (nodeIds.length - 1));
+			}
+			
+			// 计算这层需要的总宽度
+			const totalWidth = (nodeIds.length - 1) * spacing + nodeWidth;
+			const startX = Math.max(100, (containerWidth - totalWidth) / 2); // 居中对齐
+			
+			nodeIds.forEach((nodeId: string, index: number) => {
+				const x = startX + index * spacing;
+				positions.set(nodeId, { x, y });
+			});
+		});
+		
+		return positions;
+	};
+
+	// 创建节点 - 使用自定义节点类型
+	const createNode = (node: any, position: { x: number; y: number }) => {
+		return {
+			id: node.id,
+			type: node.nodeType || 'default', // 直接使用nodeType作为ReactFlow的type
+			position,
+			data: { 
+				label: node.label, 
+				nodeType: node.nodeType 
+			}
+		};
+	};
+
+	// 创建连接线 - 简单直线，参考FlowEditorPage
+	const createEdge = (edge: any, index: number) => {
+		// 为不同的连接线使用不同颜色
+		const colors = ['#1890ff', '#52c41a', '#fa8c16', '#722ed1', '#eb2f96', '#13c2c2'];
+		const color = colors[index % colors.length];
+		
+		return {
+			id: edge.id,
+			source: edge.source,
+			target: edge.target,
+			style: { 
+				stroke: color, 
+				strokeWidth: 2
+			},
+			animated: false
+		} as Edge;
+	};
+
 	// 显示智能体预定义流程图
 	useEffect(() => {
 		if (!flowData?.nodes || flowData.nodes.length === 0) return;
-
-		// 智能布局算法 - 支持分支结构
-		const calculateNodePositions = (nodes: any[], edges: any[]) => {
-			const nodeMap = new Map();
-			const inDegree = new Map();
-			const outDegree = new Map();
-			const levels = new Map();
-			
-			// 初始化节点信息
-			nodes.forEach(node => {
-				nodeMap.set(node.id, node);
-				inDegree.set(node.id, 0);
-				outDegree.set(node.id, 0);
-			});
-			
-			// 计算入度和出度
-			edges.forEach(edge => {
-				inDegree.set(edge.target, inDegree.get(edge.target) + 1);
-				outDegree.set(edge.source, outDegree.get(edge.source) + 1);
-			});
-			
-			// 拓扑排序计算层级
-			const queue: string[] = [];
-			nodes.forEach(node => {
-				if (inDegree.get(node.id) === 0) {
-					levels.set(node.id, 0);
-					queue.push(node.id);
-				}
-			});
-			
-			while (queue.length > 0) {
-				const currentId = queue.shift()!;
-				const currentLevel = levels.get(currentId);
-				
-				edges.forEach(edge => {
-					if (edge.source === currentId) {
-						const targetLevel = Math.max(levels.get(edge.target) || 0, currentLevel + 1);
-						levels.set(edge.target, targetLevel);
-						
-						inDegree.set(edge.target, inDegree.get(edge.target) - 1);
-						if (inDegree.get(edge.target) === 0) {
-							queue.push(edge.target);
-						}
-					}
-				});
-			}
-			
-			// 按层级分组节点
-			const levelGroups = new Map();
-			levels.forEach((level, nodeId) => {
-				if (!levelGroups.has(level)) {
-					levelGroups.set(level, []);
-				}
-				levelGroups.get(level).push(nodeId);
-			});
-			
-			// 计算节点位置 - 智能布局避免重叠
-			const positions = new Map();
-			const levelHeight = 200; // 增加层级间距
-			const nodeWidth = 120; // 节点宽度
-			const minNodeSpacing = 180; // 最小节点间距
-			const containerWidth = 1400; // 增加容器宽度
-			
-			levelGroups.forEach((nodeIds, level) => {
-				const y = 80 + level * levelHeight;
-				
-				// 智能计算间距：根据节点数量动态调整
-				let spacing = minNodeSpacing;
-				if (nodeIds.length > 3) {
-					spacing = Math.max(minNodeSpacing, (containerWidth - nodeWidth) / (nodeIds.length - 1));
-				}
-				
-				// 计算这层需要的总宽度
-				const totalWidth = (nodeIds.length - 1) * spacing + nodeWidth;
-				const startX = Math.max(100, (containerWidth - totalWidth) / 2); // 居中对齐
-				
-				nodeIds.forEach((nodeId: string, index: number) => {
-					const x = startX + index * spacing;
-					positions.set(nodeId, { x, y });
-				});
-			});
-			
-			return positions;
-		};
-
-		// 创建节点 - 使用自定义节点类型
-		const createNode = (node: any, position: { x: number; y: number }) => {
-			return {
-				id: node.id,
-				type: node.nodeType || 'default', // 直接使用nodeType作为ReactFlow的type
-				position,
-				data: { 
-					label: node.label, 
-					nodeType: node.nodeType 
-				}
-			};
-		};
-
-		// 创建连接线 - 简单直线，参考FlowEditorPage
-		const createEdge = (edge: any, index: number) => {
-			// 为不同的连接线使用不同颜色
-			const colors = ['#1890ff', '#52c41a', '#fa8c16', '#722ed1', '#eb2f96', '#13c2c2'];
-			const color = colors[index % colors.length];
-			
-			return {
-				id: edge.id,
-				source: edge.source,
-				target: edge.target,
-				style: { 
-					stroke: color, 
-					strokeWidth: 2
-				},
-				animated: false
-			} as Edge;
-		};
 
 		// 计算节点位置
 		const positions = calculateNodePositions(flowData.nodes, flowData.edges);
@@ -336,6 +338,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 	const onConnect = (connection: Connection) => {
 		setFlowEdges(prev => addEdge(connection, prev));
 	};
+
 
 
 
@@ -388,45 +391,66 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 									<div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
 										{/* 流程图显示 */}
 										<Card 
-											title="智能体流程图"
+											title={
+												<Space>
+													<span>智能体流程图</span>
+													{flowNodes.length > 0 && (
+														<Text type="secondary" style={{ fontSize: '12px' }}>
+															{flowNodes.length} 个节点, {flowEdges.length} 条连接
+														</Text>
+													)}
+												</Space>
+											}
 											size="small" 
 											style={{ flex: 1, minHeight: '500px' }}
 											bodyStyle={{ height: 'calc(100% - 57px)', padding: '8px' }}
 										>
-
-											<div style={{ height: '450px', position: 'relative' }}>
-												<ReactFlow
-													nodes={flowNodes}
-													edges={flowEdges}
-													onNodesChange={onFlowNodesChange}
-													onEdgesChange={onFlowEdgesChange}
-													onConnect={onConnect}
-													fitView
-													fitViewOptions={{ padding: 0.3, includeHiddenNodes: false }}
-													minZoom={0.3}
-													maxZoom={2}
-													proOptions={{ hideAttribution: true }}
-													style={{ background: '#fafafa', minHeight: '600px' }}
-													nodeTypes={nodeTypes}
-													nodesDraggable={false}
-													nodesConnectable={false}
-													elementsSelectable={false}
-													selectNodesOnDrag={false}
-													attributionPosition="bottom-left"
-												>
-													<Controls position="top-right" />
-													<Background color="#aaa" gap={16} />
-													<MiniMap 
-														style={{
-															background: 'rgba(255, 255, 255, 0.9)',
-															border: '1px solid #ccc',
-															borderRadius: '4px'
-														}}
-														nodeColor="#1890ff"
-														maskColor="rgba(0, 0, 0, 0.1)"
-													/>
-												</ReactFlow>
-											</div>
+											{flowNodes.length === 0 ? (
+												<div style={{ 
+													height: '450px', 
+													display: 'flex', 
+													flexDirection: 'column',
+													alignItems: 'center',
+													justifyContent: 'center',
+													color: '#999'
+												}}>
+													<Text>暂无流程图数据</Text>
+												</div>
+											) : (
+												<div style={{ height: '450px', position: 'relative' }}>
+													<ReactFlow
+														nodes={flowNodes}
+														edges={flowEdges}
+														onNodesChange={onFlowNodesChange}
+														onEdgesChange={onFlowEdgesChange}
+														onConnect={onConnect}
+														fitView
+														fitViewOptions={{ padding: 0.3, includeHiddenNodes: false }}
+														minZoom={0.3}
+														maxZoom={2}
+														proOptions={{ hideAttribution: true }}
+														style={{ background: '#fafafa', minHeight: '600px' }}
+														nodeTypes={nodeTypes}
+														nodesDraggable={false}
+														nodesConnectable={false}
+														elementsSelectable={false}
+														selectNodesOnDrag={false}
+														attributionPosition="bottom-left"
+													>
+														<Controls position="top-right" />
+														<Background color="#aaa" gap={16} />
+														<MiniMap 
+															style={{
+																background: 'rgba(255, 255, 255, 0.9)',
+																border: '1px solid #ccc',
+																borderRadius: '4px'
+															}}
+															nodeColor="#1890ff"
+															maskColor="rgba(0, 0, 0, 0.1)"
+														/>
+													</ReactFlow>
+												</div>
+											)}
 										</Card>
 									</div>
 								) : (
@@ -442,6 +466,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 					))}
 				</Tabs>
 			</div>
+
+
 		</div>
 	);
 };

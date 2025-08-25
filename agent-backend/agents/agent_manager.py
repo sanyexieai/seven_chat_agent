@@ -482,10 +482,10 @@ class AgentManager:
             logger.info("工具驱动智能体设置MCP助手")
         self.agents["tool_agent"] = tool_agent
         
-        # 流程图驱动智能体（不需要MCP助手）
-        flow_agent = FlowDrivenAgent("flow_agent", "流程图驱动智能体")
-        self.agents["flow_agent"] = flow_agent
-        logger.info("创建流程图驱动智能体，不设置MCP助手")
+        # 移除重复的flow_agent创建
+        # flow_agent = FlowDrivenAgent("flow_agent", "流程图驱动智能体")
+        # self.agents["flow_agent"] = flow_agent
+        # logger.info("创建流程图驱动智能体，不设置MCP助手")
         
         logger.info("创建默认智能体完成")
     

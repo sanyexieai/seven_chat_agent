@@ -1,0 +1,164 @@
+{
+    "metadata": {
+      "name": "通用判断节点流程图示例",
+      "description": "展示如何使用不同类型的判断节点实现智能流程控制",
+      "version": "1.0.0"
+    },
+    "nodes": [
+      {
+        "id": "judge_domain",
+        "type": "judge",
+        "position": { "x": 250, "y": 50 },
+        "data": {
+          "label": "领域分类判断",
+          "nodeType": "judge",
+          "isStartNode": true,
+          "config": {
+            "judge_type": "domain_classification",
+            "system_prompt": "你是一个专业的问题分类器，请判断用户问题属于哪个领域。",
+            "user_prompt": "请输出JSON：{\"domain\": \"技术|生活|工作|其他\", \"can_handle\": true|false, \"reason\": \"分类原因\"}",
+            "save_as": "domain_judge_result"
+          }
+        }
+      },
+      {
+        "id": "tech_handler",
+        "type": "llm",
+        "position": { "x": 100, "y": 150 },
+        "data": {
+          "label": "技术问题处理",
+          "nodeType": "llm",
+          "config": {
+            "system_prompt": "你是一个技术专家，请处理技术相关问题。",
+            "user_prompt": "用户问题：{message}\n\n请提供技术解决方案。",
+            "save_as": "tech_solution"
+          }
+        }
+      },
+      {
+        "id": "general_handler",
+        "type": "llm",
+        "position": { "x": 400, "y": 150 },
+        "data": {
+          "label": "通用问题处理",
+          "nodeType": "llm",
+          "config": {
+            "system_prompt": "你是一个通用助手，请处理非技术问题。",
+            "user_prompt": "用户问题：{message}\n\n请提供合适的建议。",
+            "save_as": "general_solution"
+          }
+        }
+      },
+      {
+        "id": "judge_tool",
+        "type": "judge",
+        "position": { "x": 250, "y": 250 },
+        "data": {
+          "label": "工具选择判断",
+          "nodeType": "judge",
+          "config": {
+            "judge_type": "tool_selection",
+            "system_prompt": "你是一个工具选择器，请根据用户问题选择最合适的工具。",
+            "user_prompt": "请输出JSON：{\"selected_tool\": \"search|calculator|translator|other\", \"confidence\": 0.0-1.0, \"reason\": \"选择原因\"}",
+            "save_as": "tool_judge_result"
+          }
+        }
+      },
+      {
+        "id": "high_conf_tool",
+        "type": "tool",
+        "position": { "x": 100, "y": 350 },
+        "data": {
+          "label": "高置信度工具",
+          "nodeType": "tool",
+          "config": {
+            "server": "ddg",
+            "tool": "search",
+            "params": { "query": "{message}" },
+            "save_as": "high_conf_result",
+            "append_to_output": true
+          }
+        }
+      },
+      {
+        "id": "fallback_tool",
+        "type": "tool",
+        "position": { "x": 400, "y": 350 },
+        "data": {
+          "label": "备选工具",
+          "nodeType": "tool",
+          "config": {
+            "server": "ddg",
+            "tool": "search",
+            "params": { "query": "{message} 详细说明" },
+            "save_as": "fallback_result",
+            "append_to_output": true
+          }
+        }
+      },
+      {
+        "id": "final_answer",
+        "type": "llm",
+        "position": { "x": 250, "y": 450 },
+        "data": {
+          "label": "最终回答",
+          "nodeType": "llm",
+          "config": {
+            "system_prompt": "你是一个智能助手，请根据前面的处理结果，为用户提供最终的综合回答。",
+            "user_prompt": "用户问题：{message}\n\n处理结果：{last_output}",
+            "save_as": "final_answer"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge_tech",
+        "source": "judge_domain",
+        "sourceHandle": "source-positive",
+        "target": "tech_handler",
+        "label": "技术问题"
+      },
+      {
+        "id": "edge_general",
+        "source": "judge_domain",
+        "sourceHandle": "source-negative",
+        "target": "general_handler",
+        "label": "通用问题"
+      },
+      {
+        "id": "edge_tech_to_tool",
+        "source": "tech_handler",
+        "target": "judge_tool"
+      },
+      {
+        "id": "edge_general_to_tool",
+        "source": "general_handler",
+        "target": "judge_tool"
+      },
+      {
+        "id": "edge_high_conf",
+        "source": "judge_tool",
+        "sourceHandle": "source-positive",
+        "target": "high_conf_tool",
+        "label": "高置信度"
+      },
+      {
+        "id": "edge_fallback",
+        "source": "judge_tool",
+        "sourceHandle": "source-negative",
+        "target": "fallback_tool",
+        "label": "备选工具"
+      },
+      {
+        "id": "edge_merge_1",
+        "source": "high_conf_tool",
+        "target": "final_answer"
+      },
+      {
+        "id": "edge_merge_2",
+        "source": "fallback_tool",
+        "target": "final_answer"
+      }
+    ]
+  }

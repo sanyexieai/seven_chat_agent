@@ -17,6 +17,8 @@ class NodeType(str, Enum):
 	ACTION = "action"         # 动作节点
 	LLM = "llm"               # LLM 调用节点
 	TOOL = "tool"             # 工具调用节点
+	JUDGE = "judge"           # 判断节点（用于判断是否可以直接回答等）
+	ROUTER = "router"         # 路由节点（统一的路由逻辑处理）
 
 class FlowNode:
 	"""流程图节点"""
@@ -110,8 +112,11 @@ class FlowDrivenAgent(BaseAgent):
 				node_data = node_config.get('data', {})
 				node_name = node_data.get('label', '')
 				
-				# 从data中提取config
+				# 从data中提取config，并确保label被包含
 				node_config_dict = node_data.get('config', {})
+				# 确保label被保存到config中，供后续使用
+				if node_name:
+					node_config_dict['label'] = node_name
 				
 				logger.info(f"解析节点 {node_id}: type={node_type}, name={node_name}, config={node_config_dict}")
 				
@@ -128,12 +133,51 @@ class FlowDrivenAgent(BaseAgent):
 				self.start_node_id = nodes_config[0]['id']
 				logger.info(f"未找到起始节点，使用第一个节点作为起始节点: {self.start_node_id}")
 			
+			# 解析边配置，建立节点连接关系
+			edges_config = self.flow_config.get('edges', [])
+			logger.info(f"开始解析 {len(edges_config)} 条边")
+			
+			for edge_config in edges_config:
+				source_id = edge_config.get('source')
+				target_id = edge_config.get('target')
+				source_handle = edge_config.get('sourceHandle', '')
+				
+				if source_id and target_id and source_id in self.nodes:
+					source_node = self.nodes[source_id]
+					if not hasattr(source_node, 'connections'):
+						source_node.connections = []
+					
+					# 根据sourceHandle决定连接类型
+					if source_handle == 'source-true':
+						# 真值分支，放在第一个位置
+						if len(source_node.connections) == 0:
+							source_node.connections = [target_id, None]
+						else:
+							source_node.connections[0] = target_id
+					elif source_handle == 'source-false':
+						# 假值分支，放在第二个位置
+						if len(source_node.connections) == 0:
+							source_node.connections = [None, target_id]
+						elif len(source_node.connections) == 1:
+							source_node.connections.append(target_id)
+						else:
+							source_node.connections[1] = target_id
+					else:
+						# 默认连接，放在第一个位置
+						if len(source_node.connections) == 0:
+							source_node.connections = [target_id]
+						else:
+							source_node.connections[0] = target_id
+					
+					logger.info(f"建立连接: {source_id} -> {target_id} (handle: {source_handle})")
+			
 			logger.info(f"加载了 {len(self.nodes)} 个流程图节点")
 			logger.info(f"起始节点: {self.start_node_id}")
 			
-			# 打印所有节点的配置
+			# 打印所有节点的配置和连接
 			for node_id, node in self.nodes.items():
 				logger.info(f"节点 {node_id} 配置: {node.config}")
+				logger.info(f"节点 {node_id} 连接: {getattr(node, 'connections', [])}")
 		
 		except Exception as e:
 			logger.error(f"加载流程图配置失败: {str(e)}")
@@ -436,6 +480,213 @@ class FlowDrivenAgent(BaseAgent):
 				agent_name=self.name,
 				metadata={'node_id': node.id, 'node_type': node.type.value, 'action': action}
 			)
+
+	async def _execute_judge_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
+		"""执行判断节点"""
+		judge_type = node.config.get('judge_type', 'custom')
+		flow_state = self._get_flow_state(context)
+		variables = {**flow_state, 'message': message}
+		
+		# 获取配置的提示词
+		system_prompt = self._render_template_value(
+			node.config.get('system_prompt', 
+				"你是一个智能判断器，请根据用户输入和上下文进行判断。"
+			), 
+			variables
+		)
+		user_prompt = self._render_template_value(
+			node.config.get('user_prompt', 
+				"请根据以下信息进行判断，并输出JSON格式的结果。\n\n用户输入：{{message}}\n\n请输出判断结果："
+			), 
+			variables
+		)
+		
+		# 根据判断类型设置不同的默认提示词
+		if judge_type == 'direct_answer':
+			system_prompt = self._render_template_value(
+				node.config.get('system_prompt', 
+					"你是一个判断器。给定用户问题，判断是否可以在不查询外部数据、工具或知识库的前提下给出可靠回答。"
+				), 
+				variables
+			)
+			user_prompt = self._render_template_value(
+				node.config.get('user_prompt', 
+					"严格输出JSON：{\"can_direct_answer\": true|false, \"answer\": string}。\n用户问题：{{message}}"
+				), 
+				variables
+			)
+		elif judge_type == 'domain_classification':
+			system_prompt = self._render_template_value(
+				node.config.get('system_prompt', 
+					"你是一个专业的问题分类器，请判断用户问题属于哪个领域。"
+				), 
+				variables
+			)
+			user_prompt = self._render_template_value(
+				node.config.get('user_prompt', 
+					"请输出JSON：{\"domain\": \"技术|生活|工作|其他\", \"can_handle\": true|false, \"reason\": \"分类原因\"}"
+				), 
+				variables
+			)
+		elif judge_type == 'tool_selection':
+			system_prompt = self._render_template_value(
+				node.config.get('system_prompt', 
+					"你是一个工具选择器，请根据用户问题选择最合适的工具。"
+				), 
+				variables
+			)
+			user_prompt = self._render_template_value(
+				node.config.get('user_prompt', 
+					"请输出JSON：{\"selected_tool\": \"工具名\", \"confidence\": 0.0-1.0, \"reason\": \"选择原因\"}"
+				), 
+				variables
+			)
+		elif judge_type == 'intent_recognition':
+			system_prompt = self._render_template_value(
+				node.config.get('system_prompt', 
+					"你是一个意图识别器，请识别用户的真实意图。"
+				), 
+				variables
+			)
+			user_prompt = self._render_template_value(
+				node.config.get('user_prompt', 
+					"请输出JSON：{\"intent\": \"查询|操作|建议|其他\", \"priority\": \"high|medium|low\", \"requires_tool\": true|false}"
+				), 
+				variables
+			)
+		elif judge_type == 'custom':
+			# 使用用户自定义的提示词
+			pass
+		
+		try:
+			response = await self.llm_helper.call(messages=[
+				{"role": "system", "content": system_prompt},
+				{"role": "user", "content": user_prompt}
+			])
+			
+			# 尝试解析JSON
+			parsed = None
+			try:
+				parsed = json.loads(response)
+			except Exception:
+				parsed = None
+			
+			# 保存判断结果到流程状态
+			save_as = node.config.get('save_as', 'judge_result')
+			flow_state[save_as] = parsed or response
+			flow_state['last_output'] = response
+			
+			# 根据判断类型设置不同的流程状态变量
+			if parsed and isinstance(parsed, dict):
+				if judge_type == 'direct_answer':
+					flow_state['judge_can_direct_answer'] = parsed.get('can_direct_answer', False)
+					flow_state['judge_answer'] = parsed.get('answer', '')
+				elif judge_type == 'domain_classification':
+					flow_state['judge_domain'] = parsed.get('domain', '')
+					flow_state['judge_can_handle'] = parsed.get('can_handle', False)
+				elif judge_type == 'tool_selection':
+					flow_state['judge_selected_tool'] = parsed.get('selected_tool', '')
+					flow_state['judge_confidence'] = parsed.get('confidence', 0.0)
+				elif judge_type == 'intent_recognition':
+					flow_state['judge_intent'] = parsed.get('intent', '')
+					flow_state['judge_priority'] = parsed.get('priority', 'medium')
+					flow_state['judge_requires_tool'] = parsed.get('requires_tool', False)
+			
+			return AgentMessage(
+				id=str(uuid.uuid4()),
+				type=MessageType.AGENT,
+				content=response,
+				agent_name=self.name,
+				metadata={'node_id': node.id, 'node_type': node.type.value, 'judge_type': judge_type}
+			)
+		except Exception as e:
+			logger.error(f"执行判断节点失败: {str(e)}")
+			raise
+
+	async def _execute_router_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
+		"""执行路由节点 - 统一的路由逻辑处理"""
+		flow_state = self._get_flow_state(context)
+		routing_config = node.config.get('routing_logic', {})
+		
+		if not routing_config:
+			raise ValueError(f"路由节点 {node.id} 未配置路由逻辑")
+		
+		# 获取路由字段和值
+		field = routing_config.get('field', '')
+		value = routing_config.get('value', None)
+		true_branch = routing_config.get('true_branch', '')
+		false_branch = routing_config.get('false_branch', '')
+		
+		if not field:
+			raise ValueError(f"路由节点 {node.id} 未配置路由字段")
+		
+		# 从流程状态获取字段值
+		field_value = flow_state.get(field)
+		
+		# 根据路由逻辑选择分支
+		selected_branch = None
+		if value is not None:
+			# 精确值匹配
+			if field_value == value:
+				selected_branch = 'true'
+			else:
+				selected_branch = 'false'
+		else:
+			# 布尔值判断
+			if isinstance(field_value, bool):
+				selected_branch = 'true' if field_value else 'false'
+			elif isinstance(field_value, (int, float)):
+				# 数值判断
+				threshold = routing_config.get('threshold', 0)
+				operator = routing_config.get('operator', '>')
+				
+				if operator == '>':
+					selected_branch = 'true' if field_value > threshold else 'false'
+				elif operator == '>=':
+					selected_branch = 'true' if field_value >= threshold else 'false'
+				elif operator == '<':
+					selected_branch = 'true' if field_value < threshold else 'false'
+				elif operator == '<=':
+					selected_branch = 'true' if field_value <= threshold else 'false'
+				elif operator == '==':
+					selected_branch = 'true' if field_value == threshold else 'false'
+				else:
+					selected_branch = 'false'
+			elif isinstance(field_value, str):
+				# 字符串判断
+				pattern = routing_config.get('pattern', '')
+				if pattern:
+					import re
+					if re.search(pattern, field_value):
+						selected_branch = 'true'
+					else:
+						selected_branch = 'false'
+				else:
+					# 非空字符串判断
+					selected_branch = 'true' if field_value else 'false'
+			else:
+				# 其他类型，默认为false
+				selected_branch = 'false'
+		
+		# 记录路由决策
+		logger.info(f"路由节点 {node.id} 字段 {field}={field_value}, 选择分支: {selected_branch}")
+		logger.info(f"路由节点 {node.id} 可用分支: {true_branch} (真值), {false_branch} (假值)")
+		
+		# 将路由决策保存到流程状态，供后续节点使用
+		flow_state['router_decision'] = {
+			'field': field,
+			'value': field_value,
+			'selected_branch': selected_branch,
+			'timestamp': str(uuid.uuid4())
+		}
+		
+		return AgentMessage(
+			id=str(uuid.uuid4()),
+			type=MessageType.AGENT,
+			content=f"路由决策: {field}={field_value} -> {selected_branch}",
+			agent_name=self.name,
+			metadata={'node_id': node.id, 'node_type': node.type.value, 'selected_branch': selected_branch}
+		)
 	
 	async def process_message(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AgentMessage:
 		"""处理用户消息"""
@@ -451,90 +702,15 @@ class FlowDrivenAgent(BaseAgent):
 		try:
 			flow_state = self._get_flow_state(context)
 			base_vars = {"message": message}
-
-			# 开始节点预处理阶段：判断是否可直接回答 / 规划工具 / 添加todolist
-			try:
-				judge_prompt = (
-					"你是一个判断器。给定用户问题，判断是否可以在不查询外部数据、工具或知识库的前提下给出可靠回答。\n"
-					"严格输出JSON：{\"can_direct_answer\": true|false, \"answer\": string}。\n"
-					f"用户问题：{message}"
-				)
-				judge_resp = await self.llm_helper.call(messages=[{"role": "user", "content": judge_prompt}])
-				parsed = None
-				try:
-					parsed = json.loads(judge_resp)
-				except Exception:
-					parsed = None
-				if isinstance(parsed, dict) and parsed.get("can_direct_answer") and parsed.get("answer"):
-					# 直接回答并结束
-					yield StreamChunk(
-						chunk_id=str(uuid.uuid4()),
-						session_id=(context or {}).get('session_id', ''),
-						type="final",
-						content=str(parsed.get("answer", "")),
-						agent_name=self.name,
-						metadata={"direct": True},
-						is_end=True
-					)
-					return
-
-				# 需要外部数据：规划工具
-				from main import agent_manager
-				mcp = getattr(agent_manager, 'mcp_helper', None) if agent_manager else None
-				bound_tools = list(getattr(self, 'bound_tools', []) or [])
-				selected_tool = None  # (server, tool)
-				if mcp and bound_tools:
-					# 先尝试首选绑定工具（简单启发式）
-					for t in bound_tools:
-						if isinstance(t, str) and '_' in t:
-							server, tool = t.split('_', 1)
-							selected_tool = (server, tool)
-							break
-				
-				if mcp and selected_tool:
-					try:
-						server, tool = selected_tool
-						result = await mcp.call_tool(
-							server_name=server,
-							tool_name=tool,
-							query=str(message)
-						)
-						try:
-							result_text = json.dumps(result, ensure_ascii=False)
-						except Exception:
-							result_text = str(result)
-						flow_state['last_output'] = flow_state.get('last_output', '') + ("\n" if flow_state.get('last_output') else "") + result_text
-						yield StreamChunk(
-							chunk_id=str(uuid.uuid4()),
-							session_id=(context or {}).get('session_id', ''),
-							type="tool_result",
-							content=result_text,
-							metadata={"tool_name": f"{server}_{tool}"},
-							agent_name=self.name
-						)
-					except Exception as e:
-						yield StreamChunk(
-							chunk_id=str(uuid.uuid4()),
-							session_id=(context or {}).get('session_id', ''),
-							type="tool_error",
-							content=f"开始阶段工具调用失败: {str(e)}",
-							agent_name=self.name
-						)
-				else:
-					# 无可用工具：添加todolist项
-					todo_reason = "现有工具无法满足需求，请添加适配该问题的工具或接入数据源。"
-					yield StreamChunk(
-						chunk_id=str(uuid.uuid4()),
-						session_id=(context or {}).get('session_id', ''),
-						type="tool_result",
-						content=f"[TODO] {todo_reason}",
-						metadata={"tool_name": "todolist"},
-						agent_name=self.name
-					)
-			except Exception as _e:
-				# 开始阶段失败不阻断主流程
-				logger.warning(f"开始阶段处理失败: {str(_e)}")
-
+			
+			# 添加调试日志
+			logger.info(f"🚀 开始执行流程图，起始节点: {self.start_node_id}")
+			logger.info(f"🚀 流程图节点数量: {len(self.nodes)}")
+			logger.info(f"🚀 流程图节点类型: {[node.type.value for node in self.nodes.values()]}")
+			logger.info(f"🚀 流程图节点详情: {[(node.id, node.type.value, node.name) for node in self.nodes.values()]}")
+			logger.info(f"🚀 用户消息: {message}")
+			logger.info(f"🚀 流程状态: {flow_state}")
+			
 			if not self.start_node_id:
 				yield StreamChunk(
 					chunk_id=str(uuid.uuid4()),
@@ -554,11 +730,38 @@ class FlowDrivenAgent(BaseAgent):
 				step_guard += 1
 				node = self.nodes.get(current_id)
 				if not node:
+					logger.error(f"🚨 找不到节点: {current_id}")
 					break
 
+				logger.info(f"🚀 执行节点 {step_guard}: {current_id} ({node.type.value}) - {node.name}")
 				vars_all = {**flow_state, **base_vars}
 
 				if node.type == NodeType.LLM:
+					logger.info(f"🚀 进入LLM节点处理分支: {current_id}")
+					# 发送节点开始标识
+					logger.info(f"🚀 准备发送节点开始事件: {node.id} ({node.name})")
+					logger.info(f"🚀 节点metadata: node_id={node.id}, node_type={node.type.value}, node_name={node.name}, node_label={node.config.get('label', node.name)}")
+					
+					# 添加调试日志，确认即将发送node_start事件
+					logger.info(f"🚀 即将发送StreamChunk: type=node_start, content=🚀 开始执行 {node.name} 节点")
+					
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="node_start",
+						content=f"🚀 开始执行 {node.name} 节点",
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name)
+						}
+					)
+					
+					logger.info(f"🚀 节点开始事件已发送: {node.id}")
+					logger.info(f"🚀 节点开始事件发送完成，继续执行LLM逻辑")
+					
 					# 渲染提示
 					system_prompt = self._render_template_value(node.config.get('system_prompt', ''), vars_all)
 					user_prompt = self._render_template_value(node.config.get('user_prompt', message), vars_all)
@@ -576,24 +779,51 @@ class FlowDrivenAgent(BaseAgent):
 								continue
 							acc += piece
 							flow_state['last_output'] = flow_state.get('last_output', '') + piece
-							# 流式输出
+							# 流式输出，添加节点标识
 							yield StreamChunk(
 								chunk_id=str(uuid.uuid4()),
 								session_id=(context or {}).get('session_id', ''),
 								type="content",
 								content=piece,
-								agent_name=self.name
+								agent_name=self.name,
+								metadata={
+									'node_id': node.id,
+									'node_type': node.type.value,
+									'node_name': node.name,
+									'node_label': node.config.get('label', node.name)
+								}
 							)
 						flow_state[save_as] = acc
 						# 尝试解析 JSON 并合并到 flow_state
 						self._merge_json_into_flow_state(acc, flow_state)
+						
+						# 输出节点执行完成标识
+						yield StreamChunk(
+							chunk_id=str(uuid.uuid4()),
+							session_id=(context or {}).get('session_id', ''),
+							type="node_complete",
+							content=f"✅ {node.name} 节点执行完成",
+							agent_name=self.name,
+							metadata={
+								'node_id': node.id,
+								'node_type': node.type.value,
+								'node_name': node.name,
+								'node_label': node.config.get('label', node.name),
+								'output': acc
+							}
+						)
 					except Exception as e:
 						yield StreamChunk(
 							chunk_id=str(uuid.uuid4()),
 							session_id=(context or {}).get('session_id', ''),
 							type="error",
 							content=f"LLM节点执行失败: {str(e)}",
-							agent_name=self.name
+							agent_name=self.name,
+							metadata={
+								'node_id': node.id,
+								'node_type': node.type.value,
+								'node_name': node.name
+							}
 						)
 					# 下一个
 					nexts = node.connections or []
@@ -648,7 +878,13 @@ class FlowDrivenAgent(BaseAgent):
 							session_id=(context or {}).get('session_id', ''),
 							type="tool_result",
 							content=formatted,
-							metadata={"tool_name": f"{actual_server}_{actual_tool}"},
+							metadata={
+								"tool_name": f"{actual_server}_{actual_tool}",
+								'node_id': node.id,
+								'node_type': node.type.value,
+								'node_name': node.name,
+								'node_label': node.config.get('label', node.name)
+							},
 							agent_name=self.name
 						)
 					except Exception as e:
@@ -657,7 +893,13 @@ class FlowDrivenAgent(BaseAgent):
 							session_id=(context or {}).get('session_id', ''),
 							type="tool_error",
 							content=f"工具节点执行失败: {str(e)}",
-							agent_name=self.name
+							agent_name=self.name,
+							metadata={
+								'node_id': node.id,
+								'node_type': node.type.value,
+								'node_name': node.name,
+								'node_label': node.config.get('label', node.name)
+							}
 						)
 					nexts = node.connections or []
 					current_id = nexts[0] if nexts else None
@@ -678,6 +920,100 @@ class FlowDrivenAgent(BaseAgent):
 						current_id = None
 					continue
 
+				if node.type == NodeType.JUDGE:
+					# 执行判断节点
+					judge_msg = await self._execute_judge_node(node, user_id, message, context)
+					flow_state['last_output'] = flow_state.get('last_output', '') + (judge_msg.content or '')
+					
+					# 输出判断结果
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="content",
+						content=judge_msg.content or '',
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name),
+							'judge_type': judge_type
+						}
+					)
+					
+					# 根据判断类型和结果决定下一步路径
+					judge_type = node.config.get('judge_type', 'custom')
+					nexts = node.connections or []
+					
+					if judge_type == 'direct_answer':
+						# 直接回答判断：根据can_direct_answer选择分支
+						can_direct_answer = flow_state.get('judge_can_direct_answer', False)
+						if can_direct_answer and len(nexts) > 0:
+							current_id = nexts[0]  # 第一个分支：直接回答
+							logger.info(f"判断节点 {node.id} 选择直接回答分支: {current_id}")
+						elif len(nexts) > 1:
+							current_id = nexts[1]  # 第二个分支：需要工具
+							logger.info(f"判断节点 {node.id} 选择工具调用分支: {current_id}")
+						elif len(nexts) > 0:
+							current_id = nexts[0]
+							logger.info(f"判断节点 {node.id} 只有一个分支，继续执行: {current_id}")
+						else:
+							current_id = None
+							logger.info(f"判断节点 {node.id} 没有后续节点，结束流程")
+					
+					elif judge_type == 'domain_classification':
+						# 领域分类判断：根据domain和can_handle选择分支
+						domain = flow_state.get('judge_domain', '')
+						can_handle = flow_state.get('judge_can_handle', False)
+						if can_handle and len(nexts) > 0:
+							current_id = nexts[0]  # 第一个分支：可以处理
+							logger.info(f"判断节点 {node.id} 选择可处理分支: {current_id}")
+						elif len(nexts) > 1:
+							current_id = nexts[1]  # 第二个分支：无法处理
+							logger.info(f"判断节点 {node.id} 选择无法处理分支: {current_id}")
+						elif len(nexts) > 0:
+							current_id = nexts[0]
+						else:
+							current_id = None
+					
+					elif judge_type == 'tool_selection':
+						# 工具选择判断：根据confidence选择分支
+						confidence = flow_state.get('judge_confidence', 0.0)
+						if confidence > 0.7 and len(nexts) > 0:
+							current_id = nexts[0]  # 第一个分支：高置信度工具
+							logger.info(f"判断节点 {node.id} 选择高置信度工具分支: {current_id}")
+						elif len(nexts) > 1:
+							current_id = nexts[1]  # 第二个分支：低置信度或备选工具
+							logger.info(f"判断节点 {node.id} 选择备选工具分支: {current_id}")
+						elif len(nexts) > 0:
+							current_id = nexts[0]
+						else:
+							current_id = None
+					
+					elif judge_type == 'intent_recognition':
+						# 意图识别判断：根据requires_tool选择分支
+						requires_tool = flow_state.get('judge_requires_tool', False)
+						if not requires_tool and len(nexts) > 0:
+							current_id = nexts[0]  # 第一个分支：不需要工具
+							logger.info(f"判断节点 {node.id} 选择无需工具分支: {current_id}")
+						elif len(nexts) > 1:
+							current_id = nexts[1]  # 第二个分支：需要工具
+							logger.info(f"判断节点 {node.id} 选择需要工具分支: {current_id}")
+						elif len(nexts) > 0:
+							current_id = nexts[0]
+						else:
+							current_id = None
+					
+					else:
+						# 自定义判断类型：默认走第一个分支
+						if len(nexts) > 0:
+							current_id = nexts[0]
+							logger.info(f"判断节点 {node.id} 使用默认分支: {current_id}")
+						else:
+							current_id = None
+					
+					continue
+
 				if node.type == NodeType.AGENT:
 					# 调用目标智能体（非流式），整体作为一段内容输出
 					agent_resp = await self._execute_agent_node(node, user_id, message, context)
@@ -687,10 +1023,67 @@ class FlowDrivenAgent(BaseAgent):
 						session_id=(context or {}).get('session_id', ''),
 						type="content",
 						content=agent_resp.content or '',
-						agent_name=self.name
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name),
+							'agent_name': agent_name
+						}
 					)
 					nexts = node.connections or []
 					current_id = nexts[0] if nexts else None
+					continue
+
+				if node.type == NodeType.ROUTER:
+					# 执行路由节点
+					logger.info(f"🚀 进入ROUTER节点处理分支: {current_id}")
+					logger.info(f"🚀 即将执行路由节点: {node.id} ({node.name})")
+					
+					router_msg = await self._execute_router_node(node, user_id, message, context)
+					flow_state['last_output'] = flow_state.get('last_output', '') + (router_msg.content or '')
+					
+					# 输出路由决策
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="content",
+						content=router_msg.content or '',
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name),
+							'selected_branch': router_msg.metadata.get('selected_branch')
+						}
+					)
+					
+					# 根据路由决策决定下一步
+					selected_branch = router_msg.metadata.get('selected_branch')
+					nexts = node.connections or []
+					
+					if selected_branch and nexts:
+						# 根据路由决策选择分支
+						if selected_branch == 'true' and len(nexts) > 0:
+							current_id = nexts[0]  # 第一个分支：真值分支
+							logger.info(f"路由节点 {node.id} 选择真值分支: {current_id}")
+						elif selected_branch == 'false' and len(nexts) > 1:
+							current_id = nexts[1]  # 第二个分支：假值分支
+							logger.info(f"路由节点 {node.id} 选择假值分支: {current_id}")
+						elif len(nexts) > 0:
+							# 只有一个分支，继续执行
+							current_id = nexts[0]
+							logger.info(f"路由节点 {node.id} 只有一个分支，继续执行: {current_id}")
+						else:
+							current_id = None
+							logger.info(f"路由节点 {node.id} 没有后续节点，结束流程")
+					else:
+						# 没有路由决策或后续节点，结束流程
+						current_id = None
+						logger.info(f"路由节点 {node.id} 未找到分支，结束流程")
+					
 					continue
 
 				# 未知节点，结束

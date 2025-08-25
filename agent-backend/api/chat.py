@@ -219,13 +219,21 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                 tools_used = []
                                 live_follow_segments: list[str] = []
                                 async for chunk in agent.process_message_stream(request.user_id, request.message, enhanced_context):
-                                    if chunk.type == "content":
-                                        # 发送内容块
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'content'}, ensure_ascii=False)}\n\n"
+                                    if chunk.type == "node_start":
+                                        # 发送节点开始事件，包含完整的chunk信息
+                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'node_start', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
+                                        yield data_chunk
+                                    elif chunk.type == "node_complete":
+                                        # 发送节点完成事件，包含完整的chunk信息
+                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'node_complete', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
+                                        yield data_chunk
+                                    elif chunk.type == "content":
+                                        # 发送内容块，包含metadata信息
+                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'content', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
                                         yield data_chunk
                                     elif chunk.type == "tool_result":
                                         # 发送工具执行结果
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'tool_result', 'tool_name': chunk.metadata.get('tool_name', '')}, ensure_ascii=False)}\n\n"
+                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'tool_result', 'tool_name': chunk.metadata.get('tool_name', ''), 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
                                         yield data_chunk
                                         tools_used.append(chunk.metadata.get('tool_name', ''))
                                         try:
@@ -250,11 +258,11 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                                 logger.warning(f"保存工具执行结果失败: {str(e)}")
                                     elif chunk.type == "tool_error":
                                         # 发送工具错误
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'tool_error'}, ensure_ascii=False)}\n\n"
+                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'tool_error', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
                                         yield data_chunk
                                     elif chunk.type == "final":
                                         # 发送最终响应
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'final_response'}, ensure_ascii=False)}\n\n"
+                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'final_response', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
                                         yield data_chunk
                                         # 保存聊天消息到数据库
                                         if request.session_id:
@@ -306,7 +314,7 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                         break
                                     elif chunk.type == "error":
                                         # 发送错误消息
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'error'}, ensure_ascii=False)}\n\n"
+                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'error', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
                                         yield data_chunk
                                         yield f"data: {json.dumps({'type': 'done', 'tools_used': tools_used}, ensure_ascii=False)}\n\n"
                                         break

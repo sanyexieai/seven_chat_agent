@@ -8,6 +8,7 @@ import { API_PATHS } from '../config/api';
 import { getApiUrl, apiConfigManager } from '../utils/apiConfig';
 import './ChatPage.css';
 import WorkspacePanel, { WorkspaceTabItem } from '../components/WorkspacePanel';
+import NodeInfoTag from '../components/NodeInfoTag';
 
 const { Header, Content, Sider } = Layout;
 const { TextArea } = Input;
@@ -721,6 +722,20 @@ const ChatPage: React.FC = () => {
     return title.length > 20 ? title.substring(0, 20) + '...' : title || '新对话';
   };
 
+  // 节点状态数组，每个节点包含一组消息片段
+  const [nodeStates, setNodeStates] = useState<Array<{
+    node_id: string;
+    node_type: string;
+    node_name: string;
+    node_label: string;
+    chunk_list: Array<{
+      chunk_id: string;
+      content: string;
+      type: string;
+    }>;
+  }>>([]);
+
+
 
 
   const scrollToBottom = () => {
@@ -890,6 +905,9 @@ const ChatPage: React.FC = () => {
         let fullContent = '';
         const decoder = new TextDecoder(undefined, { fatal: false });
         let buffer = '';
+        
+        // 添加调试日志，确认agentMessageId的值
+        console.log('🚀 SSE处理开始，agentMessageId:', agentMessageId);
 
         while (true) {
           const { done, value } = await reader.read();
@@ -904,6 +922,8 @@ const ChatPage: React.FC = () => {
             for (const line of lines) {
               if (line.trim() && line.startsWith('data: ')) {
                 
+
+                
                 // 处理特殊的SSE结束标记
                 if (line === 'data: [DONE]') {
                   break;
@@ -911,7 +931,33 @@ const ChatPage: React.FC = () => {
                 try {
                   const data = JSON.parse(line.slice(6));
                   
-                  if (data.type === 'tool_result' && data.content) {
+
+                  
+                  if (data.type === 'node_start' && data.content) {
+                    // 收到节点开始标识，更新当前消息的metadata中的当前节点信息
+                    
+                    setMessages(prev => {
+                      const updated = prev.map(msg => 
+                        msg.id === agentMessageId 
+                          ? { 
+                              ...msg, 
+                              metadata: {
+                                ...msg.metadata,
+                                current_node: {
+                                  node_id: data.metadata?.node_id,
+                                  node_type: data.metadata?.node_type,
+                                  node_name: data.metadata?.node_name,
+                                  node_label: data.metadata?.node_label
+                                }
+                              }
+                            }
+                          : msg
+                      );
+                      
+                      return updated;
+                    });
+                    
+                  } else if (data.type === 'tool_result' && data.content) {
                     // 收到工具结果：在右侧工作空间新增/更新一个标签
                     const toolName = data.tool_name || '工具';
                     const appendText = typeof data.content === 'string' ? data.content : JSON.stringify(data.content);
@@ -954,6 +1000,48 @@ const ChatPage: React.FC = () => {
                   } else if (data.content) {
                     // 直接使用content字段，支持多种数据格式
                     fullContent += data.content;
+                    
+                    // 检查是否包含节点信息，如果有就记录
+                    if (data.metadata?.node_id && data.metadata?.node_name) {
+                      console.log('🚀 检测到节点信息:', data.metadata);
+                      
+                      // 更新节点状态：每个节点包含一组消息片段
+                      setNodeStates(prev => {
+                        // 查找是否已存在该节点
+                        const existingNodeIndex = prev.findIndex(node => node.node_id === data.metadata.node_id);
+                        
+                        if (existingNodeIndex !== -1) {
+                          // 节点已存在，添加新的片段
+                          const updated = [...prev];
+                          updated[existingNodeIndex] = {
+                            ...updated[existingNodeIndex],
+                            chunk_list: [
+                              ...updated[existingNodeIndex].chunk_list,
+                              {
+                                chunk_id: data.chunk_id,
+                                content: data.content,
+                                type: data.type
+                              }
+                            ]
+                          };
+                          return updated;
+                        } else {
+                          // 节点不存在，创建新节点
+                          const newNode = {
+                            node_id: data.metadata.node_id,
+                            node_type: data.metadata.node_type,
+                            node_name: data.metadata.node_name,
+                            node_label: data.metadata.node_label,
+                            chunk_list: [{
+                              chunk_id: data.chunk_id,
+                              content: data.content,
+                              type: data.type
+                            }]
+                          };
+                          return [...prev, newNode];
+                        }
+                      });
+                    }
                     
                     // 实时更新消息内容，显示流式效果
                     setMessages(prev => {
@@ -1006,6 +1094,15 @@ const ChatPage: React.FC = () => {
                   } else if (data.is_end || data.type === 'done' || data.done) {
                     // 流式响应完成，清除流式状态
                     
+                    // 流程完成，打印完整的节点数据结构
+                    console.log('🎯 流程执行完成！');
+                    console.log('📊 完整的节点数据结构:', JSON.stringify(nodeStates, null, 2));
+                    console.log('📊 节点数量:', nodeStates.length);
+                    console.log('📊 每个节点的片段数量:', nodeStates.map(node => ({
+                      node_name: node.node_name,
+                      chunk_count: node.chunk_list.length
+                    })));
+                    
                     // 使用函数式更新，确保状态正确
                     setMessages(prev => {
                       // 状态保护：如果prev为空，说明状态异常
@@ -1048,9 +1145,9 @@ const ChatPage: React.FC = () => {
                           }));
                         }, 500);
                       }, 500);
-                    }
-                    
-                  } else if (data.error) {
+                                          }
+                     
+                    } else if (data.error) {
                     setMessages(prev => prev.map(msg => 
                       msg.id === agentMessageId 
                         ? { ...msg, content: `错误: ${data.error}` }
@@ -1166,11 +1263,51 @@ const ChatPage: React.FC = () => {
                           {message.toolName && (
                             <Tag color="blue">工具: {message.toolName}</Tag>
                           )}
+                          {/* 显示节点信息 */}
+                          {(() => {
+                            // 查找当前消息对应的节点信息
+                            // 通过消息内容来匹配节点（这是一个简化的匹配逻辑）
+                            const nodeInfo = nodeStates.find(node => 
+                              node.chunk_list.some(chunk => 
+                                chunk.content && message.content.includes(chunk.content)
+                              )
+                            );
+                            
+                            return nodeInfo ? (
+                              <NodeInfoTag
+                                nodeType={nodeInfo.node_type || 'unknown'}
+                                nodeName={nodeInfo.node_name || '未知节点'}
+                                nodeLabel={nodeInfo.node_label}
+                                metadata={nodeInfo}
+                              />
+                            ) : null;
+                          })()}
+                          {message.isStreaming && (
+                            <Tag color="processing" style={{ fontSize: '11px' }}>
+                              🔄 执行中...
+                            </Tag>
+                          )}
                         </div>
                         <div className="message-text">
                           {message.type === 'agent' ? (
                             <>
-                              <ThinkTagRenderer content={message.content} />
+                              <ThinkTagRenderer
+                                content={message.content}
+                                nodeInfo={(() => {
+                                  // 查找当前消息对应的节点信息
+                                  const nodeInfo = nodeStates.find(node => 
+                                    node.chunk_list.some(chunk => 
+                                      chunk.content && message.content.includes(chunk.content)
+                                    )
+                                  );
+                                  
+                                  return nodeInfo ? {
+                                    node_type: nodeInfo.node_type,
+                                    node_name: nodeInfo.node_name,
+                                    node_label: nodeInfo.node_label
+                                  } : undefined;
+                                })()}
+                              />
                               {message.isStreaming && (
                                 <span className="streaming-indicator">▋</span>
                               )}

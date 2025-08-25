@@ -271,6 +271,143 @@ const ToolNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
+const JudgeNode = ({ data, id }: { data: any; id: string }) => {
+  // 根据判断类型获取分支标签
+  const getBranchLabels = (judgeType: string) => {
+    switch (judgeType) {
+      case 'direct_answer':
+        return { left: '✓ 直接回答', right: '✗ 需要工具' };
+      case 'domain_classification':
+        return { left: '✓ 可处理', right: '✗ 无法处理' };
+      case 'tool_selection':
+        return { left: '✓ 高置信度', right: '✗ 备选工具' };
+      case 'intent_recognition':
+        return { left: '✓ 无需工具', right: '✗ 需要工具' };
+      default:
+        return { left: '✓ 分支1', right: '✗ 分支2' };
+    }
+  };
+
+  const judgeType = data.config?.judge_type || 'custom';
+  const branchLabels = getBranchLabels(judgeType);
+
+  return (
+    <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f9f0ff', position: 'relative' }}>
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center' }}>
+        <BranchesOutlined style={{ fontSize: '20px', color: '#722ed1' }} />
+        <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+        <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
+        <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>
+          <div>{branchLabels.left}</div>
+          <div>{branchLabels.right}</div>
+        </div>
+        <div style={{ fontSize: '9px', color: '#bbb', marginTop: '2px' }}>
+          {judgeType}
+        </div>
+      </div>
+      {/* 两个输出端口：第一个用于正面结果，第二个用于负面结果 */}
+      <Handle 
+        type="source" 
+        position={Position.Bottom} 
+        id="source-positive"
+        style={{ left: '30%', background: '#52c41a' }}
+      />
+      <Handle 
+        type="source" 
+        position={Position.Bottom} 
+        id="source-negative"
+        style={{ left: '70%', background: '#fa8c16' }}
+      />
+      <Button
+        type="text"
+        size="small"
+        danger
+        icon={<DeleteOutlined />}
+        style={{
+          position: 'absolute',
+          top: '-8px',
+          right: '-8px',
+          minWidth: '20px',
+          height: '20px',
+          padding: '0',
+          borderRadius: '50%',
+          background: '#fff',
+          border: '1px solid #ff4d4f',
+          zIndex: 10
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (data.onDelete) {
+            data.onDelete(id);
+          }
+        }}
+      />
+    </div>
+  );
+};
+
+const RouterNode = ({ data, id }: { data: any; id: string }) => {
+  // 获取路由配置信息
+  const routingConfig = data.config?.routing_logic || {};
+  const field = routingConfig.field || '未配置';
+  const trueBranch = routingConfig.true_branch || '分支1';
+  const falseBranch = routingConfig.false_branch || '分支2';
+
+  return (
+    <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff7e6', position: 'relative' }}>
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '20px', color: '#fa8c16' }}>🔄</div>
+        <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+        <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
+        <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>
+          <div>字段: {field}</div>
+          <div>✓ {trueBranch}</div>
+          <div>✗ {falseBranch}</div>
+        </div>
+      </div>
+      {/* 两个输出端口：第一个用于真值分支，第二个用于假值分支 */}
+      <Handle 
+        type="source" 
+        position={Position.Bottom} 
+        id="source-true"
+        style={{ left: '30%', background: '#52c41a' }}
+      />
+      <Handle 
+        type="source" 
+        position={Position.Bottom} 
+        id="source-false"
+        style={{ left: '70%', background: '#fa8c16' }}
+      />
+      <Button
+        type="text"
+        size="small"
+        danger
+        icon={<DeleteOutlined />}
+        style={{
+          position: 'absolute',
+          top: '-8px',
+          right: '-8px',
+          minWidth: '20px',
+          height: '20px',
+          padding: '0',
+          borderRadius: '50%',
+          background: '#fff',
+          border: '1px solid #ff4d4f',
+          zIndex: 10
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (data.onDelete) {
+            data.onDelete(id);
+          }
+        }}
+      />
+    </div>
+  );
+};
+
 const InputNode = ({ data, id }: { data: any; id: string }) => (
   <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#e6f7ff', position: 'relative' }}>
     <div style={{ textAlign: 'center' }}>
@@ -341,14 +478,6 @@ const OutputNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
-const nodeTypes: NodeTypes = {
-  agent: AgentNode,
-  condition: ConditionNode,
-  action: ActionNode,
-  llm: LlmNode,
-  tool: ToolNode
-};
-
 const FlowEditorPage: React.FC = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -368,6 +497,21 @@ const FlowEditorPage: React.FC = () => {
   const [importJsonText, setImportJsonText] = useState('');
   const [currentAgentId, setCurrentAgentId] = useState<number | null>(null);
   
+  // 将nodeTypes移到组件内部，确保在组件渲染时正确初始化
+  const nodeTypes: NodeTypes = {
+    agent: AgentNode,
+    condition: ConditionNode,
+    action: ActionNode,
+    llm: LlmNode,
+    tool: ToolNode,
+    judge: JudgeNode,
+    router: RouterNode
+  };
+  
+  // 确保RouterNode组件可用
+  console.log('注册的节点类型:', Object.keys(nodeTypes));
+  console.log('RouterNode组件:', RouterNode);
+
   const createStartNode = () => {
     const hasStart = nodes.some((n: any) => n?.data?.isStartNode);
     if (hasStart) return;
@@ -783,6 +927,8 @@ const FlowEditorPage: React.FC = () => {
       case 'action': return '动作';
       case 'llm': return 'LLM';
       case 'tool': return '工具';
+      case 'judge': return '判断';
+      case 'router': return '路由';
       case 'input': return '输入';
       case 'output': return '输出';
       default: return '节点';
@@ -797,13 +943,21 @@ const FlowEditorPage: React.FC = () => {
       agent_name: node.data.config?.agent_name || '',
       condition: node.data.config?.condition || '',
       action: node.data.config?.action || '',
-      system_prompt: node.data.nodeType === 'llm' ? (node.data.config?.system_prompt || '') : undefined,
-      user_prompt: node.data.nodeType === 'llm' ? (node.data.config?.user_prompt || '') : undefined,
-      save_as: node.data.nodeType === 'llm' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'tool' ? (node.data.config?.save_as || 'last_output') : undefined),
+      system_prompt: node.data.nodeType === 'llm' ? (node.data.config?.system_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
+      user_prompt: node.data.nodeType === 'llm' ? (node.data.config?.user_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
+      save_as: node.data.nodeType === 'llm' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'tool' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'judge' ? (node.data.config?.save_as || 'judge_result') : undefined)),
       server: node.data.nodeType === 'tool' ? (node.data.config?.server || '') : undefined,
       tool: node.data.nodeType === 'tool' ? (node.data.config?.tool || '') : undefined,
       params: node.data.nodeType === 'tool' ? (typeof node.data.config?.params === 'object' ? JSON.stringify(node.data.config?.params, null, 2) : (node.data.config?.params || '')) : undefined,
       append_to_output: node.data.nodeType === 'tool' ? (node.data.config?.append_to_output !== false) : undefined,
+      judge_type: node.data.nodeType === 'judge' ? (node.data.config?.judge_type || 'direct_answer') : undefined,
+      field: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.field || '') : undefined,
+      value: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.value || '') : undefined,
+      operator: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.operator || '') : undefined,
+      threshold: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.threshold || '') : undefined,
+      pattern: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.pattern || '') : undefined,
+      true_branch: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.true_branch || '') : undefined,
+      false_branch: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.false_branch || '') : undefined,
       config: JSON.stringify(node.data.config || {}, null, 2)
     });
     setConfigModalVisible(true);
@@ -853,6 +1007,29 @@ const FlowEditorPage: React.FC = () => {
             config.params = values.params; // 允许简单字符串
           }
         }
+      } else if (selectedNode.data.nodeType === 'judge') {
+        // 判断节点配置
+        config.judge_type = values.judge_type || 'direct_answer';
+        if (values.system_prompt) config.system_prompt = values.system_prompt;
+        if (values.user_prompt) config.user_prompt = values.user_prompt;
+        if (values.save_as) config.save_as = values.save_as;
+      } else if (selectedNode.data.nodeType === 'router') {
+        // 路由节点配置
+        config.routing_logic = {
+          field: values.field || '',
+          value: values.value || undefined,
+          operator: values.operator || undefined,
+          threshold: values.threshold || undefined,
+          pattern: values.pattern || undefined,
+          true_branch: values.true_branch || '',
+          false_branch: values.false_branch || ''
+        };
+        // 清理undefined值
+        Object.keys(config.routing_logic).forEach(key => {
+          if (config.routing_logic[key] === undefined) {
+            delete config.routing_logic[key];
+          }
+        });
       }
       
       setNodes((nds) =>
@@ -1346,6 +1523,20 @@ const FlowEditorPage: React.FC = () => {
             >
               工具节点
             </Button>
+            <Button
+              icon={<BranchesOutlined />}
+              block
+              onClick={() => addNode('judge', { x: 100, y: 400 })}
+            >
+              判断节点
+            </Button>
+            <Button
+              icon={<div style={{ fontSize: '16px' }}>🔄</div>}
+              block
+              onClick={() => addNode('router', { x: 100, y: 450 })}
+            >
+              路由节点
+            </Button>
           </Space>
 
           <Divider />
@@ -1518,6 +1709,61 @@ const FlowEditorPage: React.FC = () => {
               </Form.Item>
               <Form.Item name="save_as" label="保存变量名">
                 <Input placeholder="默认 last_output" />
+              </Form.Item>
+            </>
+          )}
+
+          {selectedNode?.data.nodeType === 'judge' && (
+            <>
+              <Form.Item name="judge_type" label="判断类型">
+                <Select placeholder="选择判断类型">
+                  <Option value="custom">自定义判断</Option>
+                  <Option value="direct_answer">直接回答判断</Option>
+                  <Option value="domain_classification">领域分类判断</Option>
+                  <Option value="tool_selection">工具选择判断</Option>
+                  <Option value="intent_recognition">意图识别判断</Option>
+                </Select>
+              </Form.Item>
+              <Form.Item name="system_prompt" label="系统提示词">
+                <Input.TextArea rows={3} placeholder="可选：系统提示词，根据判断类型自动设置默认值" />
+              </Form.Item>
+              <Form.Item name="user_prompt" label="用户提示词">
+                <Input.TextArea rows={3} placeholder="可选：用户提示词，根据判断类型自动设置默认值" />
+              </Form.Item>
+              <Form.Item name="save_as" label="保存变量名">
+                <Input placeholder="默认 judge_result" />
+              </Form.Item>
+            </>
+          )}
+
+          {selectedNode?.data.nodeType === 'router' && (
+            <>
+              <Form.Item name="field" label="路由字段" rules={[{ required: true, message: '请输入路由字段名' }]}>
+                <Input placeholder="例如：can_direct_answer, status, retry_count" />
+              </Form.Item>
+              <Form.Item name="value" label="匹配值（可选）">
+                <Input placeholder="精确匹配值，留空则使用布尔判断" />
+              </Form.Item>
+              <Form.Item name="operator" label="比较操作符">
+                <Select placeholder="选择比较操作符">
+                  <Option value=">">大于 (&gt;)</Option>
+                  <Option value=">=">大于等于 (&gt;=)</Option>
+                  <Option value="<">小于 (&lt;)</Option>
+                  <Option value="<=">小于等于 (&lt;=)</Option>
+                  <Option value="==">等于 (==)</Option>
+                </Select>
+              </Form.Item>
+              <Form.Item name="threshold" label="阈值">
+                <Input placeholder="数值比较的阈值" />
+              </Form.Item>
+              <Form.Item name="pattern" label="正则表达式（可选）">
+                <Input placeholder="字符串模式匹配的正则表达式" />
+              </Form.Item>
+              <Form.Item name="true_branch" label="真值分支" rules={[{ required: true, message: '请输入真值分支' }]}>
+                <Input placeholder="例如：direct_answer, success_handler" />
+              </Form.Item>
+              <Form.Item name="false_branch" label="假值分支" rules={[{ required: true, message: '请输入假值分支' }]}>
+                <Input placeholder="例如：tool_required, error_handler" />
               </Form.Item>
             </>
           )}

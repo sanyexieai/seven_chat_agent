@@ -86,6 +86,18 @@ const EndNode = ({ data }: { data: any }) => (
   </div>
 );
 
+const RouterNode = ({ data }: { data: any }) => (
+  <div style={{ padding: '10px', border: '2px solid #fa8c16', borderRadius: '8px', background: '#fff7e6', minWidth: '80px' }}>
+    <Handle type="target" position={Position.Top} />
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: '16px', color: '#fa8c16', marginBottom: '4px', fontWeight: 'bold' }}>🔄</div>
+      <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+    </div>
+    <Handle type="source" position={Position.Bottom} id="source-true" style={{ left: '30%' }} />
+    <Handle type="source" position={Position.Bottom} id="source-false" style={{ left: '70%' }} />
+  </div>
+);
+
 // 节点类型映射
 const nodeTypes: NodeTypes = {
   start: StartNode,
@@ -94,6 +106,7 @@ const nodeTypes: NodeTypes = {
   condition: ConditionNode,
   agent: AgentNode,
   end: EndNode,
+  router: RouterNode,
   default: LlmNode // 默认使用LLM节点样式
 };
 

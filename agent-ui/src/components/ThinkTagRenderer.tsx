@@ -10,18 +10,24 @@ const { Text, Paragraph } = Typography;
 interface ThinkTagRendererProps {
   content: string;
   className?: string;
+  nodeInfo?: {
+    node_type?: string;
+    node_name?: string;
+    node_label?: string;
+  };
 }
 
-const ThinkTagRenderer: React.FC<ThinkTagRendererProps> = ({ content, className = '' }) => {
+const ThinkTagRenderer: React.FC<ThinkTagRendererProps> = ({ content, className = '', nodeInfo }) => {
   // 使用 localStorage 来保持思考过程的显示状态
   const [showThink, setShowThink] = useState(() => {
-    try {
-      return localStorage.getItem('think-tag-visible') !== 'false';
-    } catch {
-      return true;
-    }
+    const saved = localStorage.getItem('showThink');
+    return saved ? JSON.parse(saved) : true;
   });
-  const [thinkCount, setThinkCount] = useState(0);
+
+  // 保存显示状态到 localStorage
+  useEffect(() => {
+    localStorage.setItem('showThink', JSON.stringify(showThink));
+  }, [showThink]);
 
   // 使用 ref 来避免状态比较的问题
   const visibleRef = useRef(showThink);
@@ -35,7 +41,7 @@ const ThinkTagRenderer: React.FC<ThinkTagRendererProps> = ({ content, className 
   useEffect(() => {
     const handleStorageChange = () => {
       try {
-        const newVisible = localStorage.getItem('think-tag-visible') !== 'false';
+        const newVisible = localStorage.getItem('showThink') !== 'false';
         
         // 使用 ref 值进行比较，避免循环更新
         if (newVisible !== visibleRef.current) {
@@ -127,15 +133,12 @@ const ThinkTagRenderer: React.FC<ThinkTagRendererProps> = ({ content, className 
   // 监听内容变化，更新think标签计数
   useEffect(() => {
     const thinkParts = parts.filter(part => part.type === 'think');
-    setThinkCount(thinkParts.length);
+    // setThinkCount(thinkParts.length); // 移除思考过程数量的逻辑
   }, [content]);
 
   if (parts.length === 0) {
     return <div className={className}>{content}</div>;
   }
-
-  // 检查是否有think标签
-  const hasThinkTags = parts.some(part => part.type === 'think');
 
   return (
     <div className={`think-tag-container ${className}`}>
@@ -162,7 +165,7 @@ const ThinkTagRenderer: React.FC<ThinkTagRendererProps> = ({ content, className 
                 <div className="think-tag-title">
                   <BulbOutlined />
                   <Text type="secondary">
-                    思考过程 {thinkCount > 1 ? `(${index + 1}/${thinkCount})` : ''}
+                    思考过程 {nodeInfo?.node_name ? `${nodeInfo.node_name} (${nodeInfo.node_type})` : ''}
                   </Text>
                   {/* 展开/收起按钮已移除，思考过程内容直接显示 */}
                 </div>

@@ -298,21 +298,49 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 		const colors = ['#1890ff', '#52c41a', '#fa8c16', '#722ed1', '#eb2f96', '#13c2c2'];
 		const color = colors[index % colors.length];
 		
+		// 根据sourceHandle设置不同的颜色和样式
+		let edgeStyle = { 
+			stroke: color, 
+			strokeWidth: 2
+		};
+		
+		// 路由节点的分支使用不同颜色
+		if (edge.sourceHandle === 'source-true') {
+			edgeStyle = { 
+				stroke: '#52c41a', // 绿色表示真值分支
+				strokeWidth: 3
+			};
+		} else if (edge.sourceHandle === 'source-false') {
+			edgeStyle = { 
+				stroke: '#fa8c16', // 橙色表示假值分支
+				strokeWidth: 3
+			};
+		}
+		
 		return {
 			id: edge.id,
 			source: edge.source,
 			target: edge.target,
-			style: { 
-				stroke: color, 
-				strokeWidth: 2
-			},
+			sourceHandle: edge.sourceHandle, // 关键：保留sourceHandle
+			targetHandle: edge.targetHandle, // 保留targetHandle
+			style: edgeStyle,
 			animated: false
 		} as Edge;
 	};
 
 	// 显示智能体预定义流程图
 	useEffect(() => {
-		if (!flowData?.nodes || flowData.nodes.length === 0) return;
+		console.log('🔍 WorkspacePanel 收到 flowData:', flowData);
+		
+		if (!flowData?.nodes || flowData.nodes.length === 0) {
+			console.log('🔍 flowData 为空或没有节点');
+			return;
+		}
+
+		console.log('🔍 节点数量:', flowData.nodes.length);
+		console.log('🔍 连线数量:', flowData.edges.length);
+		console.log('🔍 节点详情:', flowData.nodes);
+		console.log('🔍 连线详情:', flowData.edges);
 
 		// 计算节点位置
 		const positions = calculateNodePositions(flowData.nodes, flowData.edges);
@@ -322,6 +350,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 			return createNode(node, position);
 		});
 		const edges: Edge[] = flowData.edges.map((edge, index) => createEdge(edge, index));
+
+		console.log('🔍 创建的 ReactFlow 节点:', nodes);
+		console.log('🔍 创建的 ReactFlow 连线:', edges);
 
 		setFlowNodes(nodes);
 		setFlowEdges(edges);

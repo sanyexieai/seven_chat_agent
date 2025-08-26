@@ -179,7 +179,10 @@ const ChatPage: React.FC = () => {
     const edges = (agent.flow_config.edges || []).map((edge: any) => ({
       id: edge.id,
       source: edge.source,
-      target: edge.target
+      target: edge.target,
+      sourceHandle: edge.sourceHandle, // 关键：保留sourceHandle用于路由节点分支
+      targetHandle: edge.targetHandle, // 保留targetHandle
+      type: edge.type || 'default'
     }));
 
     return {
@@ -1457,6 +1460,7 @@ const ChatPage: React.FC = () => {
                     if (agent.flow_config && agent.flow_config.nodes && agent.flow_config.nodes.length > 0) {
                       // 使用智能体的实际流程图配置
                       newFlowData = generateFlowDataFromAgent(agent);
+                      console.log('🔍 从智能体配置生成流程图数据:', newFlowData);
                     } else if (agent.agent_type === 'flow_driven') {
                       // 为流程图智能体生成默认流程图
                       newFlowData = {

@@ -104,23 +104,13 @@ class MessageService:
     @staticmethod
     def get_session_messages(db: Session, session_id: int, limit: int = 100) -> List['MessageResponse']:
         """获取会话的最近消息（优先包含最新的workspace_summary等）"""
-        logger.info(f"🔍 开始查询会话消息: session_id={session_id}, limit={limit}")
-        
         # 先按时间倒序获取更多条数，再过滤软删，然后取前limit条并升序返回
         recent = db.query(ChatMessage).filter(
             ChatMessage.session_id == session_id
         ).order_by(ChatMessage.created_at.desc()).limit(limit * 2).all()
         
-        logger.info(f"🔍 数据库查询结果: 找到 {len(recent)} 条消息")
-        
-        # 显示前几条消息的详细信息
-        for i, msg in enumerate(recent[:3]):
-            logger.info(f"  消息{i+1}: id={msg.id}, message_id={msg.message_id}, session_id={msg.session_id}, type={msg.message_type}, content_length={len(msg.content) if msg.content else 0}")
-        
         filtered = [m for m in recent if not ((m.message_metadata or {}).get('deleted') is True)]
         messages = list(reversed(filtered[:limit]))
-        
-        logger.info(f"🔍 过滤后消息数量: {len(messages)}")
         
         # 转换为Pydantic模型
         from models.database_models import MessageResponse, MessageNodeResponse
@@ -142,6 +132,7 @@ class MessageService:
                     node_label=node.node_label,
                     node_metadata=node.node_metadata,
                     content=node.content,
+                    chunk_count=node.chunk_count,
                     created_at=node.created_at
                 ))
             

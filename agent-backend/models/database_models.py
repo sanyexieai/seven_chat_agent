@@ -74,6 +74,7 @@ class ChatMessage(Base):
     session_id = Column(String(100), ForeignKey("user_sessions.session_id"), nullable=False)
     user_id = Column(String(100), nullable=False)
     message_type = Column(String(50), nullable=False)  # user, agent, system, tool
+    content = Column(Text, nullable=True)  # 消息内容（用户消息直接存储，智能体消息可选）
     agent_name = Column(String(100), nullable=True)
     message_metadata = Column(JSON, nullable=True)  # 重命名为message_metadata避免冲突
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -433,6 +434,7 @@ class MessageResponse(BaseModel):
     agent_name: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
+    nodes: Optional[List[MessageNodeResponse]] = None  # 节点列表
     
     class Config:
         from_attributes = True

@@ -103,7 +103,9 @@ async def get_session_messages(
             raise HTTPException(status_code=404, detail="会话不存在")
         
         # 使用会话的UUID查询消息
+        logger.info(f"🔍 API层: 会话ID={session_id}, 会话UUID={session.session_id}")
         messages = MessageService.get_session_messages(db, session.session_id, limit)
+        logger.info(f"🔍 API层: 返回消息数量={len(messages)}")
         return messages
     except HTTPException:
         raise

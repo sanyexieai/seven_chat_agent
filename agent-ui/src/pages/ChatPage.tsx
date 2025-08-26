@@ -6,6 +6,7 @@ import { useChat } from '../hooks/useChat';
 import ThinkTagRenderer from '../components/ThinkTagRenderer';
 import { API_PATHS } from '../config/api';
 import { getApiUrl, apiConfigManager } from '../utils/apiConfig';
+import { isUserMessage, isAgentMessage } from '../config/messageTypes';
 import './ChatPage.css';
 import WorkspacePanel, { WorkspaceTabItem } from '../components/WorkspacePanel';
 import NodeInfoTag from '../components/NodeInfoTag';
@@ -24,6 +25,20 @@ interface Message {
   metadata?: any;
   toolName?: string;
   rawType?: string; // 后端原始 message_type
+  message_id?: string; // 后端消息UUID
+  // 智能体消息的节点信息
+  nodes?: Array<{
+    node_id: string;
+    node_type: string;
+    node_name: string;
+    node_label: string;
+    content?: string;
+    chunk_list: Array<{
+      chunk_id: string;
+      content: string;
+      type: string;
+    }>;
+  }>;
 }
 
 interface Session {
@@ -725,18 +740,103 @@ const ChatPage: React.FC = () => {
         const messages = await response.json();
         
         if (Array.isArray(messages) && messages.length > 0) {
-          // 有消息，格式化显示
-          const formattedMessages: Message[] = messages.map((msg: any) => ({
-            id: msg.id,
-            content: msg.content,
-            type: msg.message_type === 'user' ? 'user' : 'agent',
-            timestamp: new Date(msg.created_at),
-            agentName: msg.agent_name,
-            metadata: msg.metadata,
-            toolName: msg.metadata && msg.metadata.tool_name ? msg.metadata.tool_name : undefined,
-            rawType: msg.message_type
-          }));
+          // 按创建时间排序消息（升序：最早的在前）
+          const sortedMessages = messages.sort((a: any, b: any) => {
+            const timeA = new Date(a.created_at).getTime();
+            const timeB = new Date(b.created_at).getTime();
+            return timeA - timeB;
+          });
+          
+          // 有消息，格式化显示 - 统一使用一个数组，智能体消息直接包含节点信息
+          const formattedMessages: Message[] = sortedMessages.map((msg: any) => {
+            const baseMessage = {
+              id: msg.id.toString(),
+              message_id: msg.message_id,
+              timestamp: new Date(msg.created_at),
+              agentName: msg.agent_name,
+              metadata: msg.metadata,
+              toolName: msg.metadata && msg.metadata.tool_name ? msg.metadata.tool_name : undefined,
+              rawType: msg.message_type
+            };
+            
+            if (isUserMessage(msg.message_type)) {
+              // 用户消息：直接挂content
+              return {
+                ...baseMessage,
+                type: 'user' as const,
+                content: msg.content || ''
+              };
+            } else {
+              // 智能体消息：挂nodes数组，content可选
+              return {
+                ...baseMessage,
+                type: 'agent' as const,
+                content: msg.content || '',
+                nodes: msg.nodes ? msg.nodes.map((node: any) => ({
+                  node_id: node.node_id,
+                  node_type: node.node_type,
+                  node_name: node.node_name,
+                  node_label: node.node_label,
+                  content: node.content,
+                  chunk_list: []
+                })) : [{
+                  node_id: `msg_${msg.id}`,
+                  node_type: 'message',
+                  node_name: '消息内容',
+                  node_label: '消息内容',
+                  content: msg.content || '暂无内容',
+                  chunk_list: []
+                }]
+              };
+            }
+          });
+          
           setMessages(formattedMessages);
+          
+          // 调试日志
+          console.log('🔍 消息加载调试信息:');
+          console.log('  - 原始消息数量:', messages.length);
+          console.log('  - 排序后消息数量:', sortedMessages.length);
+          console.log('  - 用户消息数量:', sortedMessages.filter((msg: any) => isUserMessage(msg.message_type)).length);
+          console.log('  - 智能体消息数量:', sortedMessages.filter((msg: any) => isAgentMessage(msg.message_type)).length);
+          console.log('  - 有节点的消息数量:', sortedMessages.filter((msg: any) => isAgentMessage(msg.message_type) && msg.nodes && msg.nodes.length > 0).length);
+          console.log('  - 有内容的消息数量:', sortedMessages.filter((msg: any) => isAgentMessage(msg.message_type) && msg.content).length);
+          console.log('  - 处理后的messages数量:', formattedMessages.length);
+          
+          // 详细调试：查看前几条消息的结构
+          console.log('🔍 前3条消息的详细结构:');
+          sortedMessages.slice(0, 3).forEach((msg, index) => {
+            console.log(`  消息${index + 1}:`, {
+              id: msg.id,
+              message_id: msg.message_id,
+              message_type: msg.message_type,
+              created_at: msg.created_at,
+              created_at_parsed: new Date(msg.created_at).toISOString(),
+              content: msg.content ? msg.content.substring(0, 50) + '...' : 'null',
+              has_nodes: !!(msg.nodes && msg.nodes.length > 0),
+              node_count: msg.nodes ? msg.nodes.length : 0
+            });
+          });
+          
+          // 显示排序后的时间顺序
+          console.log('🔍 消息时间顺序:');
+          sortedMessages.forEach((msg, index) => {
+            const time = new Date(msg.created_at).toLocaleTimeString();
+            console.log(`  ${index + 1}. ${time} - ${msg.message_type} (ID: ${msg.id})`);
+          });
+          
+          // 查看智能体消息的详细信息
+          const agentMessages = sortedMessages.filter((msg: any) => isAgentMessage(msg.message_type));
+          console.log('🔍 智能体消息详细信息:');
+          agentMessages.forEach((msg, index) => {
+            console.log(`  智能体消息${index + 1}:`, {
+              id: msg.id,
+              message_id: msg.message_id,
+              content: msg.content ? msg.content.substring(0, 50) + '...' : 'null',
+              has_nodes: !!(msg.nodes && msg.nodes.length > 0),
+              node_count: msg.nodes ? msg.nodes.length : 0
+            });
+          });
           
           // 工作空间内容只从 workspace_summary 接口获取，不再从其他消息中提取
         } else {
@@ -776,21 +876,7 @@ const ChatPage: React.FC = () => {
     return title.length > 20 ? title.substring(0, 20) + '...' : title || '新对话';
   };
 
-  // 消息状态数组，每个消息包含节点列表
-  const [messageStates, setMessageStates] = useState<Array<{
-    message_id: string;
-    node_list: Array<{
-      node_id: string;
-      node_type: string;
-      node_name: string;
-      node_label: string;
-      chunk_list: Array<{
-        chunk_id: string;
-        content: string;
-        type: string;
-      }>;
-    }>;
-  }>>([]);
+
 
 
 
@@ -806,14 +892,16 @@ const ChatPage: React.FC = () => {
   const handleSend = async () => {
     if (!inputValue.trim()) return;
 
-    // 创建用户消息
+    // 创建用户消息（临时ID，时间会在数据库保存后更新）
     const userMessage: Message = {
       id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      message_id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, // 设置message_id
       content: inputValue,
       type: 'user',
-      timestamp: new Date()
+      timestamp: new Date() // 临时时间，会在数据库保存后更新
     };
 
+    // 先添加到前端状态，立即显示
     setMessages(prev => {
       const updated = [...prev, userMessage];
       return updated;
@@ -867,11 +955,15 @@ const ChatPage: React.FC = () => {
                   })
                 });
                 
-                if (messageResponse.ok) {
-                  // 用户消息保存成功
-                } else {
-                  console.error('保存用户消息失败');
-                }
+                        if (messageResponse.ok) {
+          console.log('✅ 用户消息保存成功');
+          // 重新加载消息列表，确保时间正确
+          if (currentSession.id) {
+            await loadSessionMessages(currentSession.id);
+          }
+        } else {
+          console.error('❌ 保存用户消息失败');
+        }
               } catch (error) {
                 console.error('保存用户消息失败:', error);
               }
@@ -901,16 +993,57 @@ const ChatPage: React.FC = () => {
       }
     }
 
+    // 保存用户消息到数据库（如果不是临时会话）
+    if (currentSession && !currentSession.isTemp && currentSession.id) {
+      try {
+        const messageResponse = await fetch(getApiUrl(API_PATHS.SESSION_MESSAGES(currentSession.id)), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            session_id: currentSession.session_id,
+            user_id: 'default_user',
+            message_type: 'user',
+            content: inputValue,
+            agent_name: selectedAgent?.name || 'general_agent',
+            metadata: {}
+          })
+        });
+        
+        if (messageResponse.ok) {
+          console.log('✅ 用户消息保存成功');
+          // 重新加载消息列表，确保时间正确
+          if (currentSession.id) {
+            await loadSessionMessages(currentSession.id);
+          }
+        } else {
+          console.error('❌ 保存用户消息失败');
+        }
+      } catch (error) {
+        console.error('❌ 保存用户消息失败:', error);
+      }
+    }
+
     // 发送消息到智能体
     if (currentSession?.session_id) {
       // 创建智能体消息占位符 - 使用更唯一的ID
       const agentMessageId = `agent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const agentMessage: Message = {
         id: agentMessageId,
+        message_id: agentMessageId, // 设置message_id
         content: '正在思考...',
         type: 'agent',
         timestamp: new Date(),
-        agentName: selectedAgent?.display_name || 'AI助手'
+        agentName: selectedAgent?.display_name || 'AI助手',
+        nodes: [{
+          node_id: `msg_${agentMessageId}`,
+          node_type: 'message',
+          node_name: '消息内容',
+          node_label: '消息内容',
+          content: '正在思考...',
+          chunk_list: []
+        }]
       };
 
         setMessages(prev => {
@@ -1079,57 +1212,50 @@ const ChatPage: React.FC = () => {
                     if (data.metadata?.node_id && data.metadata?.node_name) {
                       console.log('🚀 检测到节点信息:', data.metadata);
                       
-                      // 更新消息状态：每个消息包含节点列表
-                      setMessageStates(prev => {
-                        // 查找是否已存在该消息
-                        const existingMessageIndex = prev.findIndex(msg => msg.message_id === agentMessageId);
-                        
-                        if (existingMessageIndex !== -1) {
-                          // 消息已存在，检查是否已有该节点
-                          const updated = [...prev];
-                          const message = updated[existingMessageIndex];
-                          const existingNodeIndex = message.node_list.findIndex(node => node.node_id === data.metadata.node_id);
-                          
-                          if (existingNodeIndex !== -1) {
-                            // 节点已存在，添加新的片段
-                            message.node_list[existingNodeIndex].chunk_list.push({
-                              chunk_id: data.chunk_id,
-                              content: data.content,
-                              type: data.type
-                            });
-                          } else {
-                            // 节点不存在，创建新节点
-                            message.node_list.push({
-                              node_id: data.metadata.node_id,
-                              node_type: data.metadata.node_type,
-                              node_name: data.metadata.node_name,
-                              node_label: data.metadata.node_label,
-                              chunk_list: [{
-                                chunk_id: data.chunk_id,
-                                content: data.content,
-                                type: data.type
-                              }]
-                            });
+                      // 直接更新messages数组中的节点信息
+                      setMessages(prev => {
+                        const updated = prev.map(msg => {
+                          if (msg.id === agentMessageId) {
+                            // 找到目标消息，更新其节点信息
+                            const existingNodeIndex = msg.nodes?.findIndex(node => node.node_id === data.metadata.node_id) ?? -1;
+                            
+                            if (existingNodeIndex !== -1) {
+                              // 节点已存在，添加新的片段
+                              const updatedNodes = [...(msg.nodes || [])];
+                              updatedNodes[existingNodeIndex] = {
+                                ...updatedNodes[existingNodeIndex],
+                                chunk_list: [
+                                  ...(updatedNodes[existingNodeIndex].chunk_list || []),
+                                  {
+                                    chunk_id: data.chunk_id,
+                                    content: data.content,
+                                    type: data.type
+                                  }
+                                ]
+                              };
+                              return { ...msg, nodes: updatedNodes };
+                            } else {
+                              // 节点不存在，创建新节点
+                              const newNodes = [
+                                ...(msg.nodes || []),
+                                {
+                                  node_id: data.metadata.node_id,
+                                  node_type: data.metadata.node_type,
+                                  node_name: data.metadata.node_name,
+                                  node_label: data.metadata.node_label,
+                                  chunk_list: [{
+                                    chunk_id: data.chunk_id,
+                                    content: data.content,
+                                    type: data.type
+                                  }]
+                                }
+                              ];
+                              return { ...msg, nodes: newNodes };
+                            }
                           }
-                          return updated;
-                        } else {
-                          // 消息不存在，创建新消息和节点
-                          const newMessage = {
-                            message_id: agentMessageId,
-                            node_list: [{
-                              node_id: data.metadata.node_id,
-                              node_type: data.metadata.node_type,
-                              node_name: data.metadata.node_name,
-                              node_label: data.metadata.node_label,
-                              chunk_list: [{
-                                chunk_id: data.chunk_id,
-                                content: data.content,
-                                type: data.type
-                              }]
-                            }]
-                          };
-                          return [...prev, newMessage];
-                        }
+                          return msg;
+                        });
+                        return updated;
                       });
                     }
                     
@@ -1186,12 +1312,36 @@ const ChatPage: React.FC = () => {
                     
                     // 流程完成，打印完整的节点数据结构
                     console.log('🎯 流程执行完成！');
-                    console.log('📊 完整的节点数据结构:', JSON.stringify(messageStates, null, 2));
-                    console.log('📊 消息数量:', messageStates.length);
-                    console.log('📊 每个消息的节点数量:', messageStates.map(msg => ({
-                      message_id: msg.message_id,
-                      node_count: msg.node_list.length
-                    })));
+                    
+                    // 更新messages数组，确保流式完成后的消息能正确显示
+                    setMessages(prev => {
+                      const updated = prev.map(msg => {
+                        if (msg.id === agentMessageId) {
+                          // 更新节点内容为最终完整内容
+                          const updatedNodes = msg.nodes?.map(node => ({
+                            ...node,
+                            content: fullContent
+                          })) ?? [{
+                            node_id: `msg_${agentMessageId}`,
+                            node_type: 'message',
+                            node_name: '消息内容',
+                            node_label: '消息内容',
+                            content: fullContent,
+                            chunk_list: []
+                          }];
+                          
+                          return {
+                            ...msg,
+                            content: fullContent,
+                            nodes: updatedNodes
+                          };
+                        }
+                        return msg;
+                      });
+                      
+                      console.log('📊 更新后的消息数据结构:', JSON.stringify(updated, null, 2));
+                      return updated;
+                    });
                     
                     // 使用函数式更新，确保状态正确
                     setMessages(prev => {
@@ -1286,9 +1436,11 @@ const ChatPage: React.FC = () => {
 
 
   const formatTime = (date: Date) => {
+    // 统一使用本地时间，避免时区问题
     return date.toLocaleTimeString('zh-CN', { 
       hour: '2-digit', 
-      minute: '2-digit' 
+      minute: '2-digit',
+      timeZone: 'Asia/Shanghai' // 明确指定时区
     });
   };
 
@@ -1329,102 +1481,144 @@ const ChatPage: React.FC = () => {
               </div>
             ) : (
               <div className="messages-list">
-                {/* 用户消息 */}
-                {messages.filter(msg => msg.type === 'user').map((message) => (
-                  <div
-                    key={message.id}
-                    className="message-wrapper user"
-                  >
-                    <div className="message-content">
-                      <Avatar 
-                        icon={<UserOutlined style={{ color: '#fff' }} />}
-                        size={36}
-                        className="message-avatar"
-                        style={{ backgroundColor: '#1890ff' }}
-                      />
-                      <div className="message-bubble">
-                        <div className="message-header">
-                          <Text className="message-name">我</Text>
-                        </div>
-                        <div className="message-text">
-                          {message.content}
-                        </div>
-                        <div className="message-time">
-                          {formatTime(message.timestamp)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                
-                {/* 智能体消息按节点分组显示 */}
-                {messageStates.map((msg, msgIndex) => (
-                  <div key={`message-${msg.message_id}`} className="message-group">
-                    {/* 消息内容 */}
-                    <div className="message-content">
-                      <Avatar 
-                        icon={<RobotOutlined style={{ color: '#1890ff' }} />}
-                        size={36}
-                        className="message-avatar"
-                        style={{ backgroundColor: '#e6f6ff', border: '1px solid #91d5ff' }}
-                      />
-                      <div className="message-bubble">
-                        <div className="message-header">
-                          <Text className="message-name">AI助手</Text>
-                        </div>
-                        <div className="message-text">
-                          {msg.node_list.map((node, nodeIndex) => (
-                            <div key={`node-${node.node_id}`} className="node-group">
-                              {/* 节点标题 */}
-                              <div className="node-header" style={{ 
-                                padding: '8px 16px', 
-                                backgroundColor: '#f5f5f5', 
-                                borderLeft: '4px solid #1890ff',
-                                margin: '16px 0 8px 0',
-                                borderRadius: '4px'
-                              }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                  <NodeInfoTag
-                                    nodeType={node.node_type || 'unknown'}
-                                    nodeName={node.node_name || '未知节点'}
-                                    nodeLabel={node.node_label}
-                                    metadata={node}
-                                  />
-                                  <Text type="secondary" style={{ fontSize: '12px' }}>
-                                    片段数量: {node.chunk_list.length}
-                                  </Text>
-                                </div>
-                              </div>
-                              
-                              {/* 节点内容 - 组合所有片段 */}
-                              <div className="node-content" style={{ padding: '0 16px 16px 16px' }}>
-                                <div className="combined-content" style={{
-                                  padding: '12px',
-                                  backgroundColor: '#fafafa',
-                                  borderRadius: '4px',
-                                  border: '1px solid #e8e8e8'
-                                }}>
-                                  {/* 组合所有片段的内容 */}
-                                  <ThinkTagRenderer
-                                    content={node.chunk_list.map(chunk => chunk.content).join('')}
-                                    nodeInfo={{
-                                      node_type: node.node_type,
-                                      node_name: node.node_name,
-                                      node_label: node.node_label
-                                    }}
-                                  />
-                                </div>
-                              </div>
+                {/* 统一使用messages数组，按时间排序显示 */}
+                {messages.map((msg, index) => {
+                  if (msg.type === 'user') {
+                    // 渲染用户消息
+                    return (
+                      <div
+                        key={msg.id}
+                        className="message-wrapper user"
+                      >
+                        <div className="message-content">
+                          <Avatar 
+                            icon={<UserOutlined style={{ color: '#fff' }} />}
+                            size={36}
+                            className="message-avatar"
+                            style={{ backgroundColor: '#1890ff' }}
+                          />
+                          <div className="message-bubble">
+                            <div className="message-header">
+                              <Text className="message-name">我</Text>
                             </div>
-                          ))}
-                        </div>
-                        <div className="message-time">
-                          {formatTime(new Date())}
+                            <div className="message-text">
+                              {msg.content}
+                            </div>
+                            <div className="message-time">
+                              {formatTime(msg.timestamp)}
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    );
+                  } else {
+                    // 渲染智能体消息
+                    return (
+                      <div key={`message-${msg.message_id}`} className="message-group">
+                        <div className="message-content">
+                          <Avatar 
+                            icon={<RobotOutlined style={{ color: '#1890ff' }} />}
+                            size={36}
+                            className="message-avatar"
+                            style={{ backgroundColor: '#e6f6ff', border: '1px solid #91d5ff' }}
+                          />
+                          <div className="message-bubble">
+                            <div className="message-header">
+                              <Text className="message-name">AI助手</Text>
+                            </div>
+                            <div className="message-text">
+                              {msg.nodes && msg.nodes.map((node: any, nodeIndex: number) => (
+                                <div key={`node-${node.node_id}`} className="node-group">
+                                  {/* 节点标题 */}
+                                  <div className="node-header" style={{ 
+                                    padding: '8px 16px', 
+                                    backgroundColor: '#f5f5f5', 
+                                    borderLeft: '4px solid #1890ff',
+                                    margin: '16px 0 8px 0',
+                                    borderRadius: '4px'
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                      <NodeInfoTag
+                                        nodeType={node.node_type || 'unknown'}
+                                        nodeName={node.node_name || '未知节点'}
+                                        nodeLabel={node.node_label}
+                                        metadata={node}
+                                      />
+                                      <Text type="secondary" style={{ fontSize: '12px' }}>
+                                        片段数量: {node.chunk_list.length}
+                                      </Text>
+                                    </div>
+                                  </div>
+                                  
+                                  {/* 节点内容 - 支持两种格式 */}
+                                  <div className="node-content" style={{ padding: '0 16px 16px 16px' }}>
+                                    <div className="combined-content" style={{
+                                      padding: '12px',
+                                      backgroundColor: '#fafafa',
+                                      borderRadius: '4px',
+                                      border: '1px solid #e8e8e8'
+                                    }}>
+                                      {/* 优先使用后台存储的content，前端分片用于流式显示 */}
+                                      {node.content ? (
+                                        <ThinkTagRenderer
+                                          content={node.content}
+                                          nodeInfo={{
+                                            node_type: node.node_type,
+                                            node_name: node.node_name,
+                                            node_label: node.node_label
+                                          }}
+                                        />
+                                      ) : node.chunk_list && node.chunk_list.length > 0 ? (
+                                        <ThinkTagRenderer
+                                          content={node.chunk_list.map((chunk: any) => chunk.content).join('')}
+                                          nodeInfo={{
+                                            node_type: node.node_type,
+                                            node_name: node.node_name,
+                                            node_label: node.node_label
+                                          }}
+                                        />
+                                      ) : (
+                                        <Text type="secondary">暂无内容</Text>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="message-time">
+                              {formatTime(msg.timestamp)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+                })}
+                
+                {/* 调试信息 */}
+                {process.env.NODE_ENV === 'development' && (
+                  <div style={{ padding: '10px', backgroundColor: '#f0f0f0', margin: '10px 0', fontSize: '12px' }}>
+                    <strong>调试信息:</strong><br/>
+                    messages数量: {messages.length}<br/>
+                    用户消息数量: {messages.filter(msg => msg.type === 'user').length}<br/>
+                    智能体消息数量: {messages.filter(msg => msg.type === 'agent').length}<br/>
+                    有节点的智能体消息数量: {messages.filter(msg => msg.type === 'agent' && msg.nodes && msg.nodes.length > 0).length}
+                    <br/><br/>
+                    <strong>用户消息详情:</strong><br/>
+                    {messages.filter(msg => msg.type === 'user').map(msg => (
+                      <div key={msg.id}>
+                        ID: {msg.id}, 内容: {msg.content?.substring(0, 30)}..., 时间: {msg.timestamp?.toLocaleString()}
+                      </div>
+                    ))}
+                    <br/><br/>
+                    <strong>智能体消息详情:</strong><br/>
+                    {messages.filter(msg => msg.type === 'agent').map(msg => (
+                      <div key={msg.id}>
+                        ID: {msg.id}, 节点数: {msg.nodes?.length || 0}, 时间: {msg.timestamp?.toLocaleString()}
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
                 
                 <div ref={messagesEndRef} />
               </div>

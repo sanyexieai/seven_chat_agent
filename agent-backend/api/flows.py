@@ -124,17 +124,17 @@ async def update_flow(flow_id: int, flow: FlowUpdate, db: Session = Depends(get_
 
 @router.delete("/{flow_id}")
 async def delete_flow(flow_id: int, db: Session = Depends(get_db)):
-    """删除流程图（软删除）"""
+    """删除流程图（硬删除）"""
     try:
-        db_flow = db.query(DBFlow).filter(DBFlow.id == flow_id, DBFlow.is_active == True).first()
+        db_flow = db.query(DBFlow).filter(DBFlow.id == flow_id).first()
         if not db_flow:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="流程图不存在"
             )
         
-        # 软删除
-        db_flow.is_active = False
+        # 硬删除
+        db.delete(db_flow)
         db.commit()
         
         logger.info(f"删除流程图: {db_flow.name}")

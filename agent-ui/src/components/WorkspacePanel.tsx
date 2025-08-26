@@ -54,16 +54,7 @@ const ToolNode = ({ data }: { data: any }) => (
   </div>
  );
 
-const ConditionNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '2px solid #d48806', borderRadius: '8px', background: '#fffbe6', minWidth: '80px' }}>
-    <Handle type="target" position={Position.Top} />
-    <div style={{ textAlign: 'center' }}>
-      <BranchesOutlined style={{ fontSize: '16px', color: '#faad14', marginBottom: '4px' }} />
-      <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
-    </div>
-    <Handle type="source" position={Position.Bottom} />
-  </div>
- );
+
 
 const AgentNode = ({ data }: { data: any }) => (
   <div style={{ padding: '10px', border: '2px solid #08979c', borderRadius: '8px', background: '#e6fffb', minWidth: '80px' }}>
@@ -103,7 +94,6 @@ const nodeTypes: NodeTypes = {
   start: StartNode,
   llm: LlmNode,
   tool: ToolNode,
-  condition: ConditionNode,
   agent: AgentNode,
   end: EndNode,
   router: RouterNode,

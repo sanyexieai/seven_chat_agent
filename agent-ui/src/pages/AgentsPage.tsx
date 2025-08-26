@@ -345,17 +345,8 @@ const AgentsPage: React.FC = () => {
   const handleEditClick = (agent: Agent) => {
     // 如果是流程图智能体，直接跳转到流程图编辑器
     if (agent.agent_type === 'flow_driven') {
-      // 将智能体信息编码到URL中，方便流程图编辑器加载
-      const agentInfo = encodeURIComponent(JSON.stringify({
-        id: agent.id,
-        name: agent.name,
-        display_name: agent.display_name,
-        description: agent.description,
-        flow_config: agent.flow_config,
-        is_active: agent.is_active,
-        llm_config_id: agent.llm_config_id
-      }));
-      window.location.href = `/flow-editor?mode=edit&agent_info=${agentInfo}`;
+      // 只传递智能体ID，其他信息在编辑页面查询
+      window.location.href = `/flow-editor?mode=edit&agent_id=${agent.id}`;
       return;
     }
     

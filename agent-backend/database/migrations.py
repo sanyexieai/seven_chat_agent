@@ -92,6 +92,9 @@ def run_migrations():
         
         # 运行智能体LLM配置迁移
         run_agent_llm_config_migration()
+        
+        # 运行聊天相关表迁移
+        run_chat_migrations()
             
     except Exception as e:
         logger.error(f"数据库迁移失败: {str(e)}")
@@ -288,6 +291,92 @@ def run_agent_llm_config_migration():
                 
     except Exception as e:
         logger.error(f"智能体LLM配置迁移失败: {str(e)}")
+        raise
+
+def run_chat_migrations():
+    """运行聊天相关表的数据库迁移"""
+    logger.info("开始检查聊天相关表迁移...")
+    
+    try:
+        with engine.connect() as conn:
+            # 检查chat_messages表是否存在
+            inspector = inspect(engine)
+            if 'chat_messages' not in inspector.get_table_names():
+                logger.info("chat_messages表不存在，创建所有聊天相关表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("所有聊天相关表创建完成")
+                return
+            
+            # 检查message_nodes表是否存在
+            if 'message_nodes' not in inspector.get_table_names():
+                logger.info("message_nodes表不存在，创建message_nodes表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("message_nodes表创建完成")
+                return
+            
+            # 检查chat_messages表的字段
+            missing_chat_columns = []
+            
+            if not check_column_exists('chat_messages', 'message_metadata'):
+                missing_chat_columns.append('message_metadata')
+            
+            if not check_column_exists('chat_messages', 'agent_name'):
+                missing_chat_columns.append('agent_name')
+            
+            # 检查是否需要移除content字段（迁移到message_nodes表）
+            if check_column_exists('chat_messages', 'content'):
+                logger.info("发现chat_messages表存在content字段，需要迁移到message_nodes表...")
+                # 注意：这里只是标记，实际的数据迁移需要更复杂的逻辑
+                # 暂时保留字段，避免数据丢失
+                logger.warning("chat_messages表的content字段暂时保留，建议手动迁移数据后删除")
+            
+            if missing_chat_columns:
+                logger.info(f"发现缺失字段: {missing_chat_columns}")
+                for column in missing_chat_columns:
+                    if column == 'message_metadata':
+                        conn.execute(text("ALTER TABLE chat_messages ADD COLUMN message_metadata JSON;"))
+                        logger.info("添加 message_metadata 字段")
+                    elif column == 'agent_name':
+                        conn.execute(text("ALTER TABLE chat_messages ADD COLUMN agent_name VARCHAR(100);"))
+                        logger.info("添加 agent_name 字段")
+                
+                logger.info("chat_messages表迁移完成")
+            else:
+                logger.info("chat_messages表结构已是最新版本")
+            
+            # 检查message_nodes表的字段
+            missing_node_columns = []
+            
+            if not check_column_exists('message_nodes', 'node_metadata'):
+                missing_node_columns.append('node_metadata')
+            
+            if not check_column_exists('message_nodes', 'node_label'):
+                missing_node_columns.append('node_label')
+            
+            if not check_column_exists('message_nodes', 'content'):
+                missing_node_columns.append('content')
+            
+            if missing_node_columns:
+                logger.info(f"发现缺失字段: {missing_node_columns}")
+                for column in missing_node_columns:
+                    if column == 'node_metadata':
+                        conn.execute(text("ALTER TABLE message_nodes ADD COLUMN node_metadata JSON;"))
+                        logger.info("添加 node_metadata 字段")
+                    elif column == 'node_label':
+                        conn.execute(text("ALTER TABLE message_nodes ADD COLUMN node_label VARCHAR(200);"))
+                        logger.info("添加 node_label 字段")
+                    elif column == 'content':
+                        conn.execute(text("ALTER TABLE message_nodes ADD COLUMN content TEXT;"))
+                        logger.info("添加 content 字段")
+                
+                logger.info("message_nodes表迁移完成")
+            else:
+                logger.info("message_nodes表结构已是最新版本")
+            
+            conn.commit()
+                
+    except Exception as e:
+        logger.error(f"聊天相关表迁移失败: {str(e)}")
         raise
 
 def create_default_agents():

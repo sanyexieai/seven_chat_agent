@@ -13,11 +13,9 @@ logger = get_logger("flow_driven_agent")
 class NodeType(str, Enum):
 	"""节点类型枚举"""
 	AGENT = "agent"           # 智能体节点
-	CONDITION = "condition"    # 条件节点
 	ACTION = "action"         # 动作节点
 	LLM = "llm"               # LLM 调用节点
 	TOOL = "tool"             # 工具调用节点
-	JUDGE = "judge"           # 判断节点（用于判断是否可以直接回答等）
 	ROUTER = "router"         # 路由节点（统一的路由逻辑处理）
 
 class FlowNode:
@@ -137,6 +135,7 @@ class FlowDrivenAgent(BaseAgent):
 			edges_config = self.flow_config.get('edges', [])
 			logger.info(f"开始解析 {len(edges_config)} 条边")
 			
+			# 修复后的连线处理逻辑
 			for edge_config in edges_config:
 				source_id = edge_config.get('source')
 				target_id = edge_config.get('target')
@@ -429,179 +428,6 @@ class FlowDrivenAgent(BaseAgent):
 	def _first_valid_tool(self, pairs: List[tuple[str, str]], mcp_helper) -> Optional[tuple[str, str]]:
 		# 仅验证服务存在，工具存在性在调用前再检查以节省请求
 		return pairs[0] if pairs else None
-
-	async def _execute_condition_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
-		"""执行条件节点，仅返回 true/false 文本，不做路由。"""
-		condition = node.config.get('condition', '')
-		if not condition:
-			raise ValueError(f"条件节点 {node.id} 未配置条件")
-		flow_state = self._get_flow_state(context)
-		variables = {**flow_state, 'message': message}
-		rendered_condition = self._render_template_value(condition, variables)
-		prompt = (
-			"请基于以下信息判断条件是否成立，严格只回答 true 或 false。\n"
-			f"条件：{rendered_condition}\n"
-			f"用户消息：{message}\n"
-			f"流程状态（JSON）：{json.dumps(flow_state, ensure_ascii=False)}\n"
-		)
-		try:
-			response = await self.llm_helper.call(messages=[{"role": "user", "content": prompt}])
-			text = (response or '').strip().lower()
-			is_true = ('true' in text) and ('false' not in text)
-			return AgentMessage(
-				id=str(uuid.uuid4()),
-				type=MessageType.AGENT,
-				content='true' if is_true else 'false',
-				agent_name=self.name,
-				metadata={'node_id': node.id, 'node_type': node.type.value}
-			)
-		except Exception as e:
-			logger.error(f"执行条件节点失败: {str(e)}")
-			raise
-	
-	async def _execute_action_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
-		"""执行动作节点"""
-		action = node.config.get('action', '')
-		if not action:
-			raise ValueError(f"动作节点 {node.id} 未配置动作")
-		
-		# 执行动作（这里可以扩展为调用具体的工具或API）
-		result = f"执行动作：{action}"
-		
-		# 如果有后续节点，继续执行
-		if node.connections:
-			next_node_id = node.connections[0]
-			return await self._execute_node(next_node_id, user_id, message, context)
-		else:
-			return AgentMessage(
-				id=str(uuid.uuid4()),
-				type=MessageType.AGENT,
-				content=result,
-				agent_name=self.name,
-				metadata={'node_id': node.id, 'node_type': node.type.value, 'action': action}
-			)
-
-	async def _execute_judge_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
-		"""执行判断节点"""
-		judge_type = node.config.get('judge_type', 'custom')
-		flow_state = self._get_flow_state(context)
-		variables = {**flow_state, 'message': message}
-		
-		# 获取配置的提示词
-		system_prompt = self._render_template_value(
-			node.config.get('system_prompt', 
-				"你是一个智能判断器，请根据用户输入和上下文进行判断。"
-			), 
-			variables
-		)
-		user_prompt = self._render_template_value(
-			node.config.get('user_prompt', 
-				"请根据以下信息进行判断，并输出JSON格式的结果。\n\n用户输入：{{message}}\n\n请输出判断结果："
-			), 
-			variables
-		)
-		
-		# 根据判断类型设置不同的默认提示词
-		if judge_type == 'direct_answer':
-			system_prompt = self._render_template_value(
-				node.config.get('system_prompt', 
-					"你是一个判断器。给定用户问题，判断是否可以在不查询外部数据、工具或知识库的前提下给出可靠回答。"
-				), 
-				variables
-			)
-			user_prompt = self._render_template_value(
-				node.config.get('user_prompt', 
-					"严格输出JSON：{\"can_direct_answer\": true|false, \"answer\": string}。\n用户问题：{{message}}"
-				), 
-				variables
-			)
-		elif judge_type == 'domain_classification':
-			system_prompt = self._render_template_value(
-				node.config.get('system_prompt', 
-					"你是一个专业的问题分类器，请判断用户问题属于哪个领域。"
-				), 
-				variables
-			)
-			user_prompt = self._render_template_value(
-				node.config.get('user_prompt', 
-					"请输出JSON：{\"domain\": \"技术|生活|工作|其他\", \"can_handle\": true|false, \"reason\": \"分类原因\"}"
-				), 
-				variables
-			)
-		elif judge_type == 'tool_selection':
-			system_prompt = self._render_template_value(
-				node.config.get('system_prompt', 
-					"你是一个工具选择器，请根据用户问题选择最合适的工具。"
-				), 
-				variables
-			)
-			user_prompt = self._render_template_value(
-				node.config.get('user_prompt', 
-					"请输出JSON：{\"selected_tool\": \"工具名\", \"confidence\": 0.0-1.0, \"reason\": \"选择原因\"}"
-				), 
-				variables
-			)
-		elif judge_type == 'intent_recognition':
-			system_prompt = self._render_template_value(
-				node.config.get('system_prompt', 
-					"你是一个意图识别器，请识别用户的真实意图。"
-				), 
-				variables
-			)
-			user_prompt = self._render_template_value(
-				node.config.get('user_prompt', 
-					"请输出JSON：{\"intent\": \"查询|操作|建议|其他\", \"priority\": \"high|medium|low\", \"requires_tool\": true|false}"
-				), 
-				variables
-			)
-		elif judge_type == 'custom':
-			# 使用用户自定义的提示词
-			pass
-		
-		try:
-			response = await self.llm_helper.call(messages=[
-				{"role": "system", "content": system_prompt},
-				{"role": "user", "content": user_prompt}
-			])
-			
-			# 尝试解析JSON
-			parsed = None
-			try:
-				parsed = json.loads(response)
-			except Exception:
-				parsed = None
-			
-			# 保存判断结果到流程状态
-			save_as = node.config.get('save_as', 'judge_result')
-			flow_state[save_as] = parsed or response
-			flow_state['last_output'] = response
-			
-			# 根据判断类型设置不同的流程状态变量
-			if parsed and isinstance(parsed, dict):
-				if judge_type == 'direct_answer':
-					flow_state['judge_can_direct_answer'] = parsed.get('can_direct_answer', False)
-					flow_state['judge_answer'] = parsed.get('answer', '')
-				elif judge_type == 'domain_classification':
-					flow_state['judge_domain'] = parsed.get('domain', '')
-					flow_state['judge_can_handle'] = parsed.get('can_handle', False)
-				elif judge_type == 'tool_selection':
-					flow_state['judge_selected_tool'] = parsed.get('selected_tool', '')
-					flow_state['judge_confidence'] = parsed.get('confidence', 0.0)
-				elif judge_type == 'intent_recognition':
-					flow_state['judge_intent'] = parsed.get('intent', '')
-					flow_state['judge_priority'] = parsed.get('priority', 'medium')
-					flow_state['judge_requires_tool'] = parsed.get('requires_tool', False)
-			
-			return AgentMessage(
-				id=str(uuid.uuid4()),
-				type=MessageType.AGENT,
-				content=response,
-				agent_name=self.name,
-				metadata={'node_id': node.id, 'node_type': node.type.value, 'judge_type': judge_type}
-			)
-		except Exception as e:
-			logger.error(f"执行判断节点失败: {str(e)}")
-			raise
 
 	async def _execute_router_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
 		"""执行路由节点 - 统一的路由逻辑处理"""
@@ -903,115 +729,6 @@ class FlowDrivenAgent(BaseAgent):
 						)
 					nexts = node.connections or []
 					current_id = nexts[0] if nexts else None
-					continue
-
-				if node.type == NodeType.CONDITION:
-					# 复用现有实现，不输出内容，仅决定路线
-					cond_msg = await self._execute_condition_node(node, user_id, message, context)
-					# 简单解析 true/false
-					text = (cond_msg.content or '').strip().lower()
-					is_true = ('true' in text) and ('false' not in text)
-					nexts = node.connections or []
-					if is_true and nexts:
-						current_id = nexts[0]
-					elif len(nexts) > 1:
-						current_id = nexts[1]
-					else:
-						current_id = None
-					continue
-
-				if node.type == NodeType.JUDGE:
-					# 执行判断节点
-					judge_msg = await self._execute_judge_node(node, user_id, message, context)
-					flow_state['last_output'] = flow_state.get('last_output', '') + (judge_msg.content or '')
-					
-					# 输出判断结果
-					yield StreamChunk(
-						chunk_id=str(uuid.uuid4()),
-						session_id=(context or {}).get('session_id', ''),
-						type="content",
-						content=judge_msg.content or '',
-						agent_name=self.name,
-						metadata={
-							'node_id': node.id,
-							'node_type': node.type.value,
-							'node_name': node.name,
-							'node_label': node.config.get('label', node.name),
-							'judge_type': judge_type
-						}
-					)
-					
-					# 根据判断类型和结果决定下一步路径
-					judge_type = node.config.get('judge_type', 'custom')
-					nexts = node.connections or []
-					
-					if judge_type == 'direct_answer':
-						# 直接回答判断：根据can_direct_answer选择分支
-						can_direct_answer = flow_state.get('judge_can_direct_answer', False)
-						if can_direct_answer and len(nexts) > 0:
-							current_id = nexts[0]  # 第一个分支：直接回答
-							logger.info(f"判断节点 {node.id} 选择直接回答分支: {current_id}")
-						elif len(nexts) > 1:
-							current_id = nexts[1]  # 第二个分支：需要工具
-							logger.info(f"判断节点 {node.id} 选择工具调用分支: {current_id}")
-						elif len(nexts) > 0:
-							current_id = nexts[0]
-							logger.info(f"判断节点 {node.id} 只有一个分支，继续执行: {current_id}")
-						else:
-							current_id = None
-							logger.info(f"判断节点 {node.id} 没有后续节点，结束流程")
-					
-					elif judge_type == 'domain_classification':
-						# 领域分类判断：根据domain和can_handle选择分支
-						domain = flow_state.get('judge_domain', '')
-						can_handle = flow_state.get('judge_can_handle', False)
-						if can_handle and len(nexts) > 0:
-							current_id = nexts[0]  # 第一个分支：可以处理
-							logger.info(f"判断节点 {node.id} 选择可处理分支: {current_id}")
-						elif len(nexts) > 1:
-							current_id = nexts[1]  # 第二个分支：无法处理
-							logger.info(f"判断节点 {node.id} 选择无法处理分支: {current_id}")
-						elif len(nexts) > 0:
-							current_id = nexts[0]
-						else:
-							current_id = None
-					
-					elif judge_type == 'tool_selection':
-						# 工具选择判断：根据confidence选择分支
-						confidence = flow_state.get('judge_confidence', 0.0)
-						if confidence > 0.7 and len(nexts) > 0:
-							current_id = nexts[0]  # 第一个分支：高置信度工具
-							logger.info(f"判断节点 {node.id} 选择高置信度工具分支: {current_id}")
-						elif len(nexts) > 1:
-							current_id = nexts[1]  # 第二个分支：低置信度或备选工具
-							logger.info(f"判断节点 {node.id} 选择备选工具分支: {current_id}")
-						elif len(nexts) > 0:
-							current_id = nexts[0]
-						else:
-							current_id = None
-					
-					elif judge_type == 'intent_recognition':
-						# 意图识别判断：根据requires_tool选择分支
-						requires_tool = flow_state.get('judge_requires_tool', False)
-						if not requires_tool and len(nexts) > 0:
-							current_id = nexts[0]  # 第一个分支：不需要工具
-							logger.info(f"判断节点 {node.id} 选择无需工具分支: {current_id}")
-						elif len(nexts) > 1:
-							current_id = nexts[1]  # 第二个分支：需要工具
-							logger.info(f"判断节点 {node.id} 选择需要工具分支: {current_id}")
-						elif len(nexts) > 0:
-							current_id = nexts[0]
-						else:
-							current_id = None
-					
-					else:
-						# 自定义判断类型：默认走第一个分支
-						if len(nexts) > 0:
-							current_id = nexts[0]
-							logger.info(f"判断节点 {node.id} 使用默认分支: {current_id}")
-						else:
-							current_id = None
-					
 					continue
 
 				if node.type == NodeType.AGENT:

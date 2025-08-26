@@ -112,19 +112,38 @@ class MessageService:
         messages = list(reversed(filtered[:limit]))
         
         # 转换为Pydantic模型
-        from models.database_models import MessageResponse
+        from models.database_models import MessageResponse, MessageNodeResponse
         result = []
         for message in messages:
+            # 查询该消息的节点信息
+            nodes = db.query(MessageNode).filter(
+                MessageNode.message_id == message.message_id
+            ).order_by(MessageNode.created_at.asc()).all()
+            
+            # 转换为节点响应模型
+            node_responses = []
+            for node in nodes:
+                node_responses.append(MessageNodeResponse(
+                    id=node.id,
+                    node_id=node.node_id,
+                    node_type=node.node_type,
+                    node_name=node.node_name,
+                    node_label=node.node_label,
+                    node_metadata=node.node_metadata,
+                    created_at=node.created_at
+                ))
+            
             result.append(MessageResponse(
                 id=message.id,
                 message_id=message.message_id,
                 session_id=message.session_id,
                 user_id=message.user_id,
                 message_type=message.message_type,
-                content=message.content,
+                content="",  # 消息本身不再有内容，内容在节点中
                 agent_name=message.agent_name,
                 metadata=message.message_metadata,
-                created_at=message.created_at
+                created_at=message.created_at,
+                nodes=node_responses  # 添加节点信息
             ))
         return result
     

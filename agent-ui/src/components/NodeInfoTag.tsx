@@ -35,8 +35,7 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
         return <QuestionCircleOutlined />;
       case 'agent':
         return <CodeOutlined />;
-      case 'condition':
-        return <CheckCircleOutlined />;
+
       default:
         return <RobotOutlined />;
     }
@@ -54,8 +53,7 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
         return 'orange';
       case 'agent':
         return 'cyan';
-      case 'condition':
-        return 'geekblue';
+
       default:
         return 'default';
     }
@@ -73,8 +71,7 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
         return '判断';
       case 'agent':
         return '智能体';
-      case 'condition':
-        return '条件';
+
       default:
         return nodeType;
     }

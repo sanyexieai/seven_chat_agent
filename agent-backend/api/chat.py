@@ -218,15 +218,37 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                 # 调用智能体的process_message_stream方法
                                 tools_used = []
                                 live_follow_segments: list[str] = []
+                                collected_nodes: list[dict] = []  # 收集节点信息
+                                
                                 async for chunk in agent.process_message_stream(request.user_id, request.message, enhanced_context):
                                     if chunk.type == "node_start":
                                         # 发送节点开始事件，包含完整的chunk信息
                                         data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'node_start', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
                                         yield data_chunk
+                                        
+                                        # 收集节点信息
+                                        if chunk.metadata and chunk.metadata.get('node_id'):
+                                            # 检查是否已收集过该节点
+                                            existing_node = next((node for node in collected_nodes if node['node_id'] == chunk.metadata['node_id']), None)
+                                            if not existing_node:
+                                                collected_nodes.append({
+                                                    'node_id': chunk.metadata.get('node_id'),
+                                                    'node_type': chunk.metadata.get('node_type'),
+                                                    'node_name': chunk.metadata.get('node_name'),
+                                                    'node_label': chunk.metadata.get('node_label'),
+                                                    'node_metadata': chunk.metadata
+                                                })
+                                        
                                     elif chunk.type == "node_complete":
                                         # 发送节点完成事件，包含完整的chunk信息
                                         data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'node_complete', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
                                         yield data_chunk
+                                        
+                                        # 更新节点信息（如果有输出内容）
+                                        if chunk.metadata and chunk.metadata.get('node_id'):
+                                            existing_node = next((node for node in collected_nodes if node['node_id'] == chunk.metadata['node_id']), None)
+                                            if existing_node and chunk.metadata.get('output'):
+                                                existing_node['output'] = chunk.metadata.get('output')
                                     elif chunk.type == "content":
                                         # 发送内容块，包含metadata信息
                                         data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'content', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
@@ -290,6 +312,41 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                                                 )
                                                 assistant_message = MessageService.create_message(db, assistant_message_data)
 
+                                                # 保存节点信息（如果有的话）
+                                                if hasattr(assistant_message, 'message_id') and assistant_message.message_id:
+                                                    try:
+                                                        # 保存所有收集到的节点信息
+                                                        if collected_nodes:
+                                                            from models.database_models import MessageNode
+                                                            from sqlalchemy.orm import Session
+                                                            
+                                                            for node_info in collected_nodes:
+                                                                # 创建节点记录
+                                                                node_record = MessageNode(
+                                                                    node_id=node_info['node_id'],
+                                                                    message_id=assistant_message.message_id,
+                                                                    node_type=node_info['node_type'],
+                                                                    node_name=node_info['node_name'],
+                                                                    node_label=node_info['node_label'],
+                                                                    content=node_info.get('output', ''),  # 保存节点输出内容
+                                                                    node_metadata={
+                                                                        **node_info['node_metadata']
+                                                                    }
+                                                                )
+                                                                
+                                                                # 添加到数据库会话
+                                                                db.add(node_record)
+                                                            
+                                                            # 提交所有节点记录
+                                                            db.commit()
+                                                            logger.info(f"成功保存 {len(collected_nodes)} 个节点信息，消息ID: {assistant_message.message_id}")
+                                                        else:
+                                                            logger.info(f"没有收集到节点信息，消息ID: {assistant_message.message_id}")
+                                                    except Exception as e:
+                                                        logger.warning(f"保存节点信息失败: {str(e)}")
+                                                        # 回滚节点保存，但保持消息保存
+                                                        db.rollback()
+                                                
                                                 # 保存实时跟随汇总（若存在则更新）
                                                 try:
                                                     if live_follow_segments:
@@ -534,9 +591,43 @@ async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
 async def get_chat_messages(session_id: str, db: Session = Depends(get_db)):
     """获取聊天消息"""
     try:
-        messages = MessageService.get_session_messages(db, session_id)
-        logger.info(f"获取会话 {session_id} 的消息，共 {len(messages)} 条")
-        return messages
+        # 使用 MessageService 获取消息和节点信息
+        from services.session_service import MessageService
+        messages = MessageService.get_session_messages(db, int(session_id))
+        
+        # 转换为 ChatMessageResponse 格式
+        from models.database_models import ChatMessageResponse, MessageNodeResponse
+        result = []
+        for message in messages:
+            # 转换节点信息
+            node_responses = []
+            if message.nodes:
+                for node in message.nodes:
+                    node_responses.append(MessageNodeResponse(
+                        id=node.id,
+                        node_id=node.node_id,
+                        node_type=node.node_type,
+                        node_name=node.node_name,
+                        node_label=node.node_label,
+                        content=node.content,  # 添加节点内容
+                        node_metadata=node.node_metadata,
+                        created_at=node.created_at
+                    ))
+            
+            result.append(ChatMessageResponse(
+                id=message.id,
+                message_id=message.message_id,
+                session_id=message.session_id,
+                user_id=message.user_id,
+                message_type=message.message_type,
+                agent_name=message.agent_name,
+                metadata=message.metadata,
+                created_at=message.created_at,
+                nodes=node_responses
+            ))
+        
+        logger.info(f"获取会话 {session_id} 的消息，共 {len(result)} 条")
+        return result
     except Exception as e:
         logger.error(f"获取聊天消息失败: {str(e)}")
         raise HTTPException(

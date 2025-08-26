@@ -74,13 +74,98 @@ class ChatMessage(Base):
     session_id = Column(String(100), ForeignKey("user_sessions.session_id"), nullable=False)
     user_id = Column(String(100), nullable=False)
     message_type = Column(String(50), nullable=False)  # user, agent, system, tool
-    content = Column(Text, nullable=False)
     agent_name = Column(String(100), nullable=True)
     message_metadata = Column(JSON, nullable=True)  # 重命名为message_metadata避免冲突
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # 关联关系
     session = relationship("UserSession", back_populates="messages")
+    nodes = relationship("MessageNode", back_populates="message")
+
+class MessageNode(Base):
+    """消息节点表"""
+    __tablename__ = "message_nodes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    node_id = Column(String(100), nullable=False)  # 节点唯一标识
+    message_id = Column(String(100), ForeignKey("chat_messages.message_id"), nullable=False)
+    node_type = Column(String(50), nullable=False)  # llm, tool, judge, router等
+    node_name = Column(String(200), nullable=False)  # 节点显示名称
+    node_label = Column(String(200), nullable=True)  # 节点标签
+    content = Column(Text, nullable=True)  # 节点输出内容
+    node_metadata = Column(JSON, nullable=True)  # 节点元数据
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # 关联关系
+    message = relationship("ChatMessage", back_populates="nodes")
+
+# Pydantic响应模型
+class AgentResponse(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    agent_type: str
+    is_active: bool
+    config: Optional[Dict[str, Any]] = None
+    system_prompt: Optional[str] = None
+    bound_tools: Optional[List[Any]] = None
+    bound_knowledge_bases: Optional[List[Any]] = None
+    flow_config: Optional[Dict[str, Any]] = None
+    llm_config_id: Optional[int] = None
+    llm_config: Optional['LLMConfigResponse'] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class AgentCreate(BaseModel):
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    agent_type: str
+    config: Optional[Dict[str, Any]] = None
+    system_prompt: Optional[str] = None
+    bound_tools: Optional[List[Any]] = None
+    bound_knowledge_bases: Optional[List[Any]] = None
+    flow_config: Optional[Dict[str, Any]] = None
+    llm_config_id: Optional[int] = None
+
+class AgentUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    agent_type: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    system_prompt: Optional[str] = None
+    bound_tools: Optional[List[Any]] = None
+    bound_knowledge_bases: Optional[List[Any]] = None
+    flow_config: Optional[Dict[str, Any]] = None
+    llm_config_id: Optional[int] = None
+
+class FlowResponse(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    flow_config: Optional[Dict[str, Any]] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class FlowCreate(BaseModel):
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    flow_config: Optional[Dict[str, Any]] = None
+
+class FlowUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    flow_config: Optional[Dict[str, Any]] = None
 
 class MCPServer(Base):
     """MCP服务器配置表"""
@@ -284,16 +369,30 @@ class UserSessionResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class MessageNodeResponse(BaseModel):
+    """消息节点响应模型"""
+    id: int
+    node_id: str
+    node_type: str
+    node_name: str
+    node_label: Optional[str] = None
+    content: Optional[str] = None  # 节点输出内容
+    node_metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 class ChatMessageResponse(BaseModel):
     id: int
     message_id: str
     session_id: str
     user_id: str
     message_type: str
-    content: str
     agent_name: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
+    nodes: Optional[List[MessageNodeResponse]] = None  # 节点列表
     
     class Config:
         from_attributes = True

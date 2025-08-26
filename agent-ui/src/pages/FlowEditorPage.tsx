@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Button,
   Input,
@@ -69,6 +69,8 @@ interface FlowEdge {
   source: string;
   target: string;
   type: string;
+  sourceHandle?: string;
+  targetHandle?: string;
 }
 
 interface FlowConfig {
@@ -127,41 +129,7 @@ const AgentNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
-const ConditionNode = ({ data, id }: { data: any; id: string }) => (
-  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff7e6', position: 'relative' }}>
-    <Handle type="target" position={Position.Top} />
-    <div style={{ textAlign: 'center' }}>
-      <BranchesOutlined style={{ fontSize: '20px', color: '#fa8c16' }} />
-      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
-      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
-    </div>
-    <Handle type="source" position={Position.Bottom} />
-    <Button
-      type="text"
-      size="small"
-      danger
-      icon={<DeleteOutlined />}
-      style={{
-        position: 'absolute',
-        top: '-8px',
-        right: '-8px',
-        minWidth: '20px',
-        height: '20px',
-        padding: '0',
-        borderRadius: '50%',
-        background: '#fff',
-        border: '1px solid #ff4d4f',
-        zIndex: 10
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (data.onDelete) {
-          data.onDelete(id);
-        }
-      }}
-    />
-  </div>
-);
+
 
 const ActionNode = ({ data, id }: { data: any; id: string }) => (
   <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f6ffed', position: 'relative' }}>
@@ -271,81 +239,7 @@ const ToolNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
-const JudgeNode = ({ data, id }: { data: any; id: string }) => {
-  // 根据判断类型获取分支标签
-  const getBranchLabels = (judgeType: string) => {
-    switch (judgeType) {
-      case 'direct_answer':
-        return { left: '✓ 直接回答', right: '✗ 需要工具' };
-      case 'domain_classification':
-        return { left: '✓ 可处理', right: '✗ 无法处理' };
-      case 'tool_selection':
-        return { left: '✓ 高置信度', right: '✗ 备选工具' };
-      case 'intent_recognition':
-        return { left: '✓ 无需工具', right: '✗ 需要工具' };
-      default:
-        return { left: '✓ 分支1', right: '✗ 分支2' };
-    }
-  };
 
-  const judgeType = data.config?.judge_type || 'custom';
-  const branchLabels = getBranchLabels(judgeType);
-
-  return (
-    <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f9f0ff', position: 'relative' }}>
-      <Handle type="target" position={Position.Top} />
-      <div style={{ textAlign: 'center' }}>
-        <BranchesOutlined style={{ fontSize: '20px', color: '#722ed1' }} />
-        <div style={{ fontWeight: 'bold' }}>{data.label}</div>
-        <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
-        <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>
-          <div>{branchLabels.left}</div>
-          <div>{branchLabels.right}</div>
-        </div>
-        <div style={{ fontSize: '9px', color: '#bbb', marginTop: '2px' }}>
-          {judgeType}
-        </div>
-      </div>
-      {/* 两个输出端口：第一个用于正面结果，第二个用于负面结果 */}
-      <Handle 
-        type="source" 
-        position={Position.Bottom} 
-        id="source-positive"
-        style={{ left: '30%', background: '#52c41a' }}
-      />
-      <Handle 
-        type="source" 
-        position={Position.Bottom} 
-        id="source-negative"
-        style={{ left: '70%', background: '#fa8c16' }}
-      />
-      <Button
-        type="text"
-        size="small"
-        danger
-        icon={<DeleteOutlined />}
-        style={{
-          position: 'absolute',
-          top: '-8px',
-          right: '-8px',
-          minWidth: '20px',
-          height: '20px',
-          padding: '0',
-          borderRadius: '50%',
-          background: '#fff',
-          border: '1px solid #ff4d4f',
-          zIndex: 10
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (data.onDelete) {
-            data.onDelete(id);
-          }
-        }}
-      />
-    </div>
-  );
-};
 
 const RouterNode = ({ data, id }: { data: any; id: string }) => {
   // 获取路由配置信息
@@ -478,10 +372,27 @@ const OutputNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
+// 将nodeTypes移到组件外部，避免每次渲染都重新创建
+const nodeTypes: NodeTypes = {
+  agent: AgentNode,
+  action: ActionNode,
+  llm: LlmNode,
+  tool: ToolNode,
+  
+  router: RouterNode
+};
+
 const FlowEditorPage: React.FC = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  
+  // 监听连线状态变化
+  useEffect(() => {
+    console.log('🔍 连线状态发生变化，当前连线数量:', edges.length);
+    console.log('🔍 当前连线详情:', edges);
+  }, [edges]);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   const [nodeConfigModal, setNodeConfigModal] = useState(false);
   const [flowName, setFlowName] = useState('');
   const [flowDescription, setFlowDescription] = useState('');
@@ -490,27 +401,29 @@ const FlowEditorPage: React.FC = () => {
   const [currentFlowId, setCurrentFlowId] = useState<number | null>(null);
   const [currentMode, setCurrentMode] = useState<'create' | 'edit'>('create');
   const [flows, setFlows] = useState<any[]>([]);
-  const [configForm] = Form.useForm();
   const [isStartNode, setIsStartNode] = useState(false);
   const [configModalVisible, setConfigModalVisible] = useState(false);
   const [importModalVisible, setImportModalVisible] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
   const [currentAgentId, setCurrentAgentId] = useState<number | null>(null);
   
-  // 将nodeTypes移到组件内部，确保在组件渲染时正确初始化
-  const nodeTypes: NodeTypes = {
-    agent: AgentNode,
-    condition: ConditionNode,
-    action: ActionNode,
-    llm: LlmNode,
-    tool: ToolNode,
-    judge: JudgeNode,
-    router: RouterNode
-  };
+  // 设置抽屉相关状态（参考通用智能体，除提示词外）
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSubmitting, setSettingsSubmitting] = useState(false);
+  const [llmConfigs, setLlmConfigs] = useState<any[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
+  const [toolTreeData, setToolTreeData] = useState<any[]>([]);
+  
+  // 表单实例 - 使用条件渲染避免表单未渲染时创建实例
+  const [configForm] = Form.useForm();
+  const [settingsForm] = Form.useForm();
   
   // 确保RouterNode组件可用
-  console.log('注册的节点类型:', Object.keys(nodeTypes));
-  console.log('RouterNode组件:', RouterNode);
+  // console.log('注册的节点类型:', Object.keys(nodeTypes));
+  // console.log('RouterNode组件:', RouterNode);
+
+  const [isEditingExistingFlow, setIsEditingExistingFlow] = useState(false);
 
   const createStartNode = () => {
     const hasStart = nodes.some((n: any) => n?.data?.isStartNode);
@@ -530,15 +443,6 @@ const FlowEditorPage: React.FC = () => {
     setNodes((nds) => [startNode, ...nds]);
   };
   
-  // 设置抽屉相关状态（参考通用智能体，除提示词外）
-  const [settingsVisible, setSettingsVisible] = useState(false);
-  const [settingsLoading, setSettingsLoading] = useState(false);
-  const [settingsSubmitting, setSettingsSubmitting] = useState(false);
-  const [settingsForm] = Form.useForm();
-  const [llmConfigs, setLlmConfigs] = useState<any[]>([]);
-  const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
-  const [toolTreeData, setToolTreeData] = useState<any[]>([]);
-
   useEffect(() => {
     fetchAgents();
     fetchFlows(); // 组件加载时获取已保存的流程图
@@ -546,21 +450,15 @@ const FlowEditorPage: React.FC = () => {
     // 检查URL参数，如果是编辑模式，加载智能体信息
     const urlParams = new URLSearchParams(window.location.search);
     const mode = urlParams.get('mode');
-    const agentInfo = urlParams.get('agent_info');
+    const agentId = urlParams.get('agent_id');
     
-    console.log('URL参数检查:', { mode, agentInfo });
+    console.log('URL参数检查:', { mode, agentId });
     
-    if (mode === 'edit' && agentInfo) {
-      try {
-        console.log('开始解析智能体信息...');
-        const agent = JSON.parse(decodeURIComponent(agentInfo));
-        console.log('解析后的智能体信息:', agent);
-        setCurrentMode('edit');
-        loadAgentInfo(agent);
-      } catch (error) {
-        console.error('解析智能体信息失败:', error);
-        message.error('加载智能体信息失败');
-      }
+    if (mode === 'edit' && agentId) {
+      console.log('编辑模式，开始加载智能体信息...');
+      setCurrentMode('edit');
+      // 根据agent_id查询数据库获取智能体信息
+      loadAgentById(parseInt(agentId));
     } else if (mode === 'create') {
       console.log('设置为创建模式');
       setCurrentMode('create');
@@ -570,6 +468,23 @@ const FlowEditorPage: React.FC = () => {
       console.log('未找到有效的模式参数');
     }
   }, []);
+
+  // 添加键盘快捷键支持
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        if (selectedEdge) {
+          event.preventDefault();
+          deleteEdge(selectedEdge.id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedEdge]);
 
   const fetchAgents = async () => {
     try {
@@ -600,7 +515,14 @@ const FlowEditorPage: React.FC = () => {
           position: node.position,
           data: { ...node.data, isStartNode: node.data.isStartNode || false }
         })),
-        edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+        edges: edges.map(edge => ({ 
+          id: edge.id, 
+          source: edge.source, 
+          target: edge.target, 
+          type: edge.type,
+          sourceHandle: edge.sourceHandle,
+          targetHandle: edge.targetHandle
+        })),
         metadata: { name: flowName || '新流程', description: flowDescription || '', version: '1.0.0' }
       };
       const jsonStr = JSON.stringify(flowConfig, null, 2);
@@ -616,6 +538,24 @@ const FlowEditorPage: React.FC = () => {
     } catch (e) {
       console.error(e);
       message.error('导出失败');
+    }
+  };
+
+  const loadAgentById = async (agentId: number) => {
+    try {
+      console.log('开始根据ID加载智能体信息:', agentId);
+      const response = await fetch(API_PATHS.AGENT_BY_ID(agentId));
+      if (response.ok) {
+        const agent = await response.json();
+        console.log('从数据库加载的智能体信息:', agent);
+        loadAgentInfo(agent);
+      } else {
+        console.error('加载智能体失败:', response.status);
+        message.error('加载智能体信息失败');
+      }
+    } catch (error) {
+      console.error('加载智能体失败:', error);
+      message.error('加载智能体信息失败');
     }
   };
 
@@ -637,7 +577,7 @@ const FlowEditorPage: React.FC = () => {
           .map((t: any) => typeof t === 'string' ? t : (t && t.server && t.tool ? `${t.server}_${t.tool}` : null))
           .filter((v: any) => !!v)
       : [];
-    settingsForm.setFieldsValue({
+            settingsForm.setFieldsValue({
       llm_config_id: agent.llm_config_id || undefined,
       bound_tools: normalizedBoundTools,
       bound_knowledge_bases: Array.isArray(agent.bound_knowledge_bases) ? agent.bound_knowledge_bases : []
@@ -718,7 +658,9 @@ const FlowEditorPage: React.FC = () => {
     // 记录当前正在编辑的智能体ID
     if (agent && typeof agent.id !== 'undefined') {
       setCurrentAgentId(agent.id);
+      setIsEditingExistingFlow(true);
       console.log('设置当前智能体ID:', agent.id);
+      console.log('设置为编辑现有流程图模式');
       message.success(`已加载智能体: ${agent.display_name || agent.name}`);
     }
   };
@@ -820,12 +762,19 @@ const FlowEditorPage: React.FC = () => {
           position: node.position,
           data: { ...node.data, isStartNode: node.data.isStartNode || false }
         })),
-        edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+        edges: edges.map(edge => ({ 
+          id: edge.id, 
+          source: edge.source, 
+          target: edge.target, 
+          type: edge.type,
+          sourceHandle: edge.sourceHandle,
+          targetHandle: edge.targetHandle
+        })),
         metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
       };
 
       // 从设置表单获取配置
-      const settings = await settingsForm.validateFields();
+              const settings = await settingsForm.validateFields();
       console.log('获取到的设置数据:', settings);
       
       const payloadBase: any = {
@@ -901,7 +850,23 @@ const FlowEditorPage: React.FC = () => {
   };
 
   const onConnect = useCallback(
-    (params: Connection) => setEdges((eds: Edge[]) => addEdge(params, eds)),
+    (params: Connection) => {
+      console.log('🔍 onConnect 被调用，参数:', params);
+      
+      // 确保连线包含所有必要字段
+      const edge = {
+        id: `edge_${Date.now()}`,
+        source: params.source || '',
+        target: params.target || '',
+        sourceHandle: params.sourceHandle || undefined,
+        targetHandle: params.targetHandle || undefined,
+        type: 'default'
+      };
+      
+      console.log('🔍 创建的连线:', edge);
+      
+      setEdges((eds: Edge[]) => [...eds, edge]);
+    },
     [setEdges],
   );
 
@@ -923,11 +888,11 @@ const FlowEditorPage: React.FC = () => {
   const getNodeTypeLabel = (nodeType: string) => {
     switch (nodeType) {
       case 'agent': return '智能体';
-      case 'condition': return '条件';
+      
       case 'action': return '动作';
       case 'llm': return 'LLM';
       case 'tool': return '工具';
-      case 'judge': return '判断';
+
       case 'router': return '路由';
       case 'input': return '输入';
       case 'output': return '输出';
@@ -937,11 +902,11 @@ const FlowEditorPage: React.FC = () => {
 
   const onNodeClick = (event: React.MouseEvent, node: Node) => {
     setSelectedNode(node);
-    configForm.setFieldsValue({
+            configForm.setFieldsValue({
       label: node.data.label,
       isStartNode: node.data.isStartNode || false,
       agent_name: node.data.config?.agent_name || '',
-      condition: node.data.config?.condition || '',
+      
       action: node.data.config?.action || '',
       system_prompt: node.data.nodeType === 'llm' ? (node.data.config?.system_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
       user_prompt: node.data.nodeType === 'llm' ? (node.data.config?.user_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
@@ -950,17 +915,27 @@ const FlowEditorPage: React.FC = () => {
       tool: node.data.nodeType === 'tool' ? (node.data.config?.tool || '') : undefined,
       params: node.data.nodeType === 'tool' ? (typeof node.data.config?.params === 'object' ? JSON.stringify(node.data.config?.params, null, 2) : (node.data.config?.params || '')) : undefined,
       append_to_output: node.data.nodeType === 'tool' ? (node.data.config?.append_to_output !== false) : undefined,
-      judge_type: node.data.nodeType === 'judge' ? (node.data.config?.judge_type || 'direct_answer') : undefined,
+
       field: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.field || '') : undefined,
       value: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.value || '') : undefined,
       operator: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.operator || '') : undefined,
       threshold: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.threshold || '') : undefined,
       pattern: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.pattern || '') : undefined,
-      true_branch: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.true_branch || '') : undefined,
-      false_branch: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.false_branch || '') : undefined,
+      true_branch: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.true_branch || getBranchFromEdges(node.id, 'true') || '') : undefined,
+      false_branch: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.false_branch || getBranchFromEdges(node.id, 'false') || '') : undefined,
       config: JSON.stringify(node.data.config || {}, null, 2)
     });
     setConfigModalVisible(true);
+  };
+
+  const onEdgeClick = (event: React.MouseEvent, edge: Edge) => {
+    setSelectedEdge(edge);
+    setSelectedNode(null); // 清除节点选择
+  };
+
+  const onPaneClick = () => {
+    setSelectedNode(null);
+    setSelectedEdge(null);
   };
 
   const saveNodeConfig = (values: any) => {
@@ -1007,12 +982,7 @@ const FlowEditorPage: React.FC = () => {
             config.params = values.params; // 允许简单字符串
           }
         }
-      } else if (selectedNode.data.nodeType === 'judge') {
-        // 判断节点配置
-        config.judge_type = values.judge_type || 'direct_answer';
-        if (values.system_prompt) config.system_prompt = values.system_prompt;
-        if (values.user_prompt) config.user_prompt = values.user_prompt;
-        if (values.save_as) config.save_as = values.save_as;
+      
       } else if (selectedNode.data.nodeType === 'router') {
         // 路由节点配置
         config.routing_logic = {
@@ -1030,6 +1000,37 @@ const FlowEditorPage: React.FC = () => {
             delete config.routing_logic[key];
           }
         });
+        
+        // 确保连线在保存后自动连接
+        const trueBranch = values.true_branch;
+        const falseBranch = values.false_branch;
+        
+        // 先清理该路由节点的所有现有连线
+        setEdges(eds => eds.filter(edge => edge.source !== selectedNode.id));
+        
+        if (trueBranch && trueBranch !== selectedNode.id) {
+          // 创建真值分支连线
+          const newTrueEdge: Edge = {
+            id: `edge-${selectedNode.id}-${trueBranch}-true-${Date.now()}`,
+            source: selectedNode.id,
+            target: trueBranch,
+            sourceHandle: 'source-true',
+            type: 'default'
+          };
+          setEdges(eds => [...eds, newTrueEdge]);
+        }
+        
+        if (falseBranch && falseBranch !== selectedNode.id) {
+          // 创建假值分支连线
+          const newFalseEdge: Edge = {
+            id: `edge-${selectedNode.id}-${falseBranch}-false-${Date.now()}`,
+            source: selectedNode.id,
+            target: falseBranch,
+            sourceHandle: 'source-false',
+            type: 'default'
+          };
+          setEdges(eds => [...eds, newFalseEdge]);
+        }
       }
       
       setNodes((nds) =>
@@ -1050,7 +1051,24 @@ const FlowEditorPage: React.FC = () => {
       
       setConfigModalVisible(false);
       setSelectedNode(null);
-      message.success('节点配置已保存');
+      
+      // 如果是路由节点，显示连线连接信息
+      if (selectedNode.data.nodeType === 'router') {
+        const trueBranch = values.true_branch;
+        const falseBranch = values.false_branch;
+        let connectionInfo = '节点配置已保存';
+        
+        if (trueBranch) {
+          connectionInfo += `，真值分支已连接到 ${trueBranch}`;
+        }
+        if (falseBranch) {
+          connectionInfo += `，假值分支已连接到 ${falseBranch}`;
+        }
+        
+        message.success(connectionInfo);
+      } else {
+        message.success('节点配置已保存');
+      }
     } catch (error) {
       message.error('配置格式错误，请检查JSON格式');
     }
@@ -1065,6 +1083,119 @@ const FlowEditorPage: React.FC = () => {
     setNodes((nds: Node[]) => nds.filter((node: Node) => node.id !== nodeId));
     setEdges((eds: Edge[]) => eds.filter((edge: Edge) => edge.source !== nodeId && edge.target !== nodeId));
     message.success('节点已删除');
+  };
+
+  const deleteEdge = (edgeId: string) => {
+    setEdges((eds: Edge[]) => eds.filter((edge: Edge) => edge.id !== edgeId));
+    setSelectedEdge(null);
+    message.success('连线已删除');
+  };
+
+  const getBranchFromEdges = (nodeId: string, branchType: 'true' | 'false'): string => {
+    const edge = edges.find(edge => 
+      edge.source === nodeId && 
+      edge.sourceHandle === `source-${branchType}`
+    );
+    return edge ? edge.target : '';
+  };
+
+  const validateRouterConnections = () => {
+    console.log('🔍 开始验证路由节点连接...');
+    console.log('🔍 当前节点数量:', nodes.length);
+    console.log('🔍 当前连线数量:', edges.length);
+    console.log('🔍 当前连线详情:', edges);
+    
+    // 检查所有路由节点，确保连线正确连接
+    const routerNodes = nodes.filter(node => node.data.nodeType === 'router');
+    console.log('🔍 找到路由节点:', routerNodes.map(n => ({ id: n.id, name: n.data.label })));
+    
+    routerNodes.forEach(routerNode => {
+      const routingConfig = routerNode.data.config?.routing_logic;
+      if (!routingConfig) {
+        console.log(`🔍 路由节点 ${routerNode.id} 没有配置 routing_logic`);
+        return;
+      }
+      
+      const trueBranch = routingConfig.true_branch;
+      const falseBranch = routingConfig.false_branch;
+      console.log(`🔍 路由节点 ${routerNode.id} 配置: true_branch=${trueBranch}, false_branch=${falseBranch}`);
+      
+      // 检查是否已经存在正确的连线，如果存在则跳过
+      const existingTrueEdge = edges.find(edge => 
+        edge.source === routerNode.id && 
+        edge.sourceHandle === 'source-true' &&
+        edge.target === trueBranch
+      );
+      
+      const existingFalseEdge = edges.find(edge => 
+        edge.source === routerNode.id && 
+        edge.sourceHandle === 'source-false' &&
+        edge.target === falseBranch
+      );
+      
+      console.log(`🔍 路由节点 ${routerNode.id} 现有连线:`, {
+        trueEdge: existingTrueEdge,
+        falseEdge: existingFalseEdge
+      });
+      
+      // 只有当连线不存在或目标不正确时才重新创建
+      if (!existingTrueEdge && trueBranch && trueBranch !== routerNode.id) {
+        console.log(`🔍 创建真值分支连线: ${routerNode.id} -> ${trueBranch}`);
+        const newTrueEdge: Edge = {
+          id: `edge-${routerNode.id}-${trueBranch}-true-${Date.now()}`,
+          source: routerNode.id,
+          target: trueBranch,
+          sourceHandle: 'source-true',
+          type: 'default'
+        };
+        setEdges(eds => [...eds, newTrueEdge]);
+      } else {
+        console.log(`🔍 真值分支连线已存在或无需创建:`, existingTrueEdge);
+      }
+      
+      if (!existingFalseEdge && falseBranch && falseBranch !== routerNode.id) {
+        console.log(`🔍 创建假值分支连线: ${routerNode.id} -> ${falseBranch}`);
+        const newFalseEdge: Edge = {
+          id: `edge-${routerNode.id}-${falseBranch}-false-${Date.now()}`,
+          source: routerNode.id,
+          target: falseBranch,
+          sourceHandle: 'source-false',
+          type: 'default'
+        };
+        setEdges(eds => [...eds, newFalseEdge]);
+      } else {
+        console.log(`🔍 假值分支连线已存在或无需创建:`, existingFalseEdge);
+      }
+    });
+    
+    console.log('🔍 路由节点连接验证完成');
+  };
+
+  const handleBranchSelection = (branchType: 'true' | 'false', targetNodeId: string) => {
+    if (!selectedNode) return;
+    
+    const sourceNodeId = selectedNode.id;
+    
+    // 先删除该分支的现有连线（如果存在）
+    setEdges(eds => eds.filter(edge => 
+      !(edge.source === sourceNodeId && edge.sourceHandle === `source-${branchType}`)
+    ));
+    
+    // 创建新的连线
+    const newEdge: Edge = {
+      id: `edge-${sourceNodeId}-${targetNodeId}-${branchType}-${Date.now()}`,
+      source: sourceNodeId,
+      target: targetNodeId,
+      sourceHandle: `source-${branchType}`,
+      type: 'default'
+    };
+    setEdges(eds => [...eds, newEdge]);
+    
+    // 自动更新表单中的分支选择值
+    const fieldName = branchType === 'true' ? 'true_branch' : 'false_branch';
+    configForm.setFieldsValue({ [fieldName]: targetNodeId });
+    
+    message.success(`${branchType === 'true' ? '真值' : '假值'}分支已连接到 ${targetNodeId}`);
   };
 
   // 左侧保存：若已有 flowId 则更新流程；否则创建新流程
@@ -1083,31 +1214,39 @@ const FlowEditorPage: React.FC = () => {
           position: node.position,
           data: { ...node.data, isStartNode: node.data.isStartNode || false }
         })),
-        edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+        edges: edges.map(edge => ({ 
+          id: edge.id, 
+          source: edge.source, 
+          target: edge.target, 
+          type: edge.type,
+          sourceHandle: edge.sourceHandle,
+          targetHandle: edge.targetHandle
+        })),
         metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
       };
 
-      // 左侧保存：若已有 flowId 则更新流程；否则创建新流程
-      if (currentFlowId) {
-        const response = await fetch(API_PATHS.FLOW_BY_ID(currentFlowId), {
+      // 根据编辑状态决定是新建还是更新
+      if (isEditingExistingFlow && currentAgentId) {
+        // 编辑现有智能体的流程图配置
+        console.log('更新现有智能体的流程图配置');
+        const response = await fetch(API_PATHS.AGENT_BY_ID(currentAgentId), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            display_name: flowName,
-            description: flowDescription,
             flow_config: flowConfig
           })
         });
         if (response.ok) {
           const result = await response.json();
-          message.success('流程图已更新');
+          message.success('流程图配置已更新');
           console.log('更新结果:', result);
-          try { fetchFlows(); } catch (e) { /* noop */ }
         } else {
           const error = await response.json();
           message.error(`更新失败: ${error.detail || '未知错误'}`);
         }
       } else {
+        // 创建新的流程图
+        console.log('创建新的流程图');
         const response = await fetch(API_PATHS.FLOWS, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1203,45 +1342,75 @@ const FlowEditorPage: React.FC = () => {
     setFlowName(flowConfig.metadata.name);
     setFlowDescription(flowConfig.metadata.description);
     setNodes(flowConfig.nodes);
-    setEdges(flowConfig.edges);
+    
+    // 确保连线包含所有必要字段
+    const loadedEdges = flowConfig.edges.map((edge: any) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: edge.type || 'default',
+      sourceHandle: edge.sourceHandle,
+      targetHandle: edge.targetHandle
+    }));
+    setEdges(loadedEdges);
+    
     message.success('流程图已加载');
   };
 
   const loadSavedFlow = async (flowId: number) => {
     try {
+      setLoading(true);
       const response = await fetch(API_PATHS.FLOW_BY_ID(flowId));
       if (response.ok) {
         const flow = await response.json();
-        setFlowName(flow.display_name);
+        const flowConfig = flow.flow_config;
+        
+        // 加载节点
+        const loadedNodes = flowConfig.nodes.map((node: any) => ({
+          id: node.id,
+          type: node.type,
+          position: node.position,
+          data: { ...node.data, isStartNode: node.data.isStartNode || false }
+        }));
+        
+        // 加载连线，确保包含 sourceHandle
+        const loadedEdges = flowConfig.edges.map((edge: any) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          type: edge.type || 'default',
+          sourceHandle: edge.sourceHandle,  // 关键：确保这个字段被加载
+          targetHandle: edge.targetHandle
+        }));
+        
+        console.log('🔍 加载的连线数据:', loadedEdges);
+        console.log('🔍 原始连线数据:', flowConfig.edges);
+        
+        setNodes(loadedNodes);
+        setEdges(loadedEdges);
+        
+        // 延迟检查连线状态
+        setTimeout(() => {
+          console.log('🔍 连线设置后的状态:', loadedEdges);
+          console.log('🔍 当前 edges 状态长度:', loadedEdges.length);
+        }, 50);
+        
+        setCurrentFlowId(flowId);
+        setFlowName(flow.display_name || flow.name);
         setFlowDescription(flow.description || '');
-        setCurrentFlowId(flow.id);
         
-        // 加载流程图配置
-        if (flow.flow_config) {
-          const config = flow.flow_config;
-          if (config.nodes) {
-            // 为每个节点添加删除功能
-            const nodesWithDelete = config.nodes.map((node: any) => ({
-              ...node,
-              data: {
-                ...node.data,
-                onDelete: deleteNode
-              }
-            }));
-            setNodes(nodesWithDelete);
-          }
-          if (config.edges) {
-            setEdges(config.edges);
-          }
-        }
+        // 延迟验证路由节点连接
+        setTimeout(() => validateRouterConnections(), 100);
         
-        message.success('流程图已加载');
+        message.success('流程图加载成功');
       } else {
         message.error('加载流程图失败');
       }
     } catch (error) {
       console.error('加载流程图失败:', error);
       message.error('加载流程图失败');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1278,7 +1447,9 @@ const FlowEditorPage: React.FC = () => {
           id: edge.id,
           source: edge.source,
           target: edge.target,
-          type: edge.type
+          type: edge.type,
+          sourceHandle: edge.sourceHandle,
+          targetHandle: edge.targetHandle
         })),
         metadata: {
           name: flowName,
@@ -1361,7 +1532,14 @@ const FlowEditorPage: React.FC = () => {
                         position: node.position,
                         data: { ...node.data, isStartNode: node.data.isStartNode || false }
                       })),
-                      edges: edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type })),
+                      edges: edges.map(edge => ({ 
+                        id: edge.id, 
+                        source: edge.source, 
+                        target: edge.target, 
+                        type: edge.type,
+                        sourceHandle: edge.sourceHandle,
+                        targetHandle: edge.targetHandle
+                      })),
                       metadata: { name: flowName || '新流程', description: flowDescription || '', version: '1.0.0' }
                     };
                     const response = await fetch(API_PATHS.FLOWS, {
@@ -1502,13 +1680,7 @@ const FlowEditorPage: React.FC = () => {
             >
               LLM 节点
             </Button>
-            <Button
-              icon={<BranchesOutlined />}
-              block
-              onClick={() => addNode('condition', { x: 100, y: 200 })}
-            >
-              条件节点
-            </Button>
+
             <Button
               icon={<ThunderboltOutlined />}
               block
@@ -1523,13 +1695,7 @@ const FlowEditorPage: React.FC = () => {
             >
               工具节点
             </Button>
-            <Button
-              icon={<BranchesOutlined />}
-              block
-              onClick={() => addNode('judge', { x: 100, y: 400 })}
-            >
-              判断节点
-            </Button>
+
             <Button
               icon={<div style={{ fontSize: '16px' }}>🔄</div>}
               block
@@ -1578,6 +1744,28 @@ const FlowEditorPage: React.FC = () => {
 
           <Divider />
 
+          <Title level={4}>连线信息</Title>
+          {selectedEdge ? (
+            <div style={{ fontSize: '12px', color: '#666', marginBottom: '16px' }}>
+              <p><strong>选中的连线：</strong></p>
+              <p>从: {selectedEdge.source}</p>
+              <p>到: {selectedEdge.target}</p>
+              <Button 
+                type="primary" 
+                danger 
+                size="small" 
+                onClick={() => deleteEdge(selectedEdge.id)}
+                style={{ marginTop: '8px' }}
+              >
+                删除连线
+              </Button>
+            </div>
+          ) : (
+            <div style={{ fontSize: '12px', color: '#666', marginBottom: '16px' }}>
+              <p>点击连线查看信息或删除</p>
+            </div>
+          )}
+
           <Title level={4}>使用说明</Title>
           <div style={{ fontSize: '12px', color: '#666' }}>
             <p><strong>配置起始节点：</strong></p>
@@ -1585,6 +1773,11 @@ const FlowEditorPage: React.FC = () => {
               <li>点击任意节点打开配置对话框</li>
               <li>勾选"设为起始节点"选项</li>
               <li>点击确定保存配置</li>
+            </ol>
+            <p><strong>删除连线：</strong></p>
+            <ol style={{ paddingLeft: '16px' }}>
+              <li>点击任意连线选中它</li>
+              <li>在左侧面板中点击"删除连线"按钮</li>
             </ol>
             <p><strong>注意：</strong>每个流程图只能有一个起始节点</p>
           </div>
@@ -1599,6 +1792,8 @@ const FlowEditorPage: React.FC = () => {
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
+            onEdgeClick={onEdgeClick}
+            onPaneClick={onPaneClick}
             nodeTypes={nodeTypes}
             fitView
           >
@@ -1651,18 +1846,7 @@ const FlowEditorPage: React.FC = () => {
             </Form.Item>
           )}
 
-          {selectedNode?.data.nodeType === 'condition' && (
-            <Form.Item
-              name="condition"
-              label="条件表达式"
-              rules={[{ required: true, message: '请输入条件表达式' }]}
-            >
-              <Input.TextArea
-                rows={3}
-                placeholder="例如：用户消息包含'搜索'关键词"
-              />
-            </Form.Item>
-          )}
+
 
           {selectedNode?.data.nodeType === 'action' && (
             <Form.Item
@@ -1713,28 +1897,7 @@ const FlowEditorPage: React.FC = () => {
             </>
           )}
 
-          {selectedNode?.data.nodeType === 'judge' && (
-            <>
-              <Form.Item name="judge_type" label="判断类型">
-                <Select placeholder="选择判断类型">
-                  <Option value="custom">自定义判断</Option>
-                  <Option value="direct_answer">直接回答判断</Option>
-                  <Option value="domain_classification">领域分类判断</Option>
-                  <Option value="tool_selection">工具选择判断</Option>
-                  <Option value="intent_recognition">意图识别判断</Option>
-                </Select>
-              </Form.Item>
-              <Form.Item name="system_prompt" label="系统提示词">
-                <Input.TextArea rows={3} placeholder="可选：系统提示词，根据判断类型自动设置默认值" />
-              </Form.Item>
-              <Form.Item name="user_prompt" label="用户提示词">
-                <Input.TextArea rows={3} placeholder="可选：用户提示词，根据判断类型自动设置默认值" />
-              </Form.Item>
-              <Form.Item name="save_as" label="保存变量名">
-                <Input placeholder="默认 judge_result" />
-              </Form.Item>
-            </>
-          )}
+
 
           {selectedNode?.data.nodeType === 'router' && (
             <>
@@ -1759,11 +1922,41 @@ const FlowEditorPage: React.FC = () => {
               <Form.Item name="pattern" label="正则表达式（可选）">
                 <Input placeholder="字符串模式匹配的正则表达式" />
               </Form.Item>
-              <Form.Item name="true_branch" label="真值分支" rules={[{ required: true, message: '请输入真值分支' }]}>
-                <Input placeholder="例如：direct_answer, success_handler" />
+              <Form.Item name="true_branch" label="真值分支" rules={[{ required: true, message: '请选择真值分支节点' }]}>
+                <Select 
+                  placeholder="选择真值分支节点" 
+                  onChange={(value) => handleBranchSelection('true', value)}
+                  showSearch
+                  filterOption={(input, option) =>
+                    (option?.children as unknown as string)?.toLowerCase().includes(input.toLowerCase())
+                  }
+                >
+                  {nodes
+                    .filter(node => node.id !== selectedNode?.id) // 排除当前节点
+                    .map(node => (
+                      <Option key={node.id} value={node.id}>
+                        {node.data.label || node.id} ({node.data.nodeType})
+                      </Option>
+                    ))}
+                </Select>
               </Form.Item>
-              <Form.Item name="false_branch" label="假值分支" rules={[{ required: true, message: '请输入假值分支' }]}>
-                <Input placeholder="例如：tool_required, error_handler" />
+              <Form.Item name="false_branch" label="假值分支" rules={[{ required: true, message: '请选择假值分支节点' }]}>
+                <Select 
+                  placeholder="选择假值分支节点" 
+                  onChange={(value) => handleBranchSelection('false', value)}
+                  showSearch
+                  filterOption={(input, option) =>
+                    (option?.children as unknown as string)?.toLowerCase().includes(input.toLowerCase())
+                  }
+                >
+                  {nodes
+                    .filter(node => node.id !== selectedNode?.id) // 排除当前节点
+                    .map(node => (
+                      <Option key={node.id} value={node.id}>
+                        {node.data.label || node.id} ({node.data.nodeType})
+                      </Option>
+                    ))}
+                </Select>
               </Form.Item>
             </>
           )}
@@ -1893,7 +2086,18 @@ const FlowEditorPage: React.FC = () => {
               }
             }));
             setNodes(nodesWithDelete);
-            setEdges(flowConfig.edges);
+            
+            // 确保连线包含所有必要字段
+            const loadedEdges = flowConfig.edges.map((edge: any) => ({
+              id: edge.id,
+              source: edge.source,
+              target: edge.target,
+              type: edge.type || 'default',
+              sourceHandle: edge.sourceHandle,
+              targetHandle: edge.targetHandle
+            }));
+            setEdges(loadedEdges);
+            
             setImportModalVisible(false);
             setImportJsonText('');
             message.success('流程JSON已导入');

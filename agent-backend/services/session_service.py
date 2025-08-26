@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from models.database_models import UserSession, ChatMessage, SessionCreate, SessionResponse, MessageCreate, MessageResponse
+from models.database_models import UserSession, ChatMessage, SessionCreate, SessionResponse, MessageCreate, MessageResponse, MessageNode
 from utils.log_helper import get_logger
 import uuid
 from datetime import datetime
@@ -78,7 +78,6 @@ class MessageService:
             session_id=message_data.session_id,
             user_id=message_data.user_id,
             message_type=message_data.message_type,
-            content=message_data.content,
             agent_name=message_data.agent_name,
             message_metadata=message_data.metadata
         )
@@ -95,7 +94,7 @@ class MessageService:
             session_id=message.session_id,
             user_id=message.user_id,
             message_type=message.message_type,
-            content=message.content,
+            content=message_data.content,  # 使用传入的内容
             agent_name=message.agent_name,
             metadata=message.message_metadata,
             created_at=message.created_at
@@ -133,13 +132,20 @@ class MessageService:
                     created_at=node.created_at
                 ))
             
+            # 从节点中获取内容，优先获取第一个有内容的节点
+            message_content = ""
+            for node in nodes:
+                if node.content:
+                    message_content = node.content
+                    break
+            
             result.append(MessageResponse(
                 id=message.id,
                 message_id=message.message_id,
                 session_id=message.session_id,
                 user_id=message.user_id,
                 message_type=message.message_type,
-                content="",  # 消息本身不再有内容，内容在节点中
+                content=message_content,  # 从节点中获取内容
                 agent_name=message.agent_name,
                 metadata=message.message_metadata,
                 created_at=message.created_at,

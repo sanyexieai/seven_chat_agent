@@ -35,6 +35,8 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
         return <QuestionCircleOutlined />;
       case 'agent':
         return <CodeOutlined />;
+      case 'knowledgeBase':
+        return <div style={{ fontSize: '16px' }}>📚</div>;
 
       default:
         return <RobotOutlined />;
@@ -53,6 +55,8 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
         return 'orange';
       case 'agent':
         return 'cyan';
+      case 'knowledgeBase':
+        return 'orange';
 
       default:
         return 'default';
@@ -71,6 +75,8 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
         return '判断';
       case 'agent':
         return '智能体';
+      case 'knowledgeBase':
+        return '知识库';
 
       default:
         return nodeType;
@@ -94,6 +100,15 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
       }
       if (metadata.agent_name) {
         content += `\n目标智能体: ${metadata.agent_name}`;
+      }
+      if (metadata.knowledge_base_id) {
+        content += `\n知识库ID: ${metadata.knowledge_base_id}`;
+      }
+      if (metadata.query_type) {
+        content += `\n查询类型: ${metadata.query_type}`;
+      }
+      if (metadata.result_count !== undefined) {
+        content += `\n结果数量: ${metadata.result_count}`;
       }
     }
     

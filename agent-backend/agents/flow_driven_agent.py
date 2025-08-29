@@ -17,6 +17,7 @@ class NodeType(str, Enum):
 	LLM = "llm"               # LLM 调用节点
 	TOOL = "tool"             # 工具调用节点
 	ROUTER = "router"         # 路由节点（统一的路由逻辑处理）
+	KNOWLEDGE_BASE = "knowledge_base"  # 知识库查询节点
 
 class FlowNode:
 	"""流程图节点"""
@@ -513,6 +514,128 @@ class FlowDrivenAgent(BaseAgent):
 			agent_name=self.name,
 			metadata={'node_id': node.id, 'node_type': node.type.value, 'selected_branch': selected_branch}
 		)
+
+	async def _execute_knowledge_base_node(self, node: FlowNode, user_id: str, message: str, context: Dict[str, Any]) -> AgentMessage:
+		"""执行知识库查询节点"""
+		flow_state = self._get_flow_state(context)
+		
+		# 获取知识库配置
+		kb_config = node.config.get('knowledge_base_config', {})
+		kb_id = kb_config.get('knowledge_base_id')
+		query_type = kb_config.get('query_type', 'semantic')  # semantic, keyword, hybrid
+		max_results = kb_config.get('max_results', 5)
+		query_template = kb_config.get('query_template', '{{message}}')
+		save_as = kb_config.get('save_as', 'knowledge_result')
+		
+		if not kb_id:
+			raise ValueError(f"知识库节点 {node.id} 未配置知识库ID")
+		
+		try:
+			# 导入知识库服务
+			from services.knowledge_base_service import KnowledgeBaseService
+			kb_service = KnowledgeBaseService()
+			
+			# 构建查询内容
+			query = query_template.replace('{{message}}', message)
+			if '{{last_output}}' in query_template:
+				last_output = flow_state.get('last_output', '')
+				query = query.replace('{{last_output}}', last_output)
+			
+			# 查询知识库
+			results = kb_service.query_knowledge_base(
+				db_session=context.get('db_session'),
+				kb_id=kb_id,
+				query=query,
+				user_id=user_id,
+				max_results=max_results
+			)
+			
+			# 格式化结果
+			if results and results.get('sources'):
+				formatted_result = f"知识库查询结果:\n\n"
+				formatted_result += f"查询: {query}\n\n"
+				formatted_result += f"回答: {results.get('response', '未找到相关答案')}\n\n"
+				formatted_result += "相关文档:\n"
+				
+				for i, source in enumerate(results['sources'][:max_results], 1):
+					similarity = source.get('similarity', 0)
+					content = source.get('content', '')
+					formatted_result += f"{i}. 相似度: {similarity:.2%}\n"
+					formatted_result += f"   内容: {content[:200]}{'...' if len(content) > 200 else ''}\n\n"
+				
+				# 保存结果到流程状态
+				flow_state[save_as] = {
+					'query': query,
+					'response': results.get('response', ''),
+					'sources': results.get('sources', []),
+					'knowledge_base_id': kb_id,
+					'query_type': query_type,
+					'timestamp': str(uuid.uuid4())
+				}
+				
+				return AgentMessage(
+					id=str(uuid.uuid4()),
+					type=MessageType.AGENT,
+					content=formatted_result,
+					agent_name=self.name,
+					metadata={
+						'node_id': node.id, 
+						'node_type': node.type.value, 
+						'knowledge_base_id': kb_id,
+						'query_type': query_type,
+						'result_count': len(results.get('sources', []))
+					}
+				)
+			else:
+				# 没有找到结果
+				flow_state[save_as] = {
+					'query': query,
+					'response': '未找到相关答案',
+					'sources': [],
+					'knowledge_base_id': kb_id,
+					'query_type': query_type,
+					'timestamp': str(uuid.uuid4())
+				}
+				
+				return AgentMessage(
+					id=str(uuid.uuid4()),
+					type=MessageType.AGENT,
+					content=f"知识库查询结果:\n\n查询: {query}\n\n未找到相关答案",
+					agent_name=self.name,
+					metadata={
+						'node_id': node.id, 
+						'node_type': node.type.value, 
+						'knowledge_base_id': kb_id,
+						'query_type': query_type,
+						'result_count': 0
+					}
+				)
+				
+		except Exception as e:
+			logger.error(f"知识库节点 {node.id} 执行失败: {str(e)}")
+			flow_state[save_as] = {
+				'query': query if 'query' in locals() else '未知',
+				'response': f'查询失败: {str(e)}',
+				'sources': [],
+				'knowledge_base_id': kb_id,
+				'query_type': query_type,
+				'timestamp': str(uuid.uuid4()),
+				'error': str(e)
+			}
+			
+			return AgentMessage(
+				id=str(uuid.uuid4()),
+				type=MessageType.AGENT,
+				content=f"知识库查询失败: {str(e)}",
+				agent_name=self.name,
+				metadata={
+					'node_id': node.id, 
+					'node_type': node.type.value, 
+					'knowledge_base_id': kb_id,
+					'query_type': query_type,
+					'error': str(e)
+				}
+			)
 	
 	async def process_message(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AgentMessage:
 		"""处理用户消息"""
@@ -801,6 +924,36 @@ class FlowDrivenAgent(BaseAgent):
 						current_id = None
 						logger.info(f"路由节点 {node.id} 未找到分支，结束流程")
 					
+					continue
+
+				if node.type == NodeType.KNOWLEDGE_BASE:
+					# 执行知识库查询节点
+					logger.info(f"🚀 进入知识库节点处理: {current_id}")
+					logger.info(f"🚀 即将执行知识库节点: {node.id} ({node.name})")
+					
+					kb_msg = await self._execute_knowledge_base_node(node, user_id, message, context)
+					flow_state['last_output'] = flow_state.get('last_output', '') + (kb_msg.content or '')
+					
+					# 输出知识库查询结果
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="content",
+						content=kb_msg.content or '',
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name),
+							'knowledge_base_id': kb_msg.metadata.get('knowledge_base_id'),
+							'query_type': kb_msg.metadata.get('query_type'),
+							'result_count': kb_msg.metadata.get('result_count', 0)
+						}
+					)
+					
+					nexts = node.connections or []
+					current_id = nexts[0] if nexts else None
 					continue
 
 				# 未知节点，结束

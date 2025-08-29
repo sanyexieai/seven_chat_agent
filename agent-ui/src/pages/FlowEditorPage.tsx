@@ -241,66 +241,78 @@ const ToolNode = ({ data, id }: { data: any; id: string }) => (
 
 
 
-const RouterNode = ({ data, id }: { data: any; id: string }) => {
-  // 获取路由配置信息
-  const routingConfig = data.config?.routing_logic || {};
-  const field = routingConfig.field || '未配置';
-  const trueBranch = routingConfig.true_branch || '分支1';
-  const falseBranch = routingConfig.false_branch || '分支2';
-
-  return (
-    <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff7e6', position: 'relative' }}>
-      <Handle type="target" position={Position.Top} />
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: '20px', color: '#fa8c16' }}>🔄</div>
-        <div style={{ fontWeight: 'bold' }}>{data.label}</div>
-        <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
-        <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>
-          <div>字段: {field}</div>
-          <div>✓ {trueBranch}</div>
-          <div>✗ {falseBranch}</div>
-        </div>
-      </div>
-      {/* 两个输出端口：第一个用于真值分支，第二个用于假值分支 */}
-      <Handle 
-        type="source" 
-        position={Position.Bottom} 
-        id="source-true"
-        style={{ left: '30%', background: '#52c41a' }}
-      />
-      <Handle 
-        type="source" 
-        position={Position.Bottom} 
-        id="source-false"
-        style={{ left: '70%', background: '#fa8c16' }}
-      />
-      <Button
-        type="text"
-        size="small"
-        danger
-        icon={<DeleteOutlined />}
-        style={{
-          position: 'absolute',
-          top: '-8px',
-          right: '-8px',
-          minWidth: '20px',
-          height: '20px',
-          padding: '0',
-          borderRadius: '50%',
-          background: '#fff',
-          border: '1px solid #ff4d4f',
-          zIndex: 10
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (data.onDelete) {
-            data.onDelete(id);
-          }
-        }}
-      />
+const RouterNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f0f8ff', position: 'relative' }}>
+    <Handle type="target" position={Position.Top} />
+    <Handle type="source" position={Position.Bottom} id="source-true" style={{ left: '25%', background: '#52c41a' }} />
+    <Handle type="source" position={Position.Bottom} id="source-false" style={{ left: '75%', background: '#fa8c16' }} />
+    <div style={{ textAlign: 'center' }}>
+      <BranchesOutlined style={{ fontSize: '20px', color: '#1890ff' }} />
+      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
     </div>
-  );
-};
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
+  </div>
+);
+
+const KnowledgeBaseNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff7e6', position: 'relative' }}>
+    <Handle type="target" position={Position.Top} />
+    <Handle type="source" position={Position.Bottom} />
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: '20px', color: '#fa8c16' }}>📚</div>
+      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
+    </div>
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
+  </div>
+);
 
 const InputNode = ({ data, id }: { data: any; id: string }) => (
   <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#e6f7ff', position: 'relative' }}>
@@ -379,7 +391,8 @@ const nodeTypes: NodeTypes = {
   llm: LlmNode,
   tool: ToolNode,
   
-  router: RouterNode
+  router: RouterNode,
+  knowledgeBase: KnowledgeBaseNode
 };
 
 const FlowEditorPage: React.FC = () => {
@@ -446,6 +459,14 @@ const FlowEditorPage: React.FC = () => {
   useEffect(() => {
     fetchAgents();
     fetchFlows(); // 组件加载时获取已保存的流程图
+    
+    // 初始化时加载知识库列表，确保知识库节点配置时可用
+    fetchKnowledgeBases().then(kbs => {
+      setKnowledgeBases(kbs);
+    }).catch(error => {
+      console.error('加载知识库列表失败:', error);
+      message.error('加载知识库列表失败');
+    });
     
     // 检查URL参数，如果是编辑模式，加载智能体信息
     const urlParams = new URLSearchParams(window.location.search);
@@ -871,12 +892,19 @@ const FlowEditorPage: React.FC = () => {
   );
 
   const addNode = (nodeType: string, position: { x: number; y: number }) => {
+    let defaultLabel = getNodeTypeLabel(nodeType);
+    
+    // 为知识库节点设置更友好的默认标签
+    if (nodeType === 'knowledgeBase') {
+      defaultLabel = '知识库查询';
+    }
+    
     const newNode: Node = {
       id: `node_${Date.now()}`,
       type: nodeType,
       position,
       data: {
-        label: getNodeTypeLabel(nodeType),
+        label: defaultLabel,
         nodeType: nodeType,
         config: {},
         onDelete: deleteNode // 传递删除函数
@@ -894,6 +922,7 @@ const FlowEditorPage: React.FC = () => {
       case 'tool': return '工具';
 
       case 'router': return '路由';
+      case 'knowledgeBase': return '知识库';
       case 'input': return '输入';
       case 'output': return '输出';
       default: return '节点';
@@ -923,6 +952,13 @@ const FlowEditorPage: React.FC = () => {
       pattern: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.pattern || '') : undefined,
       true_branch: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.true_branch || getBranchFromEdges(node.id, 'true') || '') : undefined,
       false_branch: node.data.nodeType === 'router' ? (node.data.config?.routing_logic?.false_branch || getBranchFromEdges(node.id, 'false') || '') : undefined,
+      
+      // 知识库节点配置
+      knowledge_base_id: node.data.nodeType === 'knowledgeBase' ? (node.data.config?.knowledge_base_config?.knowledge_base_id || '') : undefined,
+      query_type: node.data.nodeType === 'knowledgeBase' ? (node.data.config?.knowledge_base_config?.query_type || 'semantic') : undefined,
+      max_results: node.data.nodeType === 'knowledgeBase' ? (node.data.config?.knowledge_base_config?.max_results || 5) : undefined,
+      query_template: node.data.nodeType === 'knowledgeBase' ? (node.data.config?.knowledge_base_config?.query_template || '{{message}}') : undefined,
+      
       config: JSON.stringify(node.data.config || {}, null, 2)
     });
     setConfigModalVisible(true);
@@ -1031,6 +1067,15 @@ const FlowEditorPage: React.FC = () => {
           };
           setEdges(eds => [...eds, newFalseEdge]);
         }
+      } else if (selectedNode.data.nodeType === 'knowledgeBase') {
+        // 知识库节点配置
+        config.knowledge_base_config = {
+          knowledge_base_id: values.knowledge_base_id,
+          query_type: values.query_type || 'semantic',
+          max_results: values.max_results || 5,
+          query_template: values.query_template || '{{message}}',
+          save_as: values.save_as || 'knowledge_result'
+        };
       }
       
       setNodes((nds) =>
@@ -1703,6 +1748,14 @@ const FlowEditorPage: React.FC = () => {
             >
               路由节点
             </Button>
+            
+            <Button
+              icon={<div style={{ fontSize: '16px' }}>📚</div>}
+              block
+              onClick={() => addNode('knowledgeBase', { x: 100, y: 500 })}
+            >
+              知识库节点
+            </Button>
           </Space>
 
           <Divider />
@@ -1957,6 +2010,55 @@ const FlowEditorPage: React.FC = () => {
                       </Option>
                     ))}
                 </Select>
+              </Form.Item>
+            </>
+          )}
+
+          {selectedNode?.data.nodeType === 'knowledgeBase' && (
+            <>
+              <Form.Item 
+                name="knowledge_base_id" 
+                label="选择知识库" 
+                rules={[{ required: true, message: '请选择知识库' }]}
+                extra={`当前可用知识库数量: ${knowledgeBases.length}`}
+              >
+                <Select placeholder="请选择知识库">
+                  {knowledgeBases.length > 0 ? (
+                    knowledgeBases.map((kb: any) => (
+                      <Option key={kb.id} value={kb.id}>
+                        {kb.display_name || kb.name}
+                      </Option>
+                    ))
+                  ) : (
+                    <Option value="" disabled>
+                      正在加载知识库列表...
+                    </Option>
+                  )}
+                </Select>
+              </Form.Item>
+              
+              <Form.Item name="query_type" label="查询类型">
+                <Select placeholder="选择查询类型" defaultValue="semantic">
+                  <Option value="semantic">语义查询</Option>
+                  <Option value="keyword">关键词查询</Option>
+                  <Option value="hybrid">混合查询</Option>
+                </Select>
+              </Form.Item>
+              
+              <Form.Item name="max_results" label="最大结果数">
+                <Input placeholder="默认5" type="number" min={1} max={20} />
+              </Form.Item>
+              
+              <Form.Item name="query_template" label="查询模板">
+                <Input.TextArea 
+                  rows={3} 
+                  placeholder="支持 {{message}} 和 {{last_output}} 变量，默认: {{message}}"
+                  defaultValue="{{message}}"
+                />
+              </Form.Item>
+              
+              <Form.Item name="save_as" label="保存变量名">
+                <Input placeholder="默认: knowledge_result" defaultValue="knowledge_result" />
               </Form.Item>
             </>
           )}

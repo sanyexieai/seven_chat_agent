@@ -289,9 +289,12 @@ async def query_knowledge_base(
 ):
     """查询知识库"""
     try:
+        logger.info(f"知识库查询: kb_id={kb_id}, user_id={query_request.user_id}, max_results={query_request.max_results}, top_k={query_request.top_k}, threshold={query_request.similarity_threshold}")
         result = kb_service.query_knowledge_base(
             db, kb_id, query_request.query, 
-            query_request.user_id, query_request.max_results
+            query_request.user_id, query_request.max_results,
+            top_k=query_request.top_k,
+            similarity_threshold=query_request.similarity_threshold
         )
         return result
     except ValueError as e:

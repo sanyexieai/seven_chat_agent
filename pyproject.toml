@@ -58,7 +58,8 @@ dependencies = [
     "PyMuPDF>=1.23.0",
     "python-docx>=0.8.11",
     "docx2txt>=0.8",
-    "aiohttp"
+    "aiohttp",
+    "sentence-transformers>=2.2.2"
 ]
 
 [project.optional-dependencies]

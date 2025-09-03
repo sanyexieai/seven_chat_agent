@@ -1,6 +1,7 @@
-import os
+﻿import os
 import json
 import uuid
+import asyncio
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -14,8 +15,13 @@ from utils.log_helper import get_logger
 from utils.text_processor import TextProcessor
 from utils.embedding_service import EmbeddingService
 from utils.file_extractor import FileExtractor
+from utils.reranker import rerank as rerank_results  # 新增
 
 logger = get_logger("knowledge_base_service")
+
+RERANKER_AFTER_TOP_N = int(os.getenv("RERANKER_AFTER_TOP_N", "20"))
+RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
+RERANKER_ENABLED_ENV = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
 
 class KnowledgeBaseService:
     """知识库服务"""
@@ -146,8 +152,8 @@ class KnowledgeBaseService:
             db.commit()
             db.refresh(doc)
             
-            # 异步处理文档
-            self._process_document_async(db, doc)
+            # 立即处理文档（同步处理，确保分块创建）
+            self._process_document_sync(db, doc)
             
             logger.info(f"创建文档成功: {doc.name}")
             return doc
@@ -199,10 +205,7 @@ class KnowledgeBaseService:
             if not doc:
                 return False
             
-            # 删除分块
-            db.query(DocumentChunk).filter(DocumentChunk.document_id == doc_id).delete()
-            
-            # 软删除文档
+            # 软删除
             doc.is_active = False
             db.commit()
             
@@ -215,8 +218,14 @@ class KnowledgeBaseService:
             raise
     
     def query_knowledge_base(self, db: Session, kb_id: int, query: str, 
-                           user_id: str, max_results: int = 5) -> Dict[str, Any]:
-        """查询知识库"""
+                           user_id: str, max_results: int = 5, **kwargs) -> Dict[str, Any]:
+        """查询知识库
+        兼容旧签名：允许通过 limit 传入最大结果数
+        """
+        # 兼容 general_agent 调用中的 limit 参数
+        limit = kwargs.get("limit")
+        effective_max = int(limit) if isinstance(limit, int) and limit > 0 else int(max_results)
+        
         try:
             # 获取知识库
             kb = self.get_knowledge_base(db, kb_id)
@@ -232,12 +241,12 @@ class KnowledgeBaseService:
             ).all()
             
             if not chunks:
-                            return {
-                "query": query,
-                "response": "知识库中没有找到相关文档。",
-                "sources": [],
-                "metadata": {"total_chunks": 0}
-            }
+                return {
+                    "query": query,
+                    "response": "知识库中没有找到相关文档。",
+                    "sources": [],
+                    "metadata": {"total_chunks": 0}
+                }
             
             # 计算相似度并排序
             similarities = []
@@ -252,98 +261,152 @@ class KnowledgeBaseService:
             
             # 按相似度排序
             similarities.sort(key=lambda x: x[0], reverse=True)
+            logger.info(f"KB[{kb_id}] 初筛候选数: {len(similarities)}，将取前N用于重排: {max(RERANKER_AFTER_TOP_N, effective_max)}，目标返回: {effective_max}")
             
-            # 获取最相关的分块
-            top_chunks = similarities[:max_results]
+            # 先取前N做重排序候选（避免对全量做CrossEncoder）
+            initial_top_n = similarities[:max(RERANKER_AFTER_TOP_N, effective_max)]
+            logger.info(f"KB[{kb_id}] 重排候选数: {len(initial_top_n)}, 重排启用: {RERANKER_ENABLED_ENV}")
+            
+            # 组装候选用于重排序
+            candidates: List[Dict[str, Any]] = []
+            for sim, chunk in initial_top_n:
+                candidates.append({
+                    "similarity": float(sim),
+                    "content": chunk.content or "",
+                    "chunk_id": chunk.id,
+                    "document_id": chunk.document_id,
+                    "knowledge_base_id": chunk.knowledge_base_id,
+                })
+            
+            # 执行重排序（若未启用则保持原顺序）
+            reranked = rerank_results(query, candidates, content_key="content", top_k=RERANKER_TOP_K)
+            logger.info(f"KB[{kb_id}] 重排完成，返回前K: {min(len(reranked), RERANKER_TOP_K)}")
+            
+            # 选取最终top结果（同时兼顾effective_max）
+            final_sources = reranked[:effective_max]
             
             # 构建响应
             sources = []
             context_parts = []
             
-            for similarity, chunk in top_chunks:
+            for item in final_sources:
+                content = item.get("content", "")
                 sources.append({
-                    "document_id": chunk.document_id,
-                    "chunk_index": chunk.chunk_index,
-                    "content": chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
-                    "similarity": similarity
+                    "content": content,
+                    "similarity": item.get("similarity", 0.0),
+                    "rerank_score": item.get("rerank_score", None),
+                    "chunk_id": item.get("chunk_id"),
+                    "document_id": item.get("document_id"),
                 })
-                context_parts.append(chunk.content)
+                context_parts.append(content)
             
-            # 生成响应
             context = "\n\n".join(context_parts)
             response = self._generate_response(query, context)
-            
-            # 记录查询
-            query_record = KnowledgeBaseQuery(
-                knowledge_base_id=kb_id,
-                user_id=user_id,
-                query=query,
-                response=response,
-                sources=sources,
-                query_metadata={"total_chunks": len(chunks), "max_results": max_results}
-            )
-            db.add(query_record)
-            db.commit()
             
             return {
                 "query": query,
                 "response": response,
                 "sources": sources,
-                "metadata": {"total_chunks": len(chunks), "max_results": max_results}
+                "metadata": {
+                    "total_chunks": len(chunks),
+                    "initial_considered": len(initial_top_n),
+                    "final_selected": len(final_sources),
+                    "reranker_enabled": RERANKER_ENABLED_ENV,
+                    "reranker_after_top_n": RERANKER_AFTER_TOP_N,
+                    "reranker_top_k": RERANKER_TOP_K,
+                }
             }
-            
         except Exception as e:
             logger.error(f"查询知识库失败: {str(e)}")
             raise
     
     def _save_document_file(self, doc_data: DocumentCreate) -> str:
-        """保存文档文件"""
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "documents")
-        os.makedirs(data_dir, exist_ok=True)
+        """保存文档文件到本地"""
+        # 创建上传目录
+        upload_dir = "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
         
-        filename = f"{uuid.uuid4()}.{doc_data.file_type}"
-        file_path = os.path.join(data_dir, filename)
+        # 生成文件路径
+        file_path = os.path.join(upload_dir, f"{doc_data.name}")
         
+        # 保存文件
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(doc_data.content)
         
         return file_path
     
-    def _process_document_async(self, db: Session, doc: Document):
-        """异步处理文档"""
+    def _process_document_sync(self, db: Session, doc: Document):
+        """同步处理文档（立即分块和生成嵌入）"""
         try:
+            logger.info(f"开始处理文档: {doc.name}")
+            
             # 更新状态为处理中
             doc.status = "processing"
             db.commit()
             
+            # 检查内容是否为空
+            if not doc.content or not doc.content.strip():
+                logger.warning(f"文档内容为空: {doc.name}")
+                doc.status = "failed"
+                doc.document_metadata = doc.document_metadata or {}
+                doc.document_metadata["error"] = "文档内容为空"
+                db.commit()
+                return
+            
             # 分块处理
-            chunks = self.text_processor.split_text(doc.content or "")
+            logger.info(f"开始分块处理: {doc.name}")
+            chunks = self.text_processor.split_text(doc.content)
+            logger.info(f"分块完成: {doc.name}, 分块数: {len(chunks)}")
+            
+            if not chunks:
+                logger.warning(f"分块结果为空: {doc.name}")
+                doc.status = "failed"
+                doc.document_metadata = doc.document_metadata or {}
+                doc.document_metadata["error"] = "分块结果为空"
+                db.commit()
+                return
             
             # 创建分块记录
+            logger.info(f"开始创建分块记录: {doc.name}")
             for i, chunk_content in enumerate(chunks):
-                # 生成向量嵌入
-                embedding = self.embedding_service.get_embedding(chunk_content)
-                
-                chunk = DocumentChunk(
-                    knowledge_base_id=doc.knowledge_base_id,
-                    document_id=doc.id,
-                    chunk_index=i,
-                    content=chunk_content,
-                    embedding=embedding,
-                    chunk_metadata={"chunk_size": len(chunk_content)}
-                )
-                db.add(chunk)
+                try:
+                    # 生成向量嵌入
+                    logger.info(f"生成第{i+1}个分块的嵌入向量...")
+                    embedding = self.embedding_service.get_embedding(chunk_content)
+                    
+                    chunk = DocumentChunk(
+                        knowledge_base_id=doc.knowledge_base_id,
+                        document_id=doc.id,
+                        chunk_index=i,
+                        content=chunk_content,
+                        embedding=embedding,
+                        chunk_metadata={"chunk_size": len(chunk_content)}
+                    )
+                    db.add(chunk)
+                    logger.info(f"第{i+1}个分块创建成功")
+                    
+                except Exception as e:
+                    logger.error(f"创建第{i+1}个分块失败: {str(e)}")
+                    continue
+            
+            # 提交所有分块
+            db.commit()
             
             # 更新文档状态
             doc.status = "completed"
+            doc.document_metadata = doc.document_metadata or {}
+            doc.document_metadata["chunk_count"] = len(chunks)
+            doc.document_metadata["processing_time"] = datetime.utcnow().isoformat()
             db.commit()
             
             logger.info(f"文档处理完成: {doc.name}, 分块数: {len(chunks)}")
             
         except Exception as e:
-            doc.status = "failed"
-            db.commit()
             logger.error(f"文档处理失败: {doc.name}, 错误: {str(e)}")
+            doc.status = "failed"
+            doc.document_metadata = doc.document_metadata or {}
+            doc.document_metadata["error"] = str(e)
+            db.commit()
     
     def _generate_response(self, query: str, context: str) -> str:
         """生成响应"""
@@ -352,4 +415,4 @@ class KnowledgeBaseService:
         if len(context) > 1000:
             context = context[:1000] + "..."
         
-        return f"基于知识库内容，为您提供以下信息：\n\n{context}\n\n如果您需要更详细的信息，请提供更具体的查询。" 
+        return f"基于知识库内容，为您提供以下信息：\n\n{context}\n\n如果您需要更详细的信息，请提供更具体的查询。"

@@ -1,5 +1,6 @@
 ﻿import re
-from typing import List
+import os
+from typing import List, Dict, Any, Optional
 from utils.log_helper import get_logger
 
 logger = get_logger("text_processor")
@@ -7,19 +8,86 @@ logger = get_logger("text_processor")
 class TextProcessor:
     """文本处理工具类"""
     
-    def __init__(self, chunk_size: int = 1000, overlap: int = 200):
+    def __init__(self, chunk_size: int = 1000, overlap: int = 200, 
+                 chunk_strategy: str = "semantic", min_chunk_size: int = 100):
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self.chunk_strategy = chunk_strategy  # semantic, sentence, fixed
+        self.min_chunk_size = min_chunk_size
+        self.semantic_splitter = None
+        
+        # 初始化语义分割器（如果可用）
+        if chunk_strategy == "semantic":
+            self._initialize_semantic_splitter()
     
     def split_text(self, text: str) -> List[str]:
         """将文本分割成块"""
         if not text:
             return []
         
-        # 清理文本（保留换行，避免把所有内容挤成一个句子）
+        # 清理文本
         text = self._clean_text(text)
         
-        # 按句子分割
+        # 优先尝试按段落分割
+        paragraphs = self.split_by_paragraphs(text)
+        if len(paragraphs) > 1:
+            # 如果段落分割成功，对每个段落进一步处理
+            chunks = []
+            for para in paragraphs:
+                if len(para) <= self.chunk_size:
+                    chunks.append(para)
+                else:
+                    # 段落太长，进一步分割
+                    if self.chunk_strategy == "semantic" and self.semantic_splitter:
+                        chunks.extend(self._semantic_split(para))
+                    else:
+                        chunks.extend(self._sentence_split(para))
+            return chunks
+        
+        # 如果没有段落分割，使用原有策略
+        if self.chunk_strategy == "semantic" and self.semantic_splitter:
+            return self._semantic_split(text)
+        elif self.chunk_strategy == "sentence":
+            return self._sentence_split(text)
+        else:
+            return self._fixed_split(text)
+    
+    def _clean_text(self, text: str) -> str:
+        """清理文本：保留换行以利于分段，压缩多余空格与多余空行"""
+        # 统一换行符，保留单个换行
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        # 压缩连续空格/制表符为单个空格，但不影响换行
+        text = re.sub(r"[ \t]+", " ", text)
+        # 压缩过多的空行为最多两个换行
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        # 保留常见标点与中英文，移除不可见控制字符
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+        return text.strip()
+    
+    def _semantic_split(self, text: str) -> List[str]:
+        """语义分割"""
+        try:
+            if self.semantic_splitter:
+                chunks = self.semantic_splitter.split_text(text)
+                # 过滤太小的块
+                filtered_chunks = []
+                for chunk in chunks:
+                    if len(chunk.strip()) >= self.min_chunk_size:
+                        filtered_chunks.append(chunk.strip())
+                    elif filtered_chunks:
+                        # 将小块合并到前一个块
+                        filtered_chunks[-1] += " " + chunk.strip()
+                
+                return filtered_chunks
+            else:
+                # 回退到句子分割
+                return self._sentence_split(text)
+        except Exception as e:
+            logger.error(f"语义分割失败: {str(e)}")
+            return self._sentence_split(text)
+    
+    def _sentence_split(self, text: str) -> List[str]:
+        """句子分割"""
         sentences = self._split_sentences(text)
         
         # 合并句子成块
@@ -33,7 +101,6 @@ class TextProcessor:
                     chunks.append(current_chunk.strip())
                     current_chunk = ""
                 chunks.extend(self._split_long_text_with_overlap(sentence))
-                # 处理过长句子后，继续下一句
                 continue
             
             # 尝试把句子放进当前块
@@ -44,13 +111,12 @@ class TextProcessor:
                     overlap_text = current_chunk[-self.overlap:] if self.overlap > 0 else ""
                     current_chunk = overlap_text + sentence
                 else:
-                    # 正常情况下不会到这分支（因为上面处理了 sentence>chunk_size），保底逻辑
                     chunks.append(sentence[:self.chunk_size])
                     current_chunk = sentence[self.chunk_size:]
             else:
                 current_chunk += sentence
         
-        # 添加最后一个块（若仍超长，则进一步切分）
+        # 添加最后一个块
         if current_chunk.strip():
             if len(current_chunk) > self.chunk_size:
                 chunks.extend(self._split_long_text_with_overlap(current_chunk))
@@ -59,17 +125,28 @@ class TextProcessor:
         
         return chunks
     
-    def _clean_text(self, text: str) -> str:
-        """清理文本：保留换行以利于分段，压缩多余空格与多余空行"""
-        # 统一换行符，保留单个换行
-        text = text.replace('\r\n', '\n').replace('\r', '\n')
-        # 压缩连续空格/制表符为单个空格，但不影响换行
-        text = re.sub(r"[ \t]+", " ", text)
-        # 压缩过多的空行为最多两个换行
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        # 保留常见标点与中英文，移除不可见控制字符
-        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
-        return text.strip()
+    def _fixed_split(self, text: str) -> List[str]:
+        """固定长度分割"""
+        return self._split_long_text_with_overlap(text)
+    
+    def _initialize_semantic_splitter(self):
+        """初始化语义分割器"""
+        try:
+            from langchain.text_splitter import RecursiveCharacterTextSplitter
+            
+            self.semantic_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.overlap,
+                length_function=len,
+                separators=["\n\n", "\n", "。", "！", "？", "；", "：", ".", "!", "?", ";", ":", " ", ""]
+            )
+            logger.info("语义分割器初始化成功")
+        except ImportError:
+            logger.warning("langchain未安装，使用句子分割")
+            self.semantic_splitter = None
+        except Exception as e:
+            logger.error(f"初始化语义分割器失败: {str(e)}")
+            self.semantic_splitter = None
     
     def _split_sentences(self, text: str) -> List[str]:
         """按句子分割文本（优先中文标点，再英文标点，最后按换行分）"""
@@ -155,4 +232,50 @@ class TextProcessor:
         intersection = keywords1.intersection(keywords2)
         union = keywords1.union(keywords2)
         
-        return len(intersection) / len(union) if union else 0.0 
+        return len(intersection) / len(union) if union else 0.0
+    
+    def get_chunk_metadata(self, chunk: str, chunk_index: int = 0) -> Dict[str, Any]:
+        """获取分块的元数据"""
+        return {
+            "chunk_index": chunk_index,
+            "chunk_size": len(chunk),
+            "word_count": len(chunk.split()),
+            "char_count": len(chunk),
+            "has_numbers": bool(re.search(r'\d', chunk)),
+            "has_urls": bool(re.search(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', chunk)),
+            "language": self._detect_language(chunk)
+        }
+    
+    def _detect_language(self, text: str) -> str:
+        """简单的语言检测"""
+        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+        english_chars = len(re.findall(r'[a-zA-Z]', text))
+        
+        if chinese_chars > english_chars:
+            return "zh"
+        elif english_chars > 0:
+            return "en"
+        else:
+            return "unknown"
+    
+    def preprocess_text(self, text: str) -> str:
+        """预处理文本"""
+        # 移除多余的空白字符
+        text = re.sub(r'\s+', ' ', text)
+        
+        # 移除特殊字符但保留标点
+        text = re.sub(r'[^\w\s\u4e00-\u9fff.,!?;:()[]{}""''""''—–-]', '', text)
+        
+        return text.strip()
+    
+    def split_by_paragraphs(self, text: str) -> List[str]:
+        """按段落分割"""
+        paragraphs = text.split('\n\n')
+        filtered_paragraphs = []
+        
+        for para in paragraphs:
+            para = para.strip()
+            if para and len(para) >= self.min_chunk_size:
+                filtered_paragraphs.append(para)
+        
+        return filtered_paragraphs 

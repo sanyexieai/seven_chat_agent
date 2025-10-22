@@ -2,6 +2,7 @@
 import json
 import uuid
 import asyncio
+import re
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -9,34 +10,90 @@ from sqlalchemy import and_, or_
 
 from models.database_models import (
     KnowledgeBase, Document, DocumentChunk, KnowledgeBaseQuery,
-    KnowledgeBaseCreate, KnowledgeBaseUpdate, DocumentCreate, DocumentUpdate
+    KnowledgeBaseCreate, KnowledgeBaseUpdate, DocumentCreate, DocumentUpdate,
+    KnowledgeTriple, KnowledgeTripleCreate
 )
 from utils.log_helper import get_logger
 from utils.text_processor import TextProcessor
 from utils.embedding_service import EmbeddingService
 from utils.file_extractor import FileExtractor
+# 移除向量存储文件依赖，改为纯数据库存储
+from utils.query_processor import QueryProcessor
+from utils.performance_optimizer import cached, timed, retry
 from utils.reranker import rerank as rerank_results  # 新增
+from utils.llm_helper import get_llm_helper
 
 logger = get_logger("knowledge_base_service")
 
 RERANKER_AFTER_TOP_N = int(os.getenv("RERANKER_AFTER_TOP_N", "20"))
 RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
 RERANKER_ENABLED_ENV = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
+EXTRACT_TRIPLES_ENABLED = os.getenv("EXTRACT_TRIPLES_ENABLED", "false").lower() == "true"
+KNOWLEDGE_GRAPH_ENABLED = os.getenv("KNOWLEDGE_GRAPH_ENABLED", "false").lower() == "true"
 
 class KnowledgeBaseService:
     """知识库服务"""
     
-    def __init__(self):
-        self.text_processor = TextProcessor()
+    def __init__(self, vector_store_type: str = "auto"):
+        self.text_processor = TextProcessor(
+            chunk_size=600,  # 减小分块大小
+            overlap=300,     # 增加重叠
+            chunk_strategy="semantic",  # 使用语义分割
+            min_chunk_size=200  # 最小分块大小
+        )
         self.embedding_service = EmbeddingService()
         self.file_extractor = FileExtractor()
+        self.query_processor = QueryProcessor()
+        # 移除文件向量存储，改为纯数据库存储
+    
+    def _search_chunks_from_db(self, db: Session, kb_id: int, query_vector: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
+        """从数据库搜索相似分块"""
+        try:
+            # 获取所有分块的嵌入向量
+            chunks = db.query(DocumentChunk).filter(
+                DocumentChunk.knowledge_base_id == kb_id,
+                DocumentChunk.embedding.isnot(None)
+            ).all()
+            
+            if not chunks:
+                return []
+            
+            # 计算相似度
+            similarities = []
+            for chunk in chunks:
+                if chunk.embedding:
+                    similarity = self.embedding_service.calculate_similarity(query_vector, chunk.embedding)
+                    similarities.append((similarity, chunk))
+            
+            # 排序并返回top_k
+            similarities.sort(key=lambda x: x[0], reverse=True)
+            
+            results = []
+            for similarity, chunk in similarities[:top_k]:
+                result = {
+                    'content': chunk.content,
+                    'similarity': similarity,
+                    'chunk_id': chunk.id,
+                    'document_id': chunk.document_id,
+                    'knowledge_base_id': chunk.knowledge_base_id,
+                    'chunk_index': chunk.chunk_index,
+                    'chunk_metadata': chunk.chunk_metadata or {}
+                }
+                results.append(result)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"数据库向量搜索失败: {str(e)}")
+            return []
     
     def create_knowledge_base(self, db: Session, kb_data: KnowledgeBaseCreate) -> KnowledgeBase:
         """创建知识库"""
         try:
-            # 检查名称是否已存在
+            # 检查名称是否已存在（只检查未删除的知识库）
             existing_kb = db.query(KnowledgeBase).filter(
-                KnowledgeBase.name == kb_data.name
+                KnowledgeBase.name == kb_data.name,
+                KnowledgeBase.is_active == True
             ).first()
             
             if existing_kb:
@@ -55,6 +112,7 @@ class KnowledgeBaseService:
             logger.error(f"创建知识库失败: {str(e)}")
             raise
     
+    @cached(ttl_seconds=300)  # 缓存5分钟
     def get_knowledge_base(self, db: Session, kb_id: int) -> Optional[KnowledgeBase]:
         """获取知识库"""
         return db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
@@ -217,6 +275,8 @@ class KnowledgeBaseService:
             logger.error(f"删除文档失败: {str(e)}")
             raise
     
+    @timed
+    @retry(max_retries=2)
     def query_knowledge_base(self, db: Session, kb_id: int, query: str, 
                            user_id: str, max_results: int = 5, **kwargs) -> Dict[str, Any]:
         """查询知识库
@@ -232,15 +292,23 @@ class KnowledgeBaseService:
             if not kb:
                 raise ValueError("知识库不存在")
             
+            # 处理查询
+            processed_query_info = self.query_processor.process_query(query, user_id)
+            final_query = processed_query_info["rewritten_query"]
+            
             # 获取查询的向量嵌入
-            query_embedding = self.embedding_service.get_embedding(query)
+            query_embedding = self.embedding_service.get_embedding(final_query)
             
-            # 获取知识库的所有分块
-            chunks = db.query(DocumentChunk).filter(
-                DocumentChunk.knowledge_base_id == kb_id
-            ).all()
+            # 从数据库搜索相似分块
+            search_results = self._search_chunks_from_db(db, kb_id, query_embedding, top_k=max(RERANKER_AFTER_TOP_N, effective_max))
             
-            if not chunks:
+            # 如果启用了知识图谱，同时搜索相关三元组
+            graph_results = []
+            if KNOWLEDGE_GRAPH_ENABLED:
+                graph_results = self._search_triples_from_db(db, kb_id, query, limit=10)
+                logger.info(f"KB[{kb_id}] 图谱搜索结果: {len(graph_results)} 个三元组")
+            
+            if not search_results:
                 return {
                     "query": query,
                     "response": "知识库中没有找到相关文档。",
@@ -248,34 +316,21 @@ class KnowledgeBaseService:
                     "metadata": {"total_chunks": 0}
                 }
             
-            # 计算相似度并排序
-            similarities = []
-            for chunk in chunks:
-                if chunk.embedding:
-                    # embedding字段已经是列表格式，不需要json.loads
-                    chunk_embedding = chunk.embedding if isinstance(chunk.embedding, list) else json.loads(chunk.embedding)
-                    similarity = self.embedding_service.calculate_similarity(
-                        query_embedding, chunk_embedding
-                    )
-                    similarities.append((similarity, chunk))
+            logger.info(f"KB[{kb_id}] 向量搜索候选数: {len(search_results)}，将取前N用于重排: {max(RERANKER_AFTER_TOP_N, effective_max)}，目标返回: {effective_max}")
             
-            # 按相似度排序
-            similarities.sort(key=lambda x: x[0], reverse=True)
-            logger.info(f"KB[{kb_id}] 初筛候选数: {len(similarities)}，将取前N用于重排: {max(RERANKER_AFTER_TOP_N, effective_max)}，目标返回: {effective_max}")
-            
-            # 先取前N做重排序候选（避免对全量做CrossEncoder）
-            initial_top_n = similarities[:max(RERANKER_AFTER_TOP_N, effective_max)]
+            # 先取前N做重排序候选
+            initial_top_n = search_results[:max(RERANKER_AFTER_TOP_N, effective_max)]
             logger.info(f"KB[{kb_id}] 重排候选数: {len(initial_top_n)}, 重排启用: {RERANKER_ENABLED_ENV}")
             
             # 组装候选用于重排序
             candidates: List[Dict[str, Any]] = []
-            for sim, chunk in initial_top_n:
+            for result in initial_top_n:
                 candidates.append({
-                    "similarity": float(sim),
-                    "content": chunk.content or "",
-                    "chunk_id": chunk.id,
-                    "document_id": chunk.document_id,
-                    "knowledge_base_id": chunk.knowledge_base_id,
+                    "similarity": result.get("similarity", 0.0),
+                    "content": result.get("content", ""),
+                    "chunk_id": result.get("chunk_id"),
+                    "document_id": result.get("document_id"),
+                    "knowledge_base_id": kb_id,
                 })
             
             # 执行重排序（若未启用则保持原顺序）
@@ -301,19 +356,31 @@ class KnowledgeBaseService:
                 context_parts.append(content)
             
             context = "\n\n".join(context_parts)
+            
+            # 如果有图谱结果，添加到上下文中
+            if graph_results:
+                graph_context = "\n\n相关实体关系：\n"
+                for triple in graph_results[:5]:  # 只取前5个三元组
+                    graph_context += f"- {triple['subject']} {triple['predicate']} {triple['object']}\n"
+                context += graph_context
+            
             response = self._generate_response(query, context)
             
             return {
                 "query": query,
                 "response": response,
                 "sources": sources,
+                "query_processing": processed_query_info,
                 "metadata": {
-                    "total_chunks": len(chunks),
+                    "total_chunks": len(search_results),
                     "initial_considered": len(initial_top_n),
                     "final_selected": len(final_sources),
                     "reranker_enabled": RERANKER_ENABLED_ENV,
                     "reranker_after_top_n": RERANKER_AFTER_TOP_N,
                     "reranker_top_k": RERANKER_TOP_K,
+                    "vector_store_type": "database",
+                    "knowledge_graph_enabled": KNOWLEDGE_GRAPH_ENABLED,
+                    "graph_results_count": len(graph_results) if KNOWLEDGE_GRAPH_ENABLED else 0
                 }
             }
         except Exception as e:
@@ -366,21 +433,51 @@ class KnowledgeBaseService:
                 db.commit()
                 return
             
-            # 创建分块记录
+            # 创建分块记录和向量存储
             logger.info(f"开始创建分块记录: {doc.name}")
+            
+            # 准备批量处理数据
+            chunk_contents = []
+            chunk_metadata_list = []
+            
             for i, chunk_content in enumerate(chunks):
+                chunk_metadata = {
+                    "chunk_index": i,
+                    "chunk_size": len(chunk_content),
+                    "document_id": doc.id,
+                    "knowledge_base_id": doc.knowledge_base_id,
+                    "content": chunk_content
+                }
+
+                # 可选：抽取实体-关系三元组
+                if EXTRACT_TRIPLES_ENABLED:
+                    try:
+                        triples = self._extract_triples_sync(chunk_content)
+                        if triples:
+                            chunk_metadata["triples"] = triples
+                            # 存储三元组到数据库
+                            self._store_triples_to_db(db, doc.knowledge_base_id, doc.id, i, triples, chunk_content)
+                    except Exception as e:
+                        logger.warning(f"分块三元组抽取失败(idx={i}): {str(e)}")
+                chunk_contents.append(chunk_content)
+                chunk_metadata_list.append(chunk_metadata)
+            
+            # 批量生成嵌入向量
+            logger.info(f"批量生成 {len(chunk_contents)} 个分块的嵌入向量...")
+            embeddings = self.embedding_service.batch_get_embeddings(chunk_contents)
+            
+            # 向量数据直接存储在数据库中，不需要额外的向量存储
+            
+            # 创建数据库记录
+            for i, (chunk_content, embedding, metadata) in enumerate(zip(chunk_contents, embeddings, chunk_metadata_list)):
                 try:
-                    # 生成向量嵌入
-                    logger.info(f"生成第{i+1}个分块的嵌入向量...")
-                    embedding = self.embedding_service.get_embedding(chunk_content)
-                    
                     chunk = DocumentChunk(
                         knowledge_base_id=doc.knowledge_base_id,
                         document_id=doc.id,
                         chunk_index=i,
                         content=chunk_content,
                         embedding=embedding,
-                        chunk_metadata={"chunk_size": len(chunk_content)}
+                        chunk_metadata=metadata
                     )
                     db.add(chunk)
                     logger.info(f"第{i+1}个分块创建成功")
@@ -397,6 +494,11 @@ class KnowledgeBaseService:
             doc.document_metadata = doc.document_metadata or {}
             doc.document_metadata["chunk_count"] = len(chunks)
             doc.document_metadata["processing_time"] = datetime.utcnow().isoformat()
+            
+            # 如果启用了三元组提取，更新chunk_id关联
+            if EXTRACT_TRIPLES_ENABLED:
+                self._update_triple_chunk_ids(db, doc.id)
+            
             db.commit()
             
             logger.info(f"文档处理完成: {doc.name}, 分块数: {len(chunks)}")
@@ -407,11 +509,230 @@ class KnowledgeBaseService:
             doc.document_metadata = doc.document_metadata or {}
             doc.document_metadata["error"] = str(e)
             db.commit()
+
+    def _extract_triples_sync(self, text: str) -> List[List[str]]:
+        """使用LLM从文本中抽取(主语, 关系, 宾语)三元组，返回列表。
+        同步封装，内部以异步方式调用模型。
+        """
+        prompt = (
+            "请从以下文本中提取实体和关系，以三元组的形式输出（主语，关系，宾语）。" \
+            "每个三元组一行。只输出三元组，不要其他解释。\n\n文本：\n" + text
+        )
+
+        async def _run() -> str:
+            llm = get_llm_helper()
+            messages = [
+                {"role": "system", "content": "你是一个信息抽取助手，擅长从文本中识别实体关系三元组。"},
+                {"role": "user", "content": prompt}
+            ]
+            return await llm.call(messages, max_tokens=512, temperature=0.0)
+
+        # 在同步环境中执行异步调用
+        result = asyncio.run(_run())
+        return self._parse_triples(result)
+
+    def _parse_triples(self, text: str) -> List[List[str]]:
+        """解析LLM返回的三元组文本，每行一个三元组，支持括号/逗号等形式。"""
+        triples: List[List[str]] = []
+        if not text:
+            return triples
+        lines = [l.strip() for l in str(text).splitlines() if l.strip()]
+        for line in lines:
+            # 去掉可能的括号和全角符号
+            cleaned = line.strip().strip("()（）")
+            # 统一分隔符（中英文逗号/顿号/制表符）
+            parts = [p.strip().strip("\"'“”") for p in re.split(r"[，,、\t]\\s*", cleaned) if p.strip()]
+            if len(parts) >= 3:
+                triples.append(parts[:3])
+        return triples
+    
+    def _store_triples_to_db(self, db: Session, kb_id: int, doc_id: int, chunk_index: int, 
+                            triples: List[List[str]], source_text: str):
+        """将三元组存储到数据库"""
+        try:
+            for triple in triples:
+                if len(triple) >= 3:
+                    triple_data = KnowledgeTripleCreate(
+                        knowledge_base_id=kb_id,
+                        document_id=doc_id,
+                        chunk_id=None,  # 稍后更新
+                        subject=triple[0].strip(),
+                        predicate=triple[1].strip(),
+                        object=triple[2].strip(),
+                        confidence=1.0,
+                        source_text=source_text[:200]  # 截取前200字符作为来源
+                    )
+                    
+                    triple_record = KnowledgeTriple(**triple_data.model_dump())
+                    db.add(triple_record)
+            
+            logger.info(f"成功存储 {len(triples)} 个三元组到数据库")
+            
+        except Exception as e:
+            logger.error(f"存储三元组到数据库失败: {str(e)}")
+    
+    def _update_triple_chunk_ids(self, db: Session, doc_id: int):
+        """更新三元组的chunk_id关联"""
+        try:
+            # 获取该文档的所有分块
+            chunks = db.query(DocumentChunk).filter(
+                DocumentChunk.document_id == doc_id
+            ).order_by(DocumentChunk.chunk_index).all()
+            
+            # 获取该文档的所有三元组
+            triples = db.query(KnowledgeTriple).filter(
+                KnowledgeTriple.document_id == doc_id,
+                KnowledgeTriple.chunk_id.is_(None)
+            ).all()
+            
+            # 为每个三元组分配对应的chunk_id
+            for triple in triples:
+                if triple.chunk_index is not None and triple.chunk_index < len(chunks):
+                    triple.chunk_id = chunks[triple.chunk_index].id
+            
+            db.commit()
+            logger.info(f"更新了 {len(triples)} 个三元组的chunk_id关联")
+            
+        except Exception as e:
+            logger.error(f"更新三元组chunk_id失败: {str(e)}")
+    
+    def _search_triples_from_db(self, db: Session, kb_id: int, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """从数据库搜索相关三元组"""
+        try:
+            # 简单的关键词匹配搜索
+            triples = db.query(KnowledgeTriple).filter(
+                KnowledgeTriple.knowledge_base_id == kb_id,
+                or_(
+                    KnowledgeTriple.subject.contains(query),
+                    KnowledgeTriple.predicate.contains(query),
+                    KnowledgeTriple.object.contains(query)
+                )
+            ).limit(limit).all()
+            
+            results = []
+            for triple in triples:
+                results.append({
+                    'subject': triple.subject,
+                    'predicate': triple.predicate,
+                    'object': triple.object,
+                    'confidence': triple.confidence,
+                    'source_text': triple.source_text,
+                    'chunk_id': triple.chunk_id,
+                    'document_id': triple.document_id
+                })
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"数据库三元组搜索失败: {str(e)}")
+            return []
+    
+    def _find_related_entities(self, db: Session, kb_id: int, entity: str, max_hops: int = 2) -> List[Dict[str, Any]]:
+        """查找与指定实体相关的其他实体（多跳查询）"""
+        try:
+            related_entities = set()
+            visited = set()
+            current_entities = {entity}
+            
+            for hop in range(max_hops):
+                if not current_entities:
+                    break
+                    
+                next_entities = set()
+                
+                for current_entity in current_entities:
+                    if current_entity in visited:
+                        continue
+                    visited.add(current_entity)
+                    
+                    # 查找包含当前实体的三元组
+                    triples = db.query(KnowledgeTriple).filter(
+                        KnowledgeTriple.knowledge_base_id == kb_id,
+                        or_(
+                            KnowledgeTriple.subject == current_entity,
+                            KnowledgeTriple.object == current_entity
+                        )
+                    ).all()
+                    
+                    for triple in triples:
+                        related_entities.add(triple.subject)
+                        related_entities.add(triple.object)
+                        
+                        if hop < max_hops - 1:
+                            if triple.subject != current_entity:
+                                next_entities.add(triple.subject)
+                            if triple.object != current_entity:
+                                next_entities.add(triple.object)
+                
+                current_entities = next_entities
+            
+            # 移除原始实体
+            related_entities.discard(entity)
+            
+            return list(related_entities)
+            
+        except Exception as e:
+            logger.error(f"多跳实体查询失败: {str(e)}")
+            return []
     
     def _generate_response(self, query: str, context: str) -> str:
         """生成响应"""
-        # 这里可以集成LLM来生成更好的响应
-        # 暂时返回简单的上下文摘要
+        try:
+            # 尝试使用LLM生成响应
+            from utils.llm_helper import get_llm_helper
+            llm_helper = get_llm_helper()
+            
+            # 构建提示词
+            prompt = f"""基于以下知识库内容回答用户问题：
+
+用户问题：{query}
+
+知识库内容：
+{context}
+
+请基于知识库内容提供准确、详细的回答。如果知识库内容不足以回答问题，请说明并建议用户提供更多信息。
+
+回答要求：
+1. 基于知识库内容，不要编造信息
+2. 回答要准确、详细、有条理
+3. 如果涉及多个要点，请分点说明
+4. 如果知识库内容不足，请诚实说明
+5. 使用中文回答
+
+回答："""
+            
+            # 生成响应
+            import asyncio
+            import threading
+            import concurrent.futures
+            
+            def run_async_in_thread():
+                """在新线程中运行异步代码"""
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(llm_helper.call(prompt))
+                finally:
+                    new_loop.close()
+            
+            # 使用线程池执行异步调用
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_async_in_thread)
+                response = future.result()
+            
+            if response and len(response.strip()) > 10:
+                return response.strip()
+            else:
+                # LLM生成失败，使用简单摘要
+                return self._generate_simple_response(query, context)
+                
+        except Exception as e:
+            logger.error(f"LLM生成响应失败: {str(e)}")
+            # 回退到简单摘要
+            return self._generate_simple_response(query, context)
+    
+    def _generate_simple_response(self, query: str, context: str) -> str:
+        """生成简单响应（回退方案）"""
         if len(context) > 1000:
             context = context[:1000] + "..."
         

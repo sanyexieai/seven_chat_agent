@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, UniqueConstraint, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -507,7 +507,7 @@ class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(100), index=True, nullable=False)
     display_name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
     owner_id = Column(String(100), nullable=True)  # 所有者ID
@@ -668,6 +668,52 @@ class KnowledgeBaseQueryResponse(BaseModel):
     response: Optional[str] = None
     sources: Optional[List[Dict[str, Any]]] = None
     query_metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# 知识图谱相关模型
+class KnowledgeTriple(Base):
+    """知识三元组表"""
+    __tablename__ = "knowledge_triples"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    chunk_id = Column(Integer, ForeignKey("document_chunks.id"), nullable=True)  # 关联到具体分块
+    subject = Column(String(500), nullable=False)  # 主语（实体）
+    predicate = Column(String(500), nullable=False)  # 关系
+    object = Column(String(500), nullable=False)  # 宾语（实体）
+    confidence = Column(Float, default=1.0)  # 置信度
+    source_text = Column(Text, nullable=True)  # 来源文本片段
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # 关联关系
+    knowledge_base = relationship("KnowledgeBase")
+    document = relationship("Document")
+    chunk = relationship("DocumentChunk")
+
+class KnowledgeTripleCreate(BaseModel):
+    knowledge_base_id: int
+    document_id: int
+    chunk_id: Optional[int] = None
+    subject: str
+    predicate: str
+    object: str
+    confidence: float = 1.0
+    source_text: Optional[str] = None
+
+class KnowledgeTripleResponse(BaseModel):
+    id: int
+    knowledge_base_id: int
+    document_id: int
+    chunk_id: Optional[int] = None
+    subject: str
+    predicate: str
+    object: str
+    confidence: float
+    source_text: Optional[str] = None
     created_at: datetime
     
     class Config:

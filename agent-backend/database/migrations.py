@@ -95,6 +95,12 @@ def run_migrations():
         
         # 运行聊天相关表迁移
         run_chat_migrations()
+        
+        # 运行知识库相关表迁移
+        run_knowledge_base_migrations()
+        
+        # 运行知识图谱相关表迁移
+        run_knowledge_graph_migrations()
             
     except Exception as e:
         logger.error(f"数据库迁移失败: {str(e)}")
@@ -377,6 +383,206 @@ def run_chat_migrations():
                 
     except Exception as e:
         logger.error(f"聊天相关表迁移失败: {str(e)}")
+        raise
+
+def run_knowledge_base_migrations():
+    """运行知识库相关表的数据库迁移"""
+    logger.info("开始检查知识库相关表迁移...")
+    
+    try:
+        with engine.connect() as conn:
+            # 检查knowledge_bases表是否存在
+            inspector = inspect(engine)
+            if 'knowledge_bases' not in inspector.get_table_names():
+                logger.info("knowledge_bases表不存在，创建所有知识库相关表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("所有知识库相关表创建完成")
+                return
+            
+            # 检查并移除name字段的唯一约束（支持软删除）
+            try:
+                # 检查是否存在唯一索引
+                indexes = inspector.get_indexes('knowledge_bases')
+                name_unique_index = None
+                for index in indexes:
+                    if index['unique'] and 'name' in index['column_names']:
+                        name_unique_index = index['name']
+                        break
+                
+                if name_unique_index:
+                    logger.info(f"发现name字段的唯一索引: {name_unique_index}，准备移除...")
+                    conn.execute(text(f"DROP INDEX IF EXISTS {name_unique_index}"))
+                    logger.info("成功移除name字段的唯一索引")
+                else:
+                    logger.info("name字段没有唯一索引，跳过移除")
+            except Exception as e:
+                logger.warning(f"检查或移除name字段唯一索引时出错: {str(e)}")
+                # 继续执行其他迁移，不中断流程
+            
+            # 检查documents表是否存在
+            if 'documents' not in inspector.get_table_names():
+                logger.info("documents表不存在，创建documents表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("documents表创建完成")
+                return
+            
+            # 检查document_chunks表是否存在
+            if 'document_chunks' not in inspector.get_table_names():
+                logger.info("document_chunks表不存在，创建document_chunks表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("document_chunks表创建完成")
+                return
+            
+            # 检查knowledge_base_queries表是否存在
+            if 'knowledge_base_queries' not in inspector.get_table_names():
+                logger.info("knowledge_base_queries表不存在，创建knowledge_base_queries表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("knowledge_base_queries表创建完成")
+                return
+            
+            # 检查knowledge_bases表的字段
+            missing_kb_columns = []
+            
+            if not check_column_exists('knowledge_bases', 'owner_id'):
+                missing_kb_columns.append('owner_id')
+            
+            if not check_column_exists('knowledge_bases', 'is_public'):
+                missing_kb_columns.append('is_public')
+            
+            if not check_column_exists('knowledge_bases', 'is_active'):
+                missing_kb_columns.append('is_active')
+            
+            if missing_kb_columns:
+                logger.info(f"发现缺失字段: {missing_kb_columns}")
+                for column in missing_kb_columns:
+                    if column == 'owner_id':
+                        conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN owner_id VARCHAR(100);"))
+                        logger.info("添加 owner_id 字段")
+                    elif column == 'is_public':
+                        conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN is_public BOOLEAN DEFAULT 0;"))
+                        logger.info("添加 is_public 字段")
+                    elif column == 'is_active':
+                        conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
+                        logger.info("添加 is_active 字段")
+                
+                logger.info("knowledge_bases表迁移完成")
+            else:
+                logger.info("knowledge_bases表结构已是最新版本")
+            
+            # 检查documents表的字段
+            missing_doc_columns = []
+            
+            if not check_column_exists('documents', 'file_type'):
+                missing_doc_columns.append('file_type')
+            
+            if not check_column_exists('documents', 'content'):
+                missing_doc_columns.append('content')
+            
+            if not check_column_exists('documents', 'document_metadata'):
+                missing_doc_columns.append('document_metadata')
+            
+            if not check_column_exists('documents', 'status'):
+                missing_doc_columns.append('status')
+            
+            if not check_column_exists('documents', 'is_active'):
+                missing_doc_columns.append('is_active')
+            
+            if missing_doc_columns:
+                logger.info(f"发现缺失字段: {missing_doc_columns}")
+                for column in missing_doc_columns:
+                    if column == 'file_type':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN file_type VARCHAR(50);"))
+                        logger.info("添加 file_type 字段")
+                    elif column == 'content':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN content TEXT;"))
+                        logger.info("添加 content 字段")
+                    elif column == 'document_metadata':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN document_metadata JSON;"))
+                        logger.info("添加 document_metadata 字段")
+                    elif column == 'status':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN status VARCHAR(50) DEFAULT 'pending';"))
+                        logger.info("添加 status 字段")
+                    elif column == 'is_active':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
+                        logger.info("添加 is_active 字段")
+                
+                logger.info("documents表迁移完成")
+            else:
+                logger.info("documents表结构已是最新版本")
+            
+            # 检查document_chunks表的字段
+            missing_chunk_columns = []
+            
+            if not check_column_exists('document_chunks', 'knowledge_base_id'):
+                missing_chunk_columns.append('knowledge_base_id')
+            
+            if not check_column_exists('document_chunks', 'content'):
+                missing_chunk_columns.append('content')
+            
+            if not check_column_exists('document_chunks', 'chunk_index'):
+                missing_chunk_columns.append('chunk_index')
+            
+            if not check_column_exists('document_chunks', 'embedding'):
+                missing_chunk_columns.append('embedding')
+            
+            if not check_column_exists('document_chunks', 'chunk_metadata'):
+                missing_chunk_columns.append('chunk_metadata')
+            
+            if not check_column_exists('document_chunks', 'is_active'):
+                missing_chunk_columns.append('is_active')
+            
+            if missing_chunk_columns:
+                logger.info(f"发现缺失字段: {missing_chunk_columns}")
+                for column in missing_chunk_columns:
+                    if column == 'knowledge_base_id':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN knowledge_base_id INTEGER REFERENCES knowledge_bases(id);"))
+                        logger.info("添加 knowledge_base_id 字段")
+                    elif column == 'content':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN content TEXT;"))
+                        logger.info("添加 content 字段")
+                    elif column == 'chunk_index':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN chunk_index INTEGER;"))
+                        logger.info("添加 chunk_index 字段")
+                    elif column == 'embedding':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN embedding JSON;"))
+                        logger.info("添加 embedding 字段")
+                    elif column == 'chunk_metadata':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN chunk_metadata JSON;"))
+                        logger.info("添加 chunk_metadata 字段")
+                    elif column == 'is_active':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
+                        logger.info("添加 is_active 字段")
+                
+                logger.info("document_chunks表迁移完成")
+            else:
+                logger.info("document_chunks表结构已是最新版本")
+            
+            conn.commit()
+            logger.info("知识库相关表迁移完成")
+                
+    except Exception as e:
+        logger.error(f"知识库相关表迁移失败: {str(e)}")
+        raise
+
+def run_knowledge_graph_migrations():
+    """运行知识图谱相关表的数据库迁移"""
+    logger.info("开始检查知识图谱相关表迁移...")
+    
+    try:
+        with engine.connect() as conn:
+            # 检查knowledge_triples表是否存在
+            inspector = inspect(engine)
+            if 'knowledge_triples' not in inspector.get_table_names():
+                logger.info("knowledge_triples表不存在，创建知识图谱相关表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("知识图谱相关表创建完成")
+                return
+            
+            conn.commit()
+            logger.info("知识图谱相关表迁移完成")
+                
+    except Exception as e:
+        logger.error(f"知识图谱相关表迁移失败: {str(e)}")
         raise
 
 def create_default_agents():

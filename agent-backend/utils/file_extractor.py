@@ -1,7 +1,8 @@
 import os
 import io
 import base64
-from typing import Optional, Tuple
+import tempfile
+from typing import Optional, Tuple, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,17 @@ class FileExtractor:
             'txt': self._extract_txt_text,
             'md': self._extract_txt_text,
             'json': self._extract_txt_text,
-            'csv': self._extract_txt_text,
+            'csv': self._extract_csv_text,
             'log': self._extract_txt_text,
+            'html': self._extract_html_text,
+            'htm': self._extract_html_text,
+            'xml': self._extract_xml_text,
+            'rtf': self._extract_rtf_text,
+            'odt': self._extract_odt_text,
+            'epub': self._extract_epub_text,
+            'mobi': self._extract_mobi_text,
+            'azw': self._extract_mobi_text,
+            'azw3': self._extract_mobi_text,
         }
     
     def extract_text(self, file_content: bytes, file_type: str, filename: str = None) -> Tuple[str, dict]:
@@ -180,6 +190,228 @@ class FileExtractor:
             "encoding": "base64",
             "extraction_method": "base64_encoding",
             "note": f"文件类型{file_type}不支持文本提取，已编码为base64"
+        }
+    
+    def _extract_csv_text(self, file_content: bytes, filename: str = None) -> Tuple[str, dict]:
+        """提取CSV文件文本内容"""
+        try:
+            import pandas as pd
+            
+            # 尝试多种编码
+            encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+            for encoding in encodings:
+                try:
+                    df = pd.read_csv(io.BytesIO(file_content), encoding=encoding)
+                    text = df.to_string(index=False)
+                    return text, {"encoding": encoding, "extraction_method": "pandas", "rows": len(df), "columns": len(df.columns)}
+                except UnicodeDecodeError:
+                    continue
+            
+            # 如果都失败，使用latin-1
+            df = pd.read_csv(io.BytesIO(file_content), encoding='latin-1')
+            text = df.to_string(index=False)
+            return text, {"encoding": "latin-1", "extraction_method": "pandas", "rows": len(df), "columns": len(df.columns)}
+            
+        except ImportError:
+            logger.warning("pandas未安装，使用文本提取")
+            return self._extract_txt_text(file_content, filename)
+        except Exception as e:
+            logger.error(f"CSV文本提取失败: {str(e)}")
+            raise
+    
+    def _extract_html_text(self, file_content: bytes, filename: str = None) -> Tuple[str, dict]:
+        """提取HTML文件文本内容"""
+        try:
+            from bs4 import BeautifulSoup
+            
+            # 尝试多种编码
+            encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+            for encoding in encodings:
+                try:
+                    html_content = file_content.decode(encoding)
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    
+                    # 移除脚本和样式标签
+                    for script in soup(["script", "style"]):
+                        script.decompose()
+                    
+                    text = soup.get_text()
+                    return text, {"encoding": encoding, "extraction_method": "BeautifulSoup"}
+                except UnicodeDecodeError:
+                    continue
+            
+            # 如果都失败，使用latin-1
+            html_content = file_content.decode('latin-1')
+            soup = BeautifulSoup(html_content, 'html.parser')
+            for script in soup(["script", "style"]):
+                script.decompose()
+            text = soup.get_text()
+            return text, {"encoding": "latin-1", "extraction_method": "BeautifulSoup"}
+            
+        except ImportError:
+            logger.warning("BeautifulSoup未安装，使用文本提取")
+            return self._extract_txt_text(file_content, filename)
+        except Exception as e:
+            logger.error(f"HTML文本提取失败: {str(e)}")
+            raise
+    
+    def _extract_xml_text(self, file_content: bytes, filename: str = None) -> Tuple[str, dict]:
+        """提取XML文件文本内容"""
+        try:
+            from bs4 import BeautifulSoup
+            
+            # 尝试多种编码
+            encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+            for encoding in encodings:
+                try:
+                    xml_content = file_content.decode(encoding)
+                    soup = BeautifulSoup(xml_content, 'xml')
+                    text = soup.get_text()
+                    return text, {"encoding": encoding, "extraction_method": "BeautifulSoup-XML"}
+                except UnicodeDecodeError:
+                    continue
+            
+            # 如果都失败，使用latin-1
+            xml_content = file_content.decode('latin-1')
+            soup = BeautifulSoup(xml_content, 'xml')
+            text = soup.get_text()
+            return text, {"encoding": "latin-1", "extraction_method": "BeautifulSoup-XML"}
+            
+        except ImportError:
+            logger.warning("BeautifulSoup未安装，使用文本提取")
+            return self._extract_txt_text(file_content, filename)
+        except Exception as e:
+            logger.error(f"XML文本提取失败: {str(e)}")
+            raise
+    
+    def _extract_rtf_text(self, file_content: bytes, filename: str = None) -> Tuple[str, dict]:
+        """提取RTF文件文本内容"""
+        try:
+            import striprtf
+            
+            # 尝试多种编码
+            encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+            for encoding in encodings:
+                try:
+                    rtf_content = file_content.decode(encoding)
+                    text = striprtf.striprtf(rtf_content)
+                    return text, {"encoding": encoding, "extraction_method": "striprtf"}
+                except UnicodeDecodeError:
+                    continue
+            
+            # 如果都失败，使用latin-1
+            rtf_content = file_content.decode('latin-1')
+            text = striprtf.striprtf(rtf_content)
+            return text, {"encoding": "latin-1", "extraction_method": "striprtf"}
+            
+        except ImportError:
+            logger.warning("striprtf未安装，使用文本提取")
+            return self._extract_txt_text(file_content, filename)
+        except Exception as e:
+            logger.error(f"RTF文本提取失败: {str(e)}")
+            raise
+    
+    def _extract_odt_text(self, file_content: bytes, filename: str = None) -> Tuple[str, dict]:
+        """提取ODT文件文本内容"""
+        try:
+            from odf import text, teletype
+            from odf.opendocument import load
+            
+            # 加载ODT文档
+            doc = load(io.BytesIO(file_content))
+            
+            # 提取文本
+            text_content = ""
+            for paragraph in doc.getElementsByType(text.P):
+                text_content += teletype.extractText(paragraph) + "\n"
+            
+            return text_content, {"extraction_method": "odf"}
+            
+        except ImportError:
+            logger.warning("odfpy未安装，使用文本提取")
+            return self._extract_txt_text(file_content, filename)
+        except Exception as e:
+            logger.error(f"ODT文本提取失败: {str(e)}")
+            raise
+    
+    def _extract_epub_text(self, file_content: bytes, filename: str = None) -> Tuple[str, dict]:
+        """提取EPUB文件文本内容"""
+        try:
+            import zipfile
+            from bs4 import BeautifulSoup
+            
+            # EPUB是ZIP格式
+            with zipfile.ZipFile(io.BytesIO(file_content)) as epub:
+                # 读取OPF文件
+                opf_files = [f for f in epub.namelist() if f.endswith('.opf')]
+                if not opf_files:
+                    raise Exception("未找到OPF文件")
+                
+                opf_content = epub.read(opf_files[0])
+                opf_soup = BeautifulSoup(opf_content, 'xml')
+                
+                # 获取所有HTML文件
+                html_files = []
+                for item in opf_soup.find_all('item'):
+                    if item.get('media-type') == 'application/xhtml+xml':
+                        html_files.append(item.get('href'))
+                
+                # 提取所有HTML文件的文本
+                text_content = ""
+                for html_file in html_files:
+                    try:
+                        html_content = epub.read(html_file)
+                        soup = BeautifulSoup(html_content, 'html.parser')
+                        text_content += soup.get_text() + "\n"
+                    except Exception as e:
+                        logger.warning(f"提取HTML文件 {html_file} 失败: {str(e)}")
+                        continue
+                
+                return text_content, {"extraction_method": "epub", "html_files": len(html_files)}
+            
+        except ImportError:
+            logger.warning("zipfile或BeautifulSoup未安装，使用文本提取")
+            return self._extract_txt_text(file_content, filename)
+        except Exception as e:
+            logger.error(f"EPUB文本提取失败: {str(e)}")
+            raise
+    
+    def _extract_mobi_text(self, file_content: bytes, filename: str = None) -> Tuple[str, dict]:
+        """提取MOBI文件文本内容"""
+        try:
+            from mobi import Mobi
+            
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(suffix='.mobi', delete=False) as temp_file:
+                temp_file.write(file_content)
+                temp_file.flush()
+                
+                # 提取文本
+                mobi = Mobi(temp_file.name)
+                text = mobi.get_text()
+                
+                # 清理临时文件
+                os.unlink(temp_file.name)
+                
+                return text, {"extraction_method": "mobi"}
+            
+        except ImportError:
+            logger.warning("mobi未安装，使用文本提取")
+            return self._extract_txt_text(file_content, filename)
+        except Exception as e:
+            logger.error(f"MOBI文本提取失败: {str(e)}")
+            raise
+    
+    def get_file_info(self, file_content: bytes, filename: str = None) -> Dict[str, Any]:
+        """获取文件信息"""
+        file_type = filename.split('.')[-1].lower() if filename else 'unknown'
+        
+        return {
+            "filename": filename,
+            "file_type": file_type,
+            "file_size": len(file_content),
+            "is_supported": self.is_supported_format(file_type),
+            "supported_formats": list(self.supported_formats.keys())
         }
     
     def is_supported_format(self, file_type: str) -> bool:

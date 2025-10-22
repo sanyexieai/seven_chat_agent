@@ -30,16 +30,21 @@ RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
 RERANKER_ENABLED_ENV = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
 EXTRACT_TRIPLES_ENABLED = os.getenv("EXTRACT_TRIPLES_ENABLED", "false").lower() == "true"
 KNOWLEDGE_GRAPH_ENABLED = os.getenv("KNOWLEDGE_GRAPH_ENABLED", "false").lower() == "true"
+CHUNK_STRATEGY = os.getenv("CHUNK_STRATEGY", "hierarchical")  # hierarchical, semantic, sentence, fixed
+USE_LLM_MERGE = os.getenv("USE_LLM_MERGE", "false").lower() == "true"
+MULTI_HOP_MAX_HOPS = int(os.getenv("MULTI_HOP_MAX_HOPS", "2"))  # 多跳查询最大跳数
 
 class KnowledgeBaseService:
     """知识库服务"""
     
     def __init__(self, vector_store_type: str = "auto"):
         self.text_processor = TextProcessor(
-            chunk_size=600,  # 减小分块大小
-            overlap=300,     # 增加重叠
-            chunk_strategy="semantic",  # 使用语义分割
-            min_chunk_size=200  # 最小分块大小
+            chunk_size=500,      # 目标分块大小
+            overlap=50,          # 重叠长度
+            chunk_strategy=CHUNK_STRATEGY,  # 使用配置的分割策略
+            min_chunk_size=100,  # 最小分块大小
+            max_chunk_size=800,  # 最大分块大小
+            use_llm_merge=True   # 默认启用LLM优化分块
         )
         self.embedding_service = EmbeddingService()
         self.file_extractor = FileExtractor()
@@ -305,8 +310,9 @@ class KnowledgeBaseService:
             # 如果启用了知识图谱，同时搜索相关三元组
             graph_results = []
             if KNOWLEDGE_GRAPH_ENABLED:
-                graph_results = self._search_triples_from_db(db, kb_id, query, limit=10)
-                logger.info(f"KB[{kb_id}] 图谱搜索结果: {len(graph_results)} 个三元组")
+                # 使用多跳查询获取更丰富的关系信息
+                graph_results = self._multi_hop_triple_search(db, kb_id, query, max_hops=MULTI_HOP_MAX_HOPS)
+                logger.info(f"KB[{kb_id}] 多跳图谱搜索结果: {len(graph_results)} 个三元组")
             
             if not search_results:
                 return {
@@ -357,14 +363,15 @@ class KnowledgeBaseService:
             
             context = "\n\n".join(context_parts)
             
-            # 如果有图谱结果，添加到上下文中
+            # 构建图谱上下文
+            graph_context = ""
             if graph_results:
-                graph_context = "\n\n相关实体关系：\n"
-                for triple in graph_results[:5]:  # 只取前5个三元组
-                    graph_context += f"- {triple['subject']} {triple['predicate']} {triple['object']}\n"
-                context += graph_context
+                graph_context = "相关实体关系：\n"
+                for triple in graph_results[:10]:  # 取前10个三元组
+                    hop_info = f" (跳数: {triple.get('hop', 0)})" if 'hop' in triple else ""
+                    graph_context += f"- {triple['subject']} {triple['predicate']} {triple['object']}{hop_info}\n"
             
-            response = self._generate_response(query, context)
+            response = self._generate_response(query, context, graph_context)
             
             return {
                 "query": query,
@@ -515,35 +522,97 @@ class KnowledgeBaseService:
         同步封装，内部以异步方式调用模型。
         """
         prompt = (
-            "请从以下文本中提取实体和关系，以三元组的形式输出（主语，关系，宾语）。" \
-            "每个三元组一行。只输出三元组，不要其他解释。\n\n文本：\n" + text
+            "请从以下文本中提取所有可能的实体和关系，以三元组的形式输出（主语，关系，宾语）。\n"
+            "要求：\n"
+            "1. 提取所有可能的三元组，不要遗漏\n"
+            "2. 每个三元组一行，格式：主语，关系，宾语\n"
+            "3. 只输出三元组，不要其他解释\n"
+            "4. 如果文本中没有明确的关系，可以推断隐含关系\n"
+            "5. 实体可以是人名、地名、机构名、概念等\n"
+            "6. 关系可以是动作、属性、位置、时间等\n\n"
+            "文本：\n" + text
         )
 
         async def _run() -> str:
             llm = get_llm_helper()
             messages = [
-                {"role": "system", "content": "你是一个信息抽取助手，擅长从文本中识别实体关系三元组。"},
+                {"role": "system", "content": "你是一个专业的实体关系抽取专家，能够从文本中准确识别和提取所有可能的实体关系三元组。你擅长识别各种类型的实体（人名、地名、机构、概念、时间等）和关系（动作、属性、位置、时间、因果等）。"},
                 {"role": "user", "content": prompt}
             ]
-            return await llm.call(messages, max_tokens=512, temperature=0.0)
+            return await llm.call(messages, max_tokens=1024, temperature=0.0)
 
         # 在同步环境中执行异步调用
         result = asyncio.run(_run())
         return self._parse_triples(result)
 
     def _parse_triples(self, text: str) -> List[List[str]]:
-        """解析LLM返回的三元组文本，每行一个三元组，支持括号/逗号等形式。"""
+        """解析LLM返回的三元组文本，每行一个三元组，支持多种格式。"""
         triples: List[List[str]] = []
         if not text:
             return triples
+        
         lines = [l.strip() for l in str(text).splitlines() if l.strip()]
+        
         for line in lines:
+            # 跳过非三元组行（如序号、标题等）
+            if re.match(r'^\d+[\.\)]', line) or line.startswith('-') or line.startswith('*'):
+                line = re.sub(r'^\d+[\.\)]\s*', '', line)  # 去掉序号
+                line = re.sub(r'^[-*]\s*', '', line)  # 去掉列表符号
+            
             # 去掉可能的括号和全角符号
-            cleaned = line.strip().strip("()（）")
-            # 统一分隔符（中英文逗号/顿号/制表符）
-            parts = [p.strip().strip("\"'“”") for p in re.split(r"[，,、\t]\\s*", cleaned) if p.strip()]
+            cleaned = line.strip().strip("()（）[]【】")
+            
+            # 跳过空行或太短的行
+            if len(cleaned) < 5:
+                continue
+            
+            # 尝试多种分隔符模式
+            patterns = [
+                r"[，,、]\s*",  # 逗号分隔
+                r"\s+",         # 空格分隔
+                r"\t+",         # 制表符分隔
+                r"\s*-\s*",     # 破折号分隔
+                r"\s*→\s*",     # 箭头分隔
+                r"\s*->\s*",    # 箭头分隔
+            ]
+            
+            parts = []
+            for pattern in patterns:
+                parts = [p.strip().strip("\"'""") for p in re.split(pattern, cleaned) if p.strip()]
+                if len(parts) >= 3:
+                    break
+            
+            # 如果还是不够3个部分，尝试按长度分割
+            if len(parts) < 3 and len(cleaned) > 10:
+                # 尝试找到关系词（动词、介词等）
+                relation_words = ['是', '有', '在', '属于', '包含', '位于', '来自', '去', '到', '与', '和', '的', '为', '做', '进行', '实现', '完成']
+                for word in relation_words:
+                    if word in cleaned:
+                        parts = cleaned.split(word, 1)
+                        if len(parts) == 2:
+                            # 进一步分割主语和宾语
+                            subject = parts[0].strip()
+                            obj_part = parts[1].strip()
+                            # 尝试分割宾语
+                            obj_parts = re.split(r'[，,、\s]+', obj_part, 1)
+                            if len(obj_parts) >= 2:
+                                relation = word
+                                obj = obj_parts[0].strip()
+                                parts = [subject, relation, obj]
+                                break
+            
             if len(parts) >= 3:
-                triples.append(parts[:3])
+                # 清理和验证三元组
+                subject = parts[0].strip()
+                relation = parts[1].strip()
+                obj = parts[2].strip()
+                
+                # 基本验证：不能为空，不能太短
+                if (len(subject) > 0 and len(relation) > 0 and len(obj) > 0 and
+                    len(subject) < 100 and len(relation) < 50 and len(obj) < 100):
+                    triples.append([subject, relation, obj])
+        
+        logger.info(f"解析得到 {len(triples)} 个三元组")
         return triples
     
     def _store_triples_to_db(self, db: Session, kb_id: int, doc_id: int, chunk_index: int, 
@@ -627,6 +696,75 @@ class KnowledgeBaseService:
             logger.error(f"数据库三元组搜索失败: {str(e)}")
             return []
     
+    def _multi_hop_triple_search(self, db: Session, kb_id: int, query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
+        """多跳关系查询"""
+        try:
+            # 第一步：找到与查询直接相关的三元组
+            direct_triples = self._search_triples_from_db(db, kb_id, query, limit=20)
+            
+            if not direct_triples:
+                return []
+            
+            all_triples = direct_triples.copy()
+            visited_entities = set()
+            
+            # 收集所有相关实体
+            for triple in direct_triples:
+                visited_entities.add(triple['subject'])
+                visited_entities.add(triple['object'])
+            
+            # 多跳搜索
+            for hop in range(1, max_hops + 1):
+                new_triples = []
+                current_entities = list(visited_entities)
+                
+                for entity in current_entities:
+                    # 搜索包含该实体的其他三元组
+                    entity_triples = db.query(KnowledgeTriple).filter(
+                        KnowledgeTriple.knowledge_base_id == kb_id
+                    ).filter(
+                        or_(
+                            KnowledgeTriple.subject == entity,
+                            KnowledgeTriple.object == entity
+                        )
+                    ).limit(10).all()
+                    
+                    for triple in entity_triples:
+                        triple_dict = {
+                            'subject': triple.subject,
+                            'predicate': triple.predicate,
+                            'object': triple.object,
+                            'confidence': triple.confidence,
+                            'source_text': triple.source_text,
+                            'chunk_id': triple.chunk_id,
+                            'document_id': triple.document_id,
+                            'hop': hop
+                        }
+                        
+                        # 避免重复
+                        if not any(t['subject'] == triple.subject and 
+                                 t['predicate'] == triple.predicate and 
+                                 t['object'] == triple.object for t in all_triples):
+                            new_triples.append(triple_dict)
+                            all_triples.append(triple_dict)
+                            
+                            # 添加新发现的实体
+                            visited_entities.add(triple.subject)
+                            visited_entities.add(triple.object)
+                
+                if not new_triples:
+                    break
+            
+            # 按置信度和跳数排序
+            all_triples.sort(key=lambda x: (x.get('hop', 0), -x['confidence']))
+            
+            logger.info(f"多跳查询完成: {len(all_triples)} 个三元组, {len(visited_entities)} 个实体")
+            return all_triples[:50]  # 限制返回数量
+            
+        except Exception as e:
+            logger.error(f"多跳关系查询失败: {str(e)}")
+            return direct_triples  # 回退到直接搜索
+    
     def _find_related_entities(self, db: Session, kb_id: int, entity: str, max_hops: int = 2) -> List[Dict[str, Any]]:
         """查找与指定实体相关的其他实体（多跳查询）"""
         try:
@@ -675,7 +813,7 @@ class KnowledgeBaseService:
             logger.error(f"多跳实体查询失败: {str(e)}")
             return []
     
-    def _generate_response(self, query: str, context: str) -> str:
+    def _generate_response(self, query: str, context: str, graph_context: str = "") -> str:
         """生成响应"""
         try:
             # 尝试使用LLM生成响应
@@ -690,6 +828,8 @@ class KnowledgeBaseService:
 知识库内容：
 {context}
 
+{f"关系图谱信息：\n{graph_context}" if graph_context else ""}
+
 请基于知识库内容提供准确、详细的回答。如果知识库内容不足以回答问题，请说明并建议用户提供更多信息。
 
 回答要求：
@@ -698,6 +838,7 @@ class KnowledgeBaseService:
 3. 如果涉及多个要点，请分点说明
 4. 如果知识库内容不足，请诚实说明
 5. 使用中文回答
+{f"6. 可以利用关系图谱信息进行推理和关联分析" if graph_context else ""}
 
 回答："""
             

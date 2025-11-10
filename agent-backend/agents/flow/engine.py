@@ -152,7 +152,21 @@ class FlowEngine:
 					pass
 			
 			# 选择下一跳
-			next_id = node.get_next_node_id(0)  # 缺省走第一个分支；路由节点应按 connections 顺序配置
+			# 路由节点需要根据选中的分支选择
+			if node.category == NodeCategory.ROUTER:
+				# 从节点数据中获取选中的分支
+				selected_branch = node.get_node_value(context, 'selected_branch', node_id=node.id)
+				if selected_branch == 'true' and len(node.connections) > 0:
+					next_id = node.connections[0]  # 第一个分支：真值分支
+				elif selected_branch == 'false' and len(node.connections) > 1:
+					next_id = node.connections[1]  # 第二个分支：假值分支
+				elif len(node.connections) > 0:
+					next_id = node.connections[0]  # 只有一个分支，继续执行
+				else:
+					next_id = None
+			else:
+				next_id = node.get_next_node_id(0)  # 缺省走第一个分支
+			
 			if node.category == NodeCategory.END:
 				next_id = None
 			
@@ -253,7 +267,21 @@ class FlowEngine:
 				yield node_complete_chunk
 			
 			# 选择下一跳
-			next_id = node.get_next_node_id(0)
+			# 路由节点需要根据选中的分支选择
+			if node.category == NodeCategory.ROUTER:
+				# 从节点数据中获取选中的分支
+				selected_branch = node.get_node_value(context, 'selected_branch', node_id=node.id)
+				if selected_branch == 'true' and len(node.connections) > 0:
+					next_id = node.connections[0]  # 第一个分支：真值分支
+				elif selected_branch == 'false' and len(node.connections) > 1:
+					next_id = node.connections[1]  # 第二个分支：假值分支
+				elif len(node.connections) > 0:
+					next_id = node.connections[0]  # 只有一个分支，继续执行
+				else:
+					next_id = None
+			else:
+				next_id = node.get_next_node_id(0)
+			
 			if node.category == NodeCategory.END:
 				next_id = None
 			

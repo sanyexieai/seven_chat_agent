@@ -20,7 +20,8 @@ from .node_implementations import (
 	LLMNode,
 	ToolNode,
 	StartNode,
-	EndNode
+	EndNode,
+	RouterNode
 )
 
 # 注册常用节点实现
@@ -28,6 +29,7 @@ NodeRegistry.register("llm", LLMNode)
 NodeRegistry.register("tool", ToolNode)
 NodeRegistry.register("start", StartNode)
 NodeRegistry.register("end", EndNode)
+NodeRegistry.register("router", RouterNode)
 
 __all__ = [
 	'BaseFlowNode',
@@ -37,5 +39,6 @@ __all__ = [
 	'LLMNode',
 	'ToolNode',
 	'StartNode',
-	'EndNode'
+	'EndNode',
+	'RouterNode'
 ]

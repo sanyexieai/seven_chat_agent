@@ -262,6 +262,169 @@ class StartNode(BaseFlowNode):
 		)
 
 
+class RouterNode(BaseFlowNode):
+	"""路由节点：根据条件选择分支"""
+	
+	def _evaluate_condition(self, field_value: Any, routing_config: Dict[str, Any]) -> str:
+		"""评估路由条件，返回 'true' 或 'false'"""
+		value = routing_config.get('value', None)
+		
+		if value is not None:
+			# 精确值匹配
+			return 'true' if field_value == value else 'false'
+		else:
+			# 布尔值判断
+			if isinstance(field_value, bool):
+				return 'true' if field_value else 'false'
+			elif isinstance(field_value, (int, float)):
+				# 数值判断
+				threshold = routing_config.get('threshold', 0)
+				operator = routing_config.get('operator', '>')
+				
+				if operator == '>':
+					return 'true' if field_value > threshold else 'false'
+				elif operator == '>=':
+					return 'true' if field_value >= threshold else 'false'
+				elif operator == '<':
+					return 'true' if field_value < threshold else 'false'
+				elif operator == '<=':
+					return 'true' if field_value <= threshold else 'false'
+				elif operator == '==':
+					return 'true' if field_value == threshold else 'false'
+				else:
+					return 'false'
+			elif isinstance(field_value, str):
+				# 字符串判断
+				pattern = routing_config.get('pattern', '')
+				if pattern:
+					import re
+					return 'true' if re.search(pattern, field_value) else 'false'
+				else:
+					# 非空字符串判断
+					return 'true' if field_value else 'false'
+			else:
+				# 其他类型，默认为false
+				return 'false'
+	
+	async def execute(self, user_id: str, message: str, context: Dict[str, Any], agent_name: str = None) -> AgentMessage:
+		"""执行路由节点（同步）"""
+		flow_state = self._get_flow_state(context)
+		routing_config = self.config.get('routing_logic', {})
+		
+		if not routing_config:
+			raise ValueError(f"路由节点 {self.id} 未配置路由逻辑")
+		
+		# 获取路由字段
+		field = routing_config.get('field', '')
+		if not field:
+			raise ValueError(f"路由节点 {self.id} 未配置路由字段")
+		
+		# 从流程状态获取字段值
+		field_value = flow_state.get(field)
+		
+		# 评估条件
+		selected_branch = self._evaluate_condition(field_value, routing_config)
+		
+		# 记录路由决策
+		logger.info(f"路由节点 {self.id} 字段 {field}={field_value}, 选择分支: {selected_branch}")
+		
+		# 将路由决策保存到流程状态
+		flow_state['router_decision'] = {
+			'field': field,
+			'value': field_value,
+			'selected_branch': selected_branch
+		}
+		
+		# 将选中的分支保存到节点数据中，供引擎使用
+		self.set_node_value(context, 'selected_branch', selected_branch, node_id=self.id)
+		# 同时保存为临时属性，供 get_next_node_id 使用
+		self._selected_branch = selected_branch
+		
+		content = f"路由决策: {field}={field_value} -> {selected_branch}"
+		return self._create_agent_message(content, agent_name, metadata={
+			'selected_branch': selected_branch,
+			'field': field,
+			'field_value': field_value
+		})
+	
+	async def execute_stream(self, user_id: str, message: str, context: Dict[str, Any], agent_name: str = None) -> AsyncGenerator[StreamChunk, None]:
+		"""执行路由节点（流式）"""
+		flow_state = self._get_flow_state(context)
+		routing_config = self.config.get('routing_logic', {})
+		
+		if not routing_config:
+			error_msg = f"路由节点 {self.id} 未配置路由逻辑"
+			yield self._create_stream_chunk(
+				chunk_type="error",
+				content=error_msg,
+				agent_name=agent_name,
+				metadata={'error': error_msg}
+			)
+			return
+		
+		# 获取路由字段
+		field = routing_config.get('field', '')
+		if not field:
+			error_msg = f"路由节点 {self.id} 未配置路由字段"
+			yield self._create_stream_chunk(
+				chunk_type="error",
+				content=error_msg,
+				agent_name=agent_name,
+				metadata={'error': error_msg}
+			)
+			return
+		
+		# 从流程状态获取字段值
+		field_value = flow_state.get(field)
+		
+		# 评估条件
+		selected_branch = self._evaluate_condition(field_value, routing_config)
+		
+		# 记录路由决策
+		logger.info(f"路由节点 {self.id} 字段 {field}={field_value}, 选择分支: {selected_branch}")
+		
+		# 将路由决策保存到流程状态
+		flow_state['router_decision'] = {
+			'field': field,
+			'value': field_value,
+			'selected_branch': selected_branch
+		}
+		
+		# 将选中的分支保存到节点数据中，供引擎使用
+		self.set_node_value(context, 'selected_branch', selected_branch, node_id=self.id)
+		# 同时保存为临时属性，供 get_next_node_id 使用
+		self._selected_branch = selected_branch
+		
+		content = f"路由决策: {field}={field_value} -> {selected_branch}"
+		yield self._create_stream_chunk(
+			chunk_type="content",
+			content=content,
+			agent_name=agent_name,
+			metadata={
+				'selected_branch': selected_branch,
+				'field': field,
+				'field_value': field_value
+			}
+		)
+	
+	def get_next_node_id(self, branch_index: int = 0) -> Optional[str]:
+		"""路由节点重写此方法，根据选中的分支返回下一个节点ID"""
+		# 这个方法在 execute 之后被调用，此时 selected_branch 已经保存在节点数据中
+		# 但我们需要从上下文中获取，所以这个方法需要访问 context
+		# 实际上，引擎会在 execute 后调用，但此时没有 context
+		# 所以我们需要在 execute 时设置一个临时属性
+		if hasattr(self, '_selected_branch'):
+			selected_branch = self._selected_branch
+			if selected_branch == 'true' and len(self.connections) > 0:
+				return self.connections[0]
+			elif selected_branch == 'false' and len(self.connections) > 1:
+				return self.connections[1]
+			elif len(self.connections) > 0:
+				return self.connections[0]
+		# 默认行为
+		return super().get_next_node_id(branch_index)
+
+
 class EndNode(BaseFlowNode):
 	"""结束节点：流程出口，输出最终结果"""
 	

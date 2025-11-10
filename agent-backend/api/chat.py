@@ -180,324 +180,111 @@ async def chat_stream_options():
 
 @router.post("/stream")
 async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
-    """处理流式聊天请求"""
+    """处理流式聊天请求
+    
+    此端点仅负责：
+    1. 获取智能体
+    2. 调用工作流引擎适配器执行
+    3. 将流式响应转换为 SSE 格式并返回
+    
+    所有业务逻辑（保存消息、收集节点信息等）都在工作流引擎中通过钩子机制实现。
+    """
     try:
         logger.info(f"收到流式聊天请求: user_id={request.user_id}, agent_name={request.agent_name}")
         
         async def generate_response():
             try:
                 from main import agent_manager
-                if agent_manager:
-                    # 获取智能体
-                    agent = agent_manager.get_agent(request.agent_name)
-                    if agent:
-                        logger.info(f"找到智能体: {agent.name}")
-                        
-                        # 获取智能体的完整信息，包括绑定的工具
-                        agent_info = None
-                        try:
-                            from services.agent_service import AgentService
-                            agent_service = AgentService()
-                            agent_info = agent_service.get_agent_by_name(db, agent.name)
-                            
-                            # 如果智能体有绑定的工具，设置到智能体实例中
-                            if agent_info and agent_info.bound_tools:
-                                if hasattr(agent, 'set_bound_tools'):
-                                    agent.set_bound_tools(agent_info.bound_tools)
-                                    logger.info(f"智能体 {agent.name} 绑定了 {len(agent_info.bound_tools)} 个工具")
-                        except Exception as e:
-                            logger.warning(f"获取智能体信息失败: {str(e)}")
-                        
-                        # 调用智能体的流式处理方法
-                        if hasattr(agent, 'process_message_stream'):
-                            try:
-                                # 在context中添加数据库会话，以便智能体查询知识库
-                                enhanced_context = request.context.copy() if request.context else {}
-                                enhanced_context['db_session'] = db
-                                
-                                # 调用智能体的process_message_stream方法
-                                tools_used = []
-                                live_follow_segments: list[str] = []
-                                collected_nodes: list[dict] = []  # 收集节点信息
-                                
-                                async for chunk in agent.process_message_stream(request.user_id, request.message, enhanced_context):
-                                    if chunk.type == "node_start":
-                                        # 发送节点开始事件，包含完整的chunk信息
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'node_start', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
-                                        yield data_chunk
-                                        
-                                        # 收集节点信息
-                                        if chunk.metadata and chunk.metadata.get('node_id'):
-                                            # 检查是否已收集过该节点
-                                            existing_node = next((node for node in collected_nodes if node['node_id'] == chunk.metadata['node_id']), None)
-                                            if not existing_node:
-                                                collected_nodes.append({
-                                                    'node_id': chunk.metadata.get('node_id'),
-                                                    'node_type': chunk.metadata.get('node_type'),
-                                                    'node_name': chunk.metadata.get('node_name'),
-                                                    'node_label': chunk.metadata.get('node_label'),
-                                                    'node_metadata': chunk.metadata
-                                                })
-                                        
-                                    elif chunk.type == "node_complete":
-                                        # 发送节点完成事件，包含完整的chunk信息
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'node_complete', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
-                                        yield data_chunk
-                                        
-                                        # 更新节点信息（如果有输出内容）
-                                        if chunk.metadata and chunk.metadata.get('node_id'):
-                                            existing_node = next((node for node in collected_nodes if node['node_id'] == chunk.metadata['node_id']), None)
-                                            if existing_node and chunk.metadata.get('output'):
-                                                existing_node['output'] = chunk.metadata.get('output')
-                                    elif chunk.type == "content":
-                                        # 发送内容块，包含metadata信息
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'content', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
-                                        yield data_chunk
-                                    elif chunk.type == "tool_result":
-                                        # 发送工具执行结果
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'tool_result', 'tool_name': chunk.metadata.get('tool_name', ''), 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
-                                        yield data_chunk
-                                        tools_used.append(chunk.metadata.get('tool_name', ''))
-                                        try:
-                                            tool_name = chunk.metadata.get('tool_name', '')
-                                            content_str = chunk.content if isinstance(chunk.content, str) else json.dumps(chunk.content, ensure_ascii=False)
-                                            live_follow_segments.append(f"[{tool_name}]\n{content_str}")
-                                        except Exception:
-                                            pass
-                                        # 将工具执行记录保存到数据库
-                                        if request.session_id:
-                                            try:
-                                                tool_message_data = MessageCreate(
-                                                    session_id=request.session_id,
-                                                    user_id=request.user_id,
-                                                    message_type="tool",
-                                                    content=chunk.content if isinstance(chunk.content, str) else json.dumps(chunk.content, ensure_ascii=False),
-                                                    agent_name=agent.description or agent.name,
-                                                    metadata={"tool_name": chunk.metadata.get('tool_name', '')}
-                                                )
-                                                MessageService.create_message(db, tool_message_data)
-                                            except Exception as e:
-                                                logger.warning(f"保存工具执行结果失败: {str(e)}")
-                                    elif chunk.type == "tool_error":
-                                        # 发送工具错误
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'tool_error', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
-                                        yield data_chunk
-                                    elif chunk.type == "final":
-                                        # 发送最终响应
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'final_response', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
-                                        yield data_chunk
-                                        # 保存聊天消息到数据库
-                                        if request.session_id:
-                                            try:
-                                                from datetime import datetime
-                                                # 保存用户消息
-                                                from models.database_models import MessageCreate
-                                                user_message_data = MessageCreate(
-                                                    session_id=request.session_id,
-                                                    user_id=request.user_id,
-                                                    message_type="user",
-                                                    content=request.message,
-                                                    agent_name=agent.description or agent.name
-                                                )
-                                                user_message = MessageService.create_message(db, user_message_data)
-                                                
-                                                # 保存助手回复
-                                                assistant_message_data = MessageCreate(
-                                                    session_id=request.session_id,
-                                                    user_id=request.user_id,
-                                                    message_type="assistant",
-                                                    content=chunk.content,
-                                                    agent_name=agent.description or agent.name,
-                                                    metadata={"tools_used": tools_used}
-                                                )
-                                                assistant_message = MessageService.create_message(db, assistant_message_data)
-
-                                                # 保存节点信息（如果有的话）
-                                                if hasattr(assistant_message, 'message_id') and assistant_message.message_id:
-                                                    try:
-                                                        # 保存所有收集到的节点信息
-                                                        if collected_nodes:
-                                                            from models.database_models import MessageNode
-                                                            from sqlalchemy.orm import Session
-                                                            
-                                                            for node_info in collected_nodes:
-                                                                # 创建节点记录
-                                                                node_record = MessageNode(
-                                                                    node_id=node_info['node_id'],
-                                                                    message_id=assistant_message.message_id,
-                                                                    node_type=node_info['node_type'],
-                                                                    node_name=node_info['node_name'],
-                                                                    node_label=node_info['node_label'],
-                                                                    content=node_info.get('output', ''),  # 保存节点输出内容
-                                                                    node_metadata={
-                                                                        **node_info['node_metadata']
-                                                                    }
-                                                                )
-                                                                
-                                                                # 添加到数据库会话
-                                                                db.add(node_record)
-                                                            
-                                                            # 提交所有节点记录
-                                                            db.commit()
-                                                            logger.info(f"成功保存 {len(collected_nodes)} 个节点信息，消息ID: {assistant_message.message_id}")
-                                                        else:
-                                                            logger.info(f"没有收集到节点信息，消息ID: {assistant_message.message_id}")
-                                                    except Exception as e:
-                                                        logger.warning(f"保存节点信息失败: {str(e)}")
-                                                        # 回滚节点保存，但保持消息保存
-                                                        db.rollback()
-                                                
-                                                # 保存实时跟随汇总（若存在则更新）
-                                                try:
-                                                    if live_follow_segments:
-                                                        summary_text = "\n\n".join(live_follow_segments)
-                                                        MessageService.upsert_workspace_summary(
-                                                            db=db,
-                                                            session_uuid=request.session_id,
-                                                            user_id=request.user_id,
-                                                            content=summary_text,
-                                                            agent_name=agent.description or agent.name,
-                                                            metadata={"tools_used": tools_used, "source": "stream"}
-                                                        )
-                                                except Exception as e:
-                                                    logger.warning(f"保存实时跟随汇总失败: {str(e)}")
-                                                
-                                                logger.info(f"保存流式聊天消息: 用户消息ID={user_message.message_id}, 助手消息ID={assistant_message.message_id}")
-                                            except Exception as e:
-                                                logger.warning(f"保存流式聊天消息失败: {str(e)}")
-                                        
-                                        # 发送完成信号
-                                        yield f"data: {json.dumps({'type': 'done', 'tools_used': tools_used}, ensure_ascii=False)}\n\n"
-                                        break
-                                    elif chunk.type == "error":
-                                        # 发送错误消息
-                                        data_chunk = f"data: {json.dumps({'content': chunk.content, 'type': 'error', 'chunk_id': chunk.chunk_id, 'metadata': chunk.metadata}, ensure_ascii=False)}\n\n"
-                                        yield data_chunk
-                                        yield f"data: {json.dumps({'type': 'done', 'tools_used': tools_used}, ensure_ascii=False)}\n\n"
-                                        break
-                                
-                                logger.info(f"智能体 {agent.name} 流式处理消息完成，使用工具: {tools_used}")
-                                
-                            except Exception as e:
-                                logger.error(f"智能体流式处理消息失败: {str(e)}")
-                                error_message = f"抱歉，智能体处理消息时出现错误: {str(e)}"
-                                yield f"data: {json.dumps({'content': error_message, 'type': 'error'}, ensure_ascii=False)}\n\n"
-                                yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
-                        else:
-                            # 回退到简单的流式LLM调用
-                            logger.warning(f"智能体 {agent.name} 没有process_message_stream方法，使用回退方案")
-                            try:
-                                from utils.llm_helper import LLMHelper
-                                llm_helper = LLMHelper()
-                                
-                                # 构建消息
-                                messages = []
-                                if hasattr(agent, 'system_prompt') and agent.system_prompt:
-                                    messages.append({"role": "system", "content": agent.system_prompt})
-                                messages.append({"role": "user", "content": request.message})
-                                
-                                # 流式调用LLM
-                                async for chunk in llm_helper.call_stream(messages):
-                                    if chunk:
-                                        data_chunk = f"data: {json.dumps({'content': chunk, 'type': 'content'}, ensure_ascii=False)}\n\n"
-                                        yield data_chunk
-                                
-                                yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
-                                
-                            except Exception as llm_error:
-                                logger.error(f"回退流式LLM调用失败: {str(llm_error)}")
-                                error_message = f"抱歉，LLM调用失败: {str(llm_error)}"
-                                yield f"data: {json.dumps({'content': error_message, 'type': 'error'}, ensure_ascii=False)}\n\n"
-                                yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
-                        
-                    else:
-                        logger.info(f"未找到智能体: {request.agent_name}，将直接调用LLM")
-                        # 如果没有找到智能体，直接调用LLM
-                        try:
-                            from utils.llm_helper import LLMHelper
-                            llm_helper = LLMHelper()
-                            
-                            # 构建消息
-                            messages = [{"role": "user", "content": request.message}]
-                            
-                            # 流式调用LLM
-                            async for chunk in llm_helper.call_stream(messages):
-                                if chunk:
-                                    data_chunk = f"data: {json.dumps({'content': chunk, 'type': 'content'}, ensure_ascii=False)}\n\n"
-                                    yield data_chunk
-                            
-                            # 保存聊天消息到数据库
-                            if request.session_id:
-                                try:
-                                    from datetime import datetime
-                                    # 保存用户消息
-                                    from models.database_models import MessageCreate
-                                    user_message_data = MessageCreate(
-                                        session_id=request.session_id,
-                                        user_id=request.user_id,
-                                        message_type="user",
-                                        content=request.message,
-                                        agent_name="AI助手"
-                                    )
-                                    user_message = MessageService.create_message(db, user_message_data)
-                                    
-                                    # 保存助手回复（这里需要获取完整内容，暂时跳过）
-                                    logger.info(f"保存用户消息: 用户消息ID={user_message.message_id}")
-                                except Exception as e:
-                                    logger.warning(f"保存用户消息失败: {str(e)}")
-                            
-                            yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
-                            
-                        except Exception as llm_error:
-                            logger.error(f"直接调用LLM失败: {str(llm_error)}")
-                            error_message = f"抱歉，AI处理消息时出现错误: {str(llm_error)}"
-                            yield f"data: {json.dumps({'content': error_message, 'type': 'error'}, ensure_ascii=False)}\n\n"
-                            yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
-                else:
-                    logger.info("智能体管理器未初始化，将直接调用LLM")
-                    # 如果智能体管理器未初始化，直接调用LLM
-                    try:
-                        from utils.llm_helper import LLMHelper
-                        llm_helper = LLMHelper()
-                        
-                        # 构建消息
-                        messages = [{"role": "user", "content": request.message}]
-                        
-                        # 流式调用LLM
-                        async for chunk in llm_helper.call_stream(messages):
-                            if chunk:
-                                data_chunk = f"data: {json.dumps({'content': chunk, 'type': 'content'}, ensure_ascii=False)}\n\n"
-                                yield data_chunk
-                        
-                        # 保存聊天消息到数据库
-                        if request.session_id:
-                            try:
-                                from datetime import datetime
-                                # 保存用户消息
-                                from models.database_models import MessageCreate
-                                user_message_data = MessageCreate(
-                                    session_id=request.session_id,
-                                    user_id=request.user_id,
-                                    message_type="user",
-                                    content=request.message,
-                                    agent_name="AI助手"
-                                )
-                                user_message = MessageService.create_message(db, user_message_data)
-                                
-                                logger.info(f"保存用户消息: 用户消息ID={user_message.message_id}")
-                            except Exception as e:
-                                logger.warning(f"保存用户消息失败: {str(e)}")
-                        
-                        yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
-                        
-                    except Exception as llm_error:
-                        logger.error(f"直接调用LLM失败: {str(llm_error)}")
-                        error_message = f"抱歉，AI处理消息时出现错误: {str(llm_error)}"
-                        yield f"data: {json.dumps({'content': error_message, 'type': 'error'}, ensure_ascii=False)}\n\n"
-                        yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
+                if not agent_manager:
+                    raise ValueError("智能体管理器未初始化")
+                
+                # 获取智能体
+                agent = agent_manager.get_agent(request.agent_name)
+                if not agent:
+                    raise ValueError(f"未找到智能体: {request.agent_name}")
+                
+                logger.info(f"找到智能体: {agent.name}")
+                
+                # 获取智能体的完整信息，包括绑定的工具
+                try:
+                    from services.agent_service import AgentService
+                    agent_service = AgentService()
+                    agent_info = agent_service.get_agent_by_name(db, agent.name)
+                    
+                    # 如果智能体有绑定的工具，设置到智能体实例中
+                    if agent_info and agent_info.bound_tools:
+                        if hasattr(agent, 'set_bound_tools'):
+                            agent.set_bound_tools(agent_info.bound_tools)
+                            logger.info(f"智能体 {agent.name} 绑定了 {len(agent_info.bound_tools)} 个工具")
+                except Exception as e:
+                    logger.warning(f"获取智能体信息失败: {str(e)}")
+                
+                # 在context中添加数据库会话，以便智能体查询知识库
+                enhanced_context = request.context.copy() if request.context else {}
+                enhanced_context['db_session'] = db
+                
+                # 使用工作流引擎适配器执行（优先使用工作流引擎，否则回退到智能体的 process_message_stream）
+                from agents.flow.agent_adapter import execute_agent_stream
+                from agents.flow.business_handler import FlowBusinessHandler
+                
+                # 创建业务逻辑处理器（用于获取工具使用情况和处理业务逻辑）
+                business_handler = FlowBusinessHandler(db=db)
+                business_handler.user_id = request.user_id
+                business_handler.session_id = request.session_id
+                business_handler.agent_name = agent.description if hasattr(agent, 'description') else agent.name
+                
+                # 执行流式处理
+                async for chunk in execute_agent_stream(
+                    agent=agent,
+                    user_id=request.user_id,
+                    message=request.message,
+                    context=enhanced_context,
+                    db=db,
+                    session_id=request.session_id,
+                    business_handler=business_handler
+                ):
+                    # 将 StreamChunk 转换为 SSE 格式
+                    chunk_data = {
+                        'content': chunk.content,
+                        'type': chunk.type,
+                        'chunk_id': chunk.chunk_id,
+                        'metadata': chunk.metadata or {}
+                    }
+                    
+                    # 特殊处理某些类型
+                    if chunk.type == "tool_result":
+                        chunk_data['tool_name'] = chunk.metadata.get('tool_name', '') if chunk.metadata else ''
+                    elif chunk.type == "final":
+                        chunk_data['type'] = 'final_response'
+                    elif chunk.type == "done":
+                        # 获取工具使用情况
+                        tools_used = business_handler.get_tools_used()
+                        chunk_data['tools_used'] = tools_used
+                    
+                    data_chunk = f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                    yield data_chunk
+                    
+                    # 如果是最终块或错误块，发送完成信号
+                    if chunk.type in ("final", "error", "done"):
+                        if chunk.type != "done":
+                            # 发送完成信号
+                            done_data = {
+                                'type': 'done',
+                                'tools_used': business_handler.get_tools_used()
+                            }
+                            yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+                        break
+                
+                logger.info(f"智能体 {agent.name} 流式处理消息完成")
+                
             except Exception as e:
                 logger.error(f"流式调用智能体失败: {str(e)}")
-                yield f"data: {json.dumps({'error': f'抱歉，智能体处理消息时出现错误: {str(e)}'}, ensure_ascii=False)}\n\n"
+                error_data = {
+                    'content': f'抱歉，智能体处理消息时出现错误: {str(e)}',
+                    'type': 'error'
+                }
+                yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
         
         return StreamingResponse(
             generate_response(),
@@ -509,7 +296,6 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Headers": "*"
             },
-            # 添加这些参数确保流式工作
             background=None
         )
         

@@ -549,6 +549,17 @@ class DocumentChunk(Base):
     chunk_index = Column(Integer, nullable=False)  # 分块索引
     embedding = Column(JSON, nullable=True)  # 向量嵌入
     chunk_metadata = Column(JSON, nullable=True)  # 元数据
+    # 新增：领域与分割策略标注/摘要关联
+    domain = Column(String(100), nullable=True)  # 内容领域（如：技术、小说、财经、法律等）
+    domain_confidence = Column(Float, default=0.0)  # 领域识别置信度
+    chunk_strategy = Column(String(50), nullable=True)  # 分割策略：hierarchical/semantic/sentence/fixed/llm
+    strategy_variant = Column(String(50), nullable=True)  # 策略变体/配置（可选，如chunk_size_500_overlap_50）
+    is_summary = Column(Boolean, default=False)  # 是否为摘要分片
+    summary_parent_chunk_id = Column(Integer, ForeignKey("document_chunks.id"), nullable=True)  # 摘要所对应的原始分片（或章节代表分片）
+    section_title = Column(String(500), nullable=True)  # 如果能识别章节/标题，存储标题
+    chunk_type = Column(String(50), default="原文")  # 分片类型：原文/LLM整理/摘要/其他
+    source_query = Column(String(1000), nullable=True)  # 如果是LLM整理结果，记录原始查询
+    parent_chunk_ids = Column(JSON, nullable=True)  # 如果是LLM整理结果，记录来源分片ID列表
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # 关联关系
@@ -617,6 +628,16 @@ class DocumentChunkResponse(BaseModel):
     chunk_index: int
     embedding: Optional[List[float]] = None
     chunk_metadata: Optional[Dict[str, Any]] = None
+    domain: Optional[str] = None
+    domain_confidence: Optional[float] = None
+    chunk_strategy: Optional[str] = None
+    strategy_variant: Optional[str] = None
+    is_summary: Optional[bool] = None
+    summary_parent_chunk_id: Optional[int] = None
+    section_title: Optional[str] = None
+    chunk_type: Optional[str] = "原文"
+    source_query: Optional[str] = None
+    parent_chunk_ids: Optional[List[int]] = None
     created_at: datetime
     
     class Config:

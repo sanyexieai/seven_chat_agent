@@ -530,6 +530,27 @@ def run_knowledge_base_migrations():
             
             if not check_column_exists('document_chunks', 'is_active'):
                 missing_chunk_columns.append('is_active')
+            # 新增：领域/策略/摘要相关字段
+            if not check_column_exists('document_chunks', 'domain'):
+                missing_chunk_columns.append('domain')
+            if not check_column_exists('document_chunks', 'domain_confidence'):
+                missing_chunk_columns.append('domain_confidence')
+            if not check_column_exists('document_chunks', 'chunk_strategy'):
+                missing_chunk_columns.append('chunk_strategy')
+            if not check_column_exists('document_chunks', 'strategy_variant'):
+                missing_chunk_columns.append('strategy_variant')
+            if not check_column_exists('document_chunks', 'is_summary'):
+                missing_chunk_columns.append('is_summary')
+            if not check_column_exists('document_chunks', 'summary_parent_chunk_id'):
+                missing_chunk_columns.append('summary_parent_chunk_id')
+            if not check_column_exists('document_chunks', 'section_title'):
+                missing_chunk_columns.append('section_title')
+            if not check_column_exists('document_chunks', 'chunk_type'):
+                missing_chunk_columns.append('chunk_type')
+            if not check_column_exists('document_chunks', 'source_query'):
+                missing_chunk_columns.append('source_query')
+            if not check_column_exists('document_chunks', 'parent_chunk_ids'):
+                missing_chunk_columns.append('parent_chunk_ids')
             
             if missing_chunk_columns:
                 logger.info(f"发现缺失字段: {missing_chunk_columns}")
@@ -552,6 +573,36 @@ def run_knowledge_base_migrations():
                     elif column == 'is_active':
                         conn.execute(text("ALTER TABLE document_chunks ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
                         logger.info("添加 is_active 字段")
+                    elif column == 'domain':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN domain VARCHAR(100);"))
+                        logger.info("添加 domain 字段")
+                    elif column == 'domain_confidence':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN domain_confidence FLOAT DEFAULT 0;"))
+                        logger.info("添加 domain_confidence 字段")
+                    elif column == 'chunk_strategy':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN chunk_strategy VARCHAR(50);"))
+                        logger.info("添加 chunk_strategy 字段")
+                    elif column == 'strategy_variant':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN strategy_variant VARCHAR(50);"))
+                        logger.info("添加 strategy_variant 字段")
+                    elif column == 'is_summary':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN is_summary BOOLEAN DEFAULT 0;"))
+                        logger.info("添加 is_summary 字段")
+                    elif column == 'summary_parent_chunk_id':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN summary_parent_chunk_id INTEGER REFERENCES document_chunks(id);"))
+                        logger.info("添加 summary_parent_chunk_id 字段")
+                    elif column == 'section_title':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_title VARCHAR(500);"))
+                        logger.info("添加 section_title 字段")
+                    elif column == 'chunk_type':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN chunk_type VARCHAR(50) DEFAULT '原文';"))
+                        logger.info("添加 chunk_type 字段")
+                    elif column == 'source_query':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN source_query VARCHAR(1000);"))
+                        logger.info("添加 source_query 字段")
+                    elif column == 'parent_chunk_ids':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN parent_chunk_ids JSON;"))
+                        logger.info("添加 parent_chunk_ids 字段")
                 
                 logger.info("document_chunks表迁移完成")
             else:

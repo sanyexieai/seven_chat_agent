@@ -33,6 +33,9 @@ KNOWLEDGE_GRAPH_ENABLED = os.getenv("KNOWLEDGE_GRAPH_ENABLED", "false").lower() 
 CHUNK_STRATEGY = os.getenv("CHUNK_STRATEGY", "hierarchical")  # hierarchical, semantic, sentence, fixed
 USE_LLM_MERGE = os.getenv("USE_LLM_MERGE", "false").lower() == "true"
 MULTI_HOP_MAX_HOPS = int(os.getenv("MULTI_HOP_MAX_HOPS", "2"))  # 多跳查询最大跳数
+DOMAIN_CLASSIFY_ENABLED = os.getenv("DOMAIN_CLASSIFY_ENABLED", "true").lower() == "true"
+SUMMARY_CHUNKS_ENABLED = os.getenv("SUMMARY_CHUNKS_ENABLED", "true").lower() == "true"
+LLM_QUERY_DECOMPOSE_ENABLED = os.getenv("LLM_QUERY_DECOMPOSE_ENABLED", "true").lower() == "true"
 
 class KnowledgeBaseService:
     """知识库服务"""
@@ -301,11 +304,36 @@ class KnowledgeBaseService:
             processed_query_info = self.query_processor.process_query(query, user_id)
             final_query = processed_query_info["rewritten_query"]
             
+            # 查询前可选：用LLM拆解为子问题/关键词（增强检索召回）
+            decomposed_terms: List[str] = []
+            if LLM_QUERY_DECOMPOSE_ENABLED:
+                try:
+                    decomposed_terms = self._decompose_query_terms(final_query)
+                except Exception as e:
+                    logger.warning(f"查询拆解失败: {str(e)}")
+            
             # 获取查询的向量嵌入
             query_embedding = self.embedding_service.get_embedding(final_query)
             
-            # 从数据库搜索相似分块
+            # 从数据库搜索相似分块（主查询 + 子查询合并去重）
             search_results = self._search_chunks_from_db(db, kb_id, query_embedding, top_k=max(RERANKER_AFTER_TOP_N, effective_max))
+            if decomposed_terms:
+                for term in decomposed_terms[:3]:
+                    try:
+                        emb = self.embedding_service.get_embedding(term)
+                        sub_results = self._search_chunks_from_db(db, kb_id, emb, top_k=RERANKER_AFTER_TOP_N)
+                        search_results.extend(sub_results)
+                    except Exception as e:
+                        logger.warning(f"子查询检索失败: {str(e)}")
+                # 按chunk_id去重
+                dedup: Dict[Any, Dict[str, Any]] = {}
+                for r in search_results:
+                    cid = r.get('chunk_id')
+                    if cid is None:
+                        continue
+                    if cid not in dedup or r.get('similarity', 0.0) > dedup[cid].get('similarity', 0.0):
+                        dedup[cid] = r
+                search_results = list(dedup.values())
             
             # 如果启用了知识图谱，同时搜索相关三元组
             graph_results = []
@@ -382,6 +410,7 @@ class KnowledgeBaseService:
                     "total_chunks": len(search_results),
                     "initial_considered": len(initial_top_n),
                     "final_selected": len(final_sources),
+                    "decomposed_terms": decomposed_terms,
                     "reranker_enabled": RERANKER_ENABLED_ENV,
                     "reranker_after_top_n": RERANKER_AFTER_TOP_N,
                     "reranker_top_k": RERANKER_TOP_K,
@@ -446,6 +475,7 @@ class KnowledgeBaseService:
             # 准备批量处理数据
             chunk_contents = []
             chunk_metadata_list = []
+            strategy_variant = f"cs_{self.text_processor.chunk_size}_ov_{self.text_processor.overlap}"
             
             for i, chunk_content in enumerate(chunks):
                 chunk_metadata = {
@@ -476,6 +506,7 @@ class KnowledgeBaseService:
             # 向量数据直接存储在数据库中，不需要额外的向量存储
             
             # 创建数据库记录
+            created_chunks: List[DocumentChunk] = []
             for i, (chunk_content, embedding, metadata) in enumerate(zip(chunk_contents, embeddings, chunk_metadata_list)):
                 try:
                     chunk = DocumentChunk(
@@ -484,9 +515,12 @@ class KnowledgeBaseService:
                         chunk_index=i,
                         content=chunk_content,
                         embedding=embedding,
-                        chunk_metadata=metadata
+                        chunk_metadata=metadata,
+                        chunk_strategy=CHUNK_STRATEGY,
+                        strategy_variant=strategy_variant
                     )
                     db.add(chunk)
+                    created_chunks.append(chunk)
                     logger.info(f"第{i+1}个分块创建成功")
                     
                 except Exception as e:
@@ -505,6 +539,48 @@ class KnowledgeBaseService:
             # 如果启用了三元组提取，更新chunk_id关联
             if EXTRACT_TRIPLES_ENABLED:
                 self._update_triple_chunk_ids(db, doc.id)
+
+            # 文档级别领域识别（随机抽样分片）
+            if DOMAIN_CLASSIFY_ENABLED and created_chunks:
+                try:
+                    sample_size = min(5, len(created_chunks))
+                    import random
+                    samples = random.sample(created_chunks, sample_size)
+                    sample_text = "\n\n".join([c.content[:500] for c in samples])
+                    domain_label, domain_conf = self._classify_domain_via_llm(sample_text)
+                    # 写回所有分片的领域信息
+                    for c in created_chunks:
+                        c.domain = domain_label
+                        c.domain_confidence = domain_conf
+                    db.commit()
+                    logger.info(f"领域识别: {domain_label}({domain_conf:.2f}) 应用于 {len(created_chunks)} 个分片")
+                except Exception as e:
+                    logger.warning(f"领域识别失败: {str(e)}")
+
+            # 为可识别章节/长内容生成摘要分片
+            if SUMMARY_CHUNKS_ENABLED and created_chunks:
+                try:
+                    for c in created_chunks:
+                        # 简单启发：长分片或包含章节提示词时生成摘要
+                        if len(c.content) >= max(600, self.text_processor.chunk_size) or re.search(r"^第[一二三四五六七八九十\d]+[章节回]", c.content.strip()):
+                            summary = self._summarize_chunk_via_llm(c.content)
+                            if summary and len(summary) > 30:
+                                summary_chunk = DocumentChunk(
+                                    knowledge_base_id=doc.knowledge_base_id,
+                                    document_id=doc.id,
+                                    chunk_index=c.chunk_index,  # 与原分片同索引分组
+                                    content=summary,
+                                    embedding=None,
+                                    chunk_metadata={"summary_of": c.id},
+                                    chunk_strategy=CHUNK_STRATEGY,
+                                    strategy_variant=strategy_variant,
+                                    is_summary=True,
+                                    summary_parent_chunk_id=c.id
+                                )
+                                db.add(summary_chunk)
+                    db.commit()
+                except Exception as e:
+                    logger.warning(f"摘要分片生成失败: {str(e)}")
             
             db.commit()
             
@@ -516,6 +592,266 @@ class KnowledgeBaseService:
             doc.document_metadata = doc.document_metadata or {}
             doc.document_metadata["error"] = str(e)
             db.commit()
+    
+    def _classify_domain_via_llm(self, text: str) -> tuple[str, float]:
+        """使用LLM对文本进行领域分类，返回(领域, 置信度0-1)。"""
+        try:
+            from utils.llm_helper import get_llm_helper
+            import asyncio
+            import concurrent.futures
+            import re
+            
+            # 更具体的领域分类
+            categories = [
+                "技术/计算机", "小说/文学", "财经/商业", "法律/政策", "医学/健康", "教育/学术",
+                "历史/文化", "新闻/时政", "旅游/地理", "体育/运动", "艺术/娱乐", "其他"
+            ]
+            
+            # 改进的提示词
+            prompt = f"""请分析以下文本内容，判断其主要属于哪个领域。
+
+文本内容：
+{text[:1500]}
+
+可选领域：{', '.join(categories)}
+
+请按以下格式回答：
+领域：具体领域名称
+置信度：0.0-1.0之间的数字
+
+分析要点：
+- 技术/计算机：编程、软件、硬件、AI、算法等
+- 小说/文学：故事、小说、诗歌、文学创作等
+- 财经/商业：经济、金融、商业、投资等
+- 法律/政策：法律法规、政策文件、法律案例等
+- 医学/健康：医疗、健康、疾病、药物等
+- 教育/学术：教学、研究、学术论文、教育等
+- 历史/文化：历史事件、文化传统、考古等
+- 新闻/时政：新闻报道、时事政治、社会事件等
+- 旅游/地理：旅游、地理、风景、城市等
+- 体育/运动：体育赛事、运动、健身等
+- 艺术/娱乐：音乐、绘画、电影、娱乐等"""
+
+            def run_async():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    llm = get_llm_helper()
+                    messages = [
+                        {"role": "system", "content": "你是一个专业的文本领域分类专家，能够准确识别文本内容的主要领域。"},
+                        {"role": "user", "content": prompt}
+                    ]
+                    return loop.run_until_complete(llm.call(messages, max_tokens=200, temperature=0.1))
+                finally:
+                    loop.close()
+
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                result = ex.submit(run_async).result()
+            
+            # 改进的解析逻辑
+            result_text = str(result).strip()
+            logger.info(f"LLM分类结果: {result_text}")
+            
+            # 提取领域
+            domain_match = re.search(r'领域[：:]\s*([^\n\r]+)', result_text)
+            if domain_match:
+                domain = domain_match.group(1).strip()
+                # 验证领域是否在预定义列表中
+                if domain not in categories:
+                    # 尝试模糊匹配
+                    for cat in categories:
+                        if cat in domain or domain in cat:
+                            domain = cat
+                            break
+                    else:
+                        domain = "其他"
+            else:
+                domain = "其他"
+            
+            # 提取置信度
+            conf_match = re.search(r'置信度[：:]\s*([0-9.]+)', result_text)
+            if conf_match:
+                try:
+                    conf = float(conf_match.group(1))
+                except ValueError:
+                    conf = 0.6
+            else:
+                conf = 0.6
+            
+            # 确保置信度在合理范围内
+            conf = max(0.0, min(conf, 1.0))
+            
+            logger.info(f"解析结果: 领域={domain}, 置信度={conf}")
+            return domain, conf
+            
+        except Exception as e:
+            logger.warning(f"LLM领域分类失败: {str(e)}，使用关键词分类")
+            return self._classify_domain_by_keywords(text)
+    
+    def _classify_domain_by_keywords(self, text: str) -> tuple[str, float]:
+        """基于关键词的领域分类（LLM不可用时的备用方案）"""
+        import re
+        
+        # 扩展的关键词映射，包含更多常见词汇
+        keyword_mapping = {
+            "技术/计算机": [
+                "人工智能", "AI", "机器学习", "深度学习", "算法", "编程", "软件", "硬件", 
+                "计算机", "网络", "数据", "代码", "程序", "系统", "技术", "开发", "工程师",
+                "神经网络", "CNN", "RNN", "Python", "Java", "C++", "数据库", "API", "智能",
+                "自动化", "数字化", "云计算", "大数据", "物联网", "区块链", "虚拟现实", "VR",
+                "增强现实", "AR", "机器人", "芯片", "处理器", "内存", "存储", "服务器", "客户端"
+            ],
+            "小说/文学": [
+                "第一章", "第二章", "第三章", "第四章", "第五章", "故事", "小说", "诗歌", "文学", 
+                "主人公", "情节", "角色", "作者", "作品", "创作", "文学", "艺术", "想象", "虚构", 
+                "人物", "主角", "配角", "情节", "故事", "章节", "段落", "描写", "叙述", "对话",
+                "情感", "爱情", "友情", "亲情", "冒险", "悬疑", "科幻", "奇幻", "历史", "传记"
+            ],
+            "财经/商业": [
+                "公司", "企业", "收入", "利润", "投资", "股票", "市场", "经济", "金融", "商业",
+                "财务", "资金", "成本", "收益", "增长", "业绩", "财报", "股价", "市值", "银行",
+                "贷款", "信贷", "保险", "基金", "债券", "期货", "外汇", "汇率", "通胀", "通缩",
+                "GDP", "CPI", "PPI", "就业", "失业", "工资", "薪酬", "福利", "税收", "财政"
+            ],
+            "法律/政策": [
+                "法律", "法规", "政策", "条例", "规定", "条款", "法院", "判决", "律师", "案件",
+                "违法", "合法", "权利", "义务", "责任", "政府", "部门", "管理", "宪法", "刑法",
+                "民法", "商法", "劳动法", "合同法", "知识产权", "专利", "商标", "版权", "诉讼",
+                "仲裁", "调解", "审判", "执行", "监管", "执法", "立法", "司法", "行政"
+            ],
+            "医学/健康": [
+                "疾病", "健康", "医疗", "医生", "患者", "治疗", "药物", "症状", "诊断", "医院",
+                "血压", "血糖", "手术", "康复", "预防", "保健", "医学", "临床", "病理", "生理",
+                "心理", "精神", "神经", "心血管", "呼吸", "消化", "泌尿", "生殖", "内分泌",
+                "免疫", "感染", "病毒", "细菌", "炎症", "肿瘤", "癌症", "化疗", "放疗", "手术"
+            ],
+            "教育/学术": [
+                "研究", "学术", "教育", "学习", "教学", "学生", "老师", "学校", "大学", "论文",
+                "实验", "数据", "分析", "方法", "理论", "知识", "课程", "考试", "教材", "课本",
+                "课堂", "讲座", "研讨会", "会议", "期刊", "发表", "引用", "参考文献", "学位",
+                "硕士", "博士", "教授", "副教授", "讲师", "助教", "导师", "指导", "培养"
+            ],
+            "历史/文化": [
+                "历史", "古代", "传统", "文化", "文明", "朝代", "皇帝", "战争", "事件", "考古",
+                "文物", "古迹", "传说", "神话", "民俗", "节日", "春节", "中秋", "端午", "清明",
+                "重阳", "元宵", "七夕", "腊八", "习俗", "礼仪", "道德", "伦理", "哲学", "思想",
+                "宗教", "佛教", "道教", "基督教", "伊斯兰教", "寺庙", "教堂", "清真寺", "信仰"
+            ],
+            "新闻/时政": [
+                "新闻", "报道", "事件", "政治", "政府", "会议", "政策", "社会", "发展", "改革",
+                "领导人", "国家", "国际", "外交", "安全", "民生", "选举", "投票", "民主", "自由",
+                "平等", "公正", "法治", "人权", "环保", "可持续发展", "全球化", "区域合作",
+                "贸易", "投资", "合作", "竞争", "冲突", "和平", "稳定", "繁荣", "进步"
+            ],
+            "旅游/地理": [
+                "旅游", "景点", "风景", "城市", "地理", "地方", "旅行", "度假", "酒店", "交通",
+                "气候", "环境", "自然", "山水", "建筑", "文化", "名胜", "古迹", "公园", "博物馆",
+                "展览", "演出", "表演", "美食", "特产", "购物", "娱乐", "休闲", "度假村", "民宿",
+                "导游", "旅行社", "机票", "火车", "汽车", "轮船", "飞机", "高铁", "地铁"
+            ],
+            "体育/运动": [
+                "体育", "运动", "比赛", "运动员", "训练", "健身", "足球", "篮球", "游泳", "跑步",
+                "奥运会", "冠军", "记录", "竞技", "团队", "个人", "集体", "技巧", "力量", "速度",
+                "耐力", "柔韧", "协调", "平衡", "反应", "战术", "策略", "教练", "裁判", "观众",
+                "球迷", "粉丝", "支持", "鼓励", "加油", "胜利", "失败", "成功", "挑战", "突破"
+            ],
+            "艺术/娱乐": [
+                "艺术", "音乐", "绘画", "电影", "娱乐", "表演", "创作", "作品", "艺术家", "文化",
+                "娱乐", "游戏", "节目", "演出", "展览", "音乐会", "演唱会", "戏剧", "话剧", "歌剧",
+                "芭蕾", "舞蹈", "雕塑", "摄影", "设计", "时尚", "服装", "美容", "化妆", "发型",
+                "美食", "烹饪", "料理", "餐厅", "咖啡", "茶", "酒", "饮料", "甜点", "零食"
+            ]
+        }
+        
+        text_lower = text.lower()
+        scores = {}
+        matched_details = {}
+        
+        for domain, keywords in keyword_mapping.items():
+            score = 0
+            matched_keywords = []
+            for keyword in keywords:
+                if keyword.lower() in text_lower:
+                    score += 1
+                    matched_keywords.append(keyword)
+            scores[domain] = score
+            matched_details[domain] = matched_keywords
+        
+        # 找到得分最高的领域
+        if scores:
+            max_score = max(scores.values())
+            if max_score > 0:
+                best_domain = max(scores, key=scores.get)
+                # 改进置信度计算：基于匹配关键词数量和文本长度
+                confidence = min(0.9, max(0.3, max_score / max(3.0, len(text) / 100)))
+                logger.info(f"关键词分类: {best_domain}, 匹配关键词: {matched_details[best_domain]}, 置信度: {confidence:.2f}")
+                return best_domain, confidence
+        
+        logger.info(f"关键词分类: 其他, 文本长度: {len(text)}")
+        return "其他", 0.3
+
+    def _summarize_chunk_via_llm(self, text: str) -> str:
+        """使用LLM对长分片/章节生成摘要。"""
+        try:
+            from utils.llm_helper import get_llm_helper
+            import asyncio
+            import concurrent.futures
+            prompt = (
+                "请对以下文本生成简洁的中文摘要（150-300字），保留关键人物/实体/结论，避免细枝末节：\n\n" + text[:4000]
+            )
+
+            def run_async():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    llm = get_llm_helper()
+                    messages = [
+                        {"role": "system", "content": "你是一个专业的中文摘要助手。"},
+                        {"role": "user", "content": prompt}
+                    ]
+                    return loop.run_until_complete(llm.call(messages, max_tokens=300, temperature=0.2))
+                finally:
+                    loop.close()
+
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                result = ex.submit(run_async).result()
+            return str(result).strip()
+        except Exception as e:
+            logger.warning(f"LLM摘要失败: {str(e)}")
+            return ""
+
+    def _decompose_query_terms(self, query: str) -> List[str]:
+        """使用LLM将查询拆解为3-5个关键词或子问题，返回词列表。"""
+        try:
+            from utils.llm_helper import get_llm_helper
+            import asyncio
+            import concurrent.futures
+            prompt = (
+                "请将以下问题拆解为3-5个中文关键词或子问题，每行一个，不要编号：\n\n" + query
+            )
+
+            def run_async():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    llm = get_llm_helper()
+                    messages = [
+                        {"role": "system", "content": "你是检索优化助手，负责将查询拆解为关键词或子问题以提升召回。"},
+                        {"role": "user", "content": prompt}
+                    ]
+                    return loop.run_until_complete(llm.call(messages, max_tokens=128, temperature=0.0))
+                finally:
+                    loop.close()
+
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                result = ex.submit(run_async).result()
+            lines = [l.strip('- ').strip() for l in str(result).splitlines() if l.strip()]
+            # 过滤过短内容
+            lines = [l for l in lines if len(l) >= 2]
+            return lines[:5]
+        except Exception as e:
+            logger.warning(f"LLM查询拆解失败: {str(e)}")
+            return []
 
     def _extract_triples_sync(self, text: str) -> List[List[str]]:
         """使用LLM从文本中抽取(主语, 关系, 宾语)三元组，返回列表。

@@ -566,8 +566,10 @@ const ChatPage: React.FC = () => {
           navigate(`/chat/${latestSession.id}`);
         } else {
           // 没有现有会话，创建临时会话
+          const tempId = `temp_${Date.now()}`;
           const tempSession = {
-            id: `temp_${Date.now()}`,
+            id: tempId,
+            session_id: tempId, // 添加session_id，使用与id相同的值
             title: '新对话',
             isTemp: true
           };
@@ -578,8 +580,10 @@ const ChatPage: React.FC = () => {
         }
       } else {
         // API调用失败，创建临时会话
+        const tempId = `temp_${Date.now()}`;
         const tempSession = {
-          id: `temp_${Date.now()}`,
+          id: tempId,
+          session_id: tempId, // 添加session_id，使用与id相同的值
           title: '新对话',
           isTemp: true
         };
@@ -591,8 +595,10 @@ const ChatPage: React.FC = () => {
     } catch (error) {
       console.error('处理根路径访问失败:', error);
       // 出错时创建临时会话
+      const tempId = `temp_${Date.now()}`;
       const tempSession = {
-        id: `temp_${Date.now()}`,
+        id: tempId,
+        session_id: tempId, // 添加session_id，使用与id相同的值
         title: '新对话',
         isTemp: true
       };
@@ -978,7 +984,17 @@ const ChatPage: React.FC = () => {
     }
 
     // 发送消息到智能体
-    if (currentSession?.session_id) {
+    // 如果没有session_id，创建一个临时的session_id
+    const sessionId = currentSession?.session_id || `temp_${Date.now()}`;
+    if (currentSession && !currentSession.session_id) {
+      // 更新currentSession，添加session_id
+      setCurrentSession({
+        ...currentSession,
+        session_id: sessionId
+      });
+    }
+    
+    if (currentSession) {
       // 创建智能体消息占位符 - 使用更唯一的ID
       const agentMessageId = `agent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const agentMessage: Message = {
@@ -1022,7 +1038,7 @@ const ChatPage: React.FC = () => {
             body: JSON.stringify({
               user_id: 'default_user',
               message: inputValue,
-              session_id: currentSession.session_id,
+              session_id: sessionId,  // 使用处理后的session_id
               agent_name: agentName,  // 使用name字段，不是display_name
               context: {}
             }),
@@ -1342,6 +1358,27 @@ const ChatPage: React.FC = () => {
               : msg
           ));
         }
+      } else {
+        // 如果没有currentSession，创建一个临时会话并重试
+        console.warn('没有当前会话，创建临时会话');
+        const tempId = `temp_${Date.now()}`;
+        const tempSession = {
+          id: tempId,
+          session_id: tempId,
+          title: '新对话',
+          isTemp: true
+        };
+        setCurrentSession(tempSession);
+        // 递归调用handleSend，但需要防止无限递归
+        // 这里我们直接显示错误消息
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          content: '会话未初始化，请刷新页面后重试。',
+          type: 'agent',
+          timestamp: new Date(),
+          agentName: '系统'
+        };
+        setMessages(prev => [...prev, errorMessage]);
       }
     } catch (error) {
       console.error('发送消息失败:', error);

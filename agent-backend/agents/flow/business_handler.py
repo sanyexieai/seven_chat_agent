@@ -66,9 +66,16 @@ class FlowBusinessHandler:
 					None
 				)
 				if not existing_node:
+					# 从metadata中获取node_type，优先使用node_implementation，如果没有则使用node_category
+					node_type = chunk.metadata.get('node_type') or chunk.metadata.get('node_implementation') or chunk.metadata.get('node_category')
+					if not node_type:
+						# 如果都没有，记录警告并使用默认值
+						logger.warning(f"节点 {node_id} 的metadata中缺少node_type/node_implementation/node_category，使用默认值'unknown'")
+						node_type = 'unknown'
+					
 					self.collected_nodes.append({
 						'node_id': node_id,
-						'node_type': chunk.metadata.get('node_type'),
+						'node_type': node_type,
 						'node_name': chunk.metadata.get('node_name'),
 						'node_label': chunk.metadata.get('node_label'),
 						'node_metadata': chunk.metadata

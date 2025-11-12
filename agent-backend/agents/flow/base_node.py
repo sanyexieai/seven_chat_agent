@@ -574,22 +574,28 @@ class BaseFlowNode(ABC):
 		node_config_dict = node_data.get('config', {})
 		position = node_config.get('position', {'x': 0, 'y': 0})
 		
-		# 兼容旧格式：如果只有 type，则作为 category 和 implementation
-		node_type_str = node_config.get('type')
-		if node_type_str:
-			# 旧格式：type 直接作为 implementation
-			implementation = node_config.get('implementation', node_type_str)
-			# 根据 type 推断 category
-			category = cls._infer_category_from_type(node_type_str)
-		else:
-			# 新格式：使用 category 和 implementation
-			category_str = node_config.get('category', NodeCategory.PROCESSOR.value)
+		# 优先使用新格式（category 和 implementation）
+		# 如果配置中有 category，优先使用它
+		category_str = node_config.get('category')
+		if category_str:
 			try:
 				category = NodeCategory(category_str)
 			except ValueError:
 				raise ValueError(f"未知的节点类别: {category_str}")
-			
+			# implementation 从配置中获取，如果没有则使用 category
 			implementation = node_config.get('implementation', category_str)
+		else:
+			# 兼容旧格式：如果只有 type，则作为 category 和 implementation
+			node_type_str = node_config.get('type')
+			if node_type_str:
+				# 旧格式：type 直接作为 implementation
+				implementation = node_config.get('implementation', node_type_str)
+				# 根据 type 推断 category
+				category = cls._infer_category_from_type(node_type_str)
+			else:
+				# 如果都没有，默认使用 PROCESSOR
+				category = NodeCategory.PROCESSOR
+				implementation = node_config.get('implementation', 'llm')
 		
 		# 确保 label 被保存到 config 中
 		if node_name:

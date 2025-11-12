@@ -1083,33 +1083,88 @@ const ChatPage: React.FC = () => {
                   
 
                   
-                  if (data.type === 'node_start' && data.content) {
-                    // 收到节点开始标识，更新当前消息的metadata中的当前节点信息
-                    
+                  if (data.type === 'node_start' && data.metadata?.node_id) {
+                    // 收到节点开始事件，创建或更新节点信息
                     setMessages(prev => {
-                      const updated = prev.map(msg => 
-                        msg.id === agentMessageId 
-                          ? { 
-                              ...msg, 
-                              metadata: {
-                                ...msg.metadata,
-                                current_node: {
-                                  node_id: data.metadata?.node_id,
-                                  node_type: data.metadata?.node_type,
-                                  node_name: data.metadata?.node_name,
-                                  node_label: data.metadata?.node_label
-                                }
-                              }
+                      const updated = prev.map(msg => {
+                        if (msg.id === agentMessageId) {
+                          const nodeId = data.metadata.node_id;
+                          const existingNodeIndex = msg.nodes?.findIndex(n => n.node_id === nodeId) ?? -1;
+                          
+                          if (existingNodeIndex === -1) {
+                            // 创建新节点
+                            // 统一节点类型：将 router_condition, router_llm 等统一为 router
+                            let nodeType = data.metadata.node_type || data.metadata.node_implementation || data.metadata.node_category || 'unknown';
+                            if (nodeType.startsWith('router') || nodeType === 'router') {
+                              nodeType = 'router';
                             }
-                          : msg
-                      );
-                      
+                            
+                            const newNode = {
+                              node_id: nodeId,
+                              node_type: nodeType,
+                              node_name: data.metadata.node_name || nodeId,
+                              node_label: data.metadata.node_label || data.metadata.node_name || nodeId,
+                              content: '',
+                              chunk_count: 0,
+                              chunk_list: []
+                            };
+                            return {
+                              ...msg,
+                              nodes: [...(msg.nodes || []), newNode]
+                            };
+                          }
+                        }
+                        return msg;
+                      });
                       return updated;
                     });
                     
                     // 更新流程图状态 - 节点开始运行
                     if (data.metadata?.node_id) {
                       updateFlowExecution(data.metadata.node_id, 'running');
+                    }
+                    
+                  } else if (data.type === 'node_complete' && data.metadata?.node_id) {
+                    // 收到节点完成事件，更新节点的最终输出
+                    // 重要：如果节点已经有内容（通过 content 事件累积的），完全保留它，不要用 output 覆盖
+                    // 因为 output 可能是错误的（比如都是全局的 last_output）
+                    setMessages(prev => {
+                      const updated = prev.map(msg => {
+                        if (msg.id === agentMessageId) {
+                          const nodeId = data.metadata.node_id;
+                          const nodeIndex = msg.nodes?.findIndex(n => n.node_id === nodeId) ?? -1;
+                          
+                          if (nodeIndex !== -1 && msg.nodes) {
+                            const updatedNodes = [...msg.nodes];
+                            const currentNode = updatedNodes[nodeIndex];
+                            const existingContent = currentNode.content || '';
+                            
+                            // 如果节点已经有内容，完全保留它，不要用 output 覆盖
+                            // 只有在节点完全没有内容时，才使用 output 作为后备
+                            // 这样可以避免用错误的 output 覆盖正确的累积内容
+                            let nodeOutput = existingContent;
+                            if (!nodeOutput) {
+                              // 节点没有内容，使用 output 作为后备
+                              nodeOutput = data.metadata.output || data.content || '';
+                            }
+                            // 如果 existingContent 存在，完全忽略 output，保持原有内容
+                            
+                            updatedNodes[nodeIndex] = {
+                              ...currentNode,
+                              content: nodeOutput, // 保留已有内容或使用后备值
+                              chunk_list: currentNode.chunk_list || []
+                            };
+                            return { ...msg, nodes: updatedNodes };
+                          }
+                        }
+                        return msg;
+                      });
+                      return updated;
+                    });
+                    
+                    // 更新流程图状态 - 节点完成
+                    if (data.metadata?.node_id) {
+                      updateFlowExecution(data.metadata.node_id, 'completed');
                     }
                     
                   } else if (data.type === 'tool_result' && data.content) {
@@ -1134,15 +1189,39 @@ const ChatPage: React.FC = () => {
                     // 最终响应：直接替换内容，不累加
                     fullContent = data.content; // 直接替换，不累加
                     
-                    // 实时更新消息内容
-                    setMessages(prev => {
-                      const updated = prev.map(msg => 
-                        msg.id === agentMessageId 
-                          ? { ...msg, content: fullContent }
-                          : msg
-                      );
-                      return updated;
-                    });
+                    // 如果有节点信息，将最终内容添加到对应节点（通常是结束节点）
+                    if (data.metadata?.node_id) {
+                      setMessages(prev => {
+                        const updated = prev.map(msg => {
+                          if (msg.id === agentMessageId) {
+                            const nodeId = data.metadata.node_id;
+                            const nodeIndex = msg.nodes?.findIndex(n => n.node_id === nodeId) ?? -1;
+                            
+                            if (nodeIndex !== -1 && msg.nodes) {
+                              // 更新对应节点的内容
+                              const updatedNodes = [...msg.nodes];
+                              updatedNodes[nodeIndex] = {
+                                ...updatedNodes[nodeIndex],
+                                content: data.content
+                              };
+                              return { ...msg, nodes: updatedNodes, content: fullContent };
+                            }
+                          }
+                          return msg;
+                        });
+                        return updated;
+                      });
+                    } else {
+                      // 没有节点信息，只更新整体消息内容
+                      setMessages(prev => {
+                        const updated = prev.map(msg => 
+                          msg.id === agentMessageId 
+                            ? { ...msg, content: fullContent }
+                            : msg
+                        );
+                        return updated;
+                      });
+                    }
                     
                     // 更新流程图状态 - 所有节点完成
                     setFlowData(prev => ({
@@ -1164,30 +1243,31 @@ const ChatPage: React.FC = () => {
                       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
                     
-                  } else if (data.content) {
-                    // 直接使用content字段，支持多种数据格式
+                  } else if (data.type === 'content' && data.content) {
+                    // 内容块：需要关联到对应的节点
                     fullContent += data.content;
                     
-                    // 检查是否包含节点信息，如果有就记录
-                    if (data.metadata?.node_id && data.metadata?.node_name) {
-                      
-                      // 直接更新messages数组中的节点信息
+                    // 如果有节点信息，将内容添加到对应节点
+                    if (data.metadata?.node_id) {
                       setMessages(prev => {
                         const updated = prev.map(msg => {
                           if (msg.id === agentMessageId) {
-                            // 找到目标消息，更新其节点信息
-                            const existingNodeIndex = msg.nodes?.findIndex(node => node.node_id === data.metadata.node_id) ?? -1;
+                            const nodeId = data.metadata.node_id;
+                            const nodeIndex = msg.nodes?.findIndex(n => n.node_id === nodeId) ?? -1;
                             
-                            if (existingNodeIndex !== -1) {
-                              // 节点已存在，添加新的片段
-                              const updatedNodes = [...(msg.nodes || [])];
-                              updatedNodes[existingNodeIndex] = {
-                                ...updatedNodes[existingNodeIndex],
-                                chunk_count: (updatedNodes[existingNodeIndex].chunk_count || 0) + 1,
+                            if (nodeIndex !== -1 && msg.nodes) {
+                              // 节点已存在，追加内容
+                              const updatedNodes = [...msg.nodes];
+                              const currentNode = updatedNodes[nodeIndex];
+                              const currentContent = currentNode.content || '';
+                              updatedNodes[nodeIndex] = {
+                                ...currentNode,
+                                content: currentContent + data.content,
+                                chunk_count: (currentNode.chunk_count || 0) + 1,
                                 chunk_list: [
-                                  ...(updatedNodes[existingNodeIndex].chunk_list || []),
+                                  ...(currentNode.chunk_list || []),
                                   {
-                                    chunk_id: data.chunk_id,
+                                    chunk_id: data.chunk_id || `chunk_${Date.now()}`,
                                     content: data.content,
                                     type: data.type
                                   }
@@ -1195,23 +1275,27 @@ const ChatPage: React.FC = () => {
                               };
                               return { ...msg, nodes: updatedNodes };
                             } else {
-                              // 节点不存在，创建新节点
-                              const newNodes = [
-                                ...(msg.nodes || []),
-                                {
-                                  node_id: data.metadata.node_id,
-                                  node_type: data.metadata.node_type,
-                                  node_name: data.metadata.node_name,
-                                  node_label: data.metadata.node_label,
-                                  chunk_count: 1,
-                                  chunk_list: [{
-                                    chunk_id: data.chunk_id,
-                                    content: data.content,
-                                    type: data.type
-                                  }]
-                                }
-                              ];
-                              return { ...msg, nodes: newNodes };
+                              // 节点不存在，创建新节点（可能node_start事件还没收到）
+                              // 统一节点类型：将 router_condition, router_llm 等统一为 router
+                              let nodeType = data.metadata.node_type || data.metadata.node_implementation || data.metadata.node_category || 'unknown';
+                              if (nodeType.startsWith('router') || nodeType === 'router') {
+                                nodeType = 'router';
+                              }
+                              
+                              const newNode = {
+                                node_id: nodeId,
+                                node_type: nodeType,
+                                node_name: data.metadata.node_name || nodeId,
+                                node_label: data.metadata.node_label || data.metadata.node_name || nodeId,
+                                content: data.content,
+                                chunk_count: 1,
+                                chunk_list: [{
+                                  chunk_id: data.chunk_id || `chunk_${Date.now()}`,
+                                  content: data.content,
+                                  type: data.type
+                                }]
+                              };
+                              return { ...msg, nodes: [...(msg.nodes || []), newNode] };
                             }
                           }
                           return msg;
@@ -1220,15 +1304,15 @@ const ChatPage: React.FC = () => {
                       });
                     }
                     
-                                          // 实时更新消息内容，显示流式效果
-                      setMessages(prev => {
-                        const updated = prev.map(msg => 
-                          msg.id === agentMessageId 
-                            ? { ...msg, content: fullContent, isStreaming: true }
-                            : msg
-                        );
-                        return updated;
-                      });
+                    // 实时更新消息内容，显示流式效果（用于没有节点信息的情况）
+                    setMessages(prev => {
+                      const updated = prev.map(msg => 
+                        msg.id === agentMessageId 
+                          ? { ...msg, content: fullContent, isStreaming: true }
+                          : msg
+                      );
+                      return updated;
+                    });
                     
                     // 自动滚动到底部
                     if (messagesEndRef.current) {
@@ -1263,26 +1347,30 @@ const ChatPage: React.FC = () => {
                     
                   } else if (data.is_end || data.type === 'done' || data.done) {
                     // 流式响应完成，清除流式状态
-                    
-
+                    // 注意：不要覆盖节点的独立内容，每个节点应该保持自己的输出
                     
                     // 更新messages数组，确保流式完成后的消息能正确显示
                     setMessages(prev => {
                       const updated = prev.map(msg => {
                         if (msg.id === agentMessageId) {
-                          // 更新节点内容为最终完整内容
-                          // 如果已有节点，更新节点内容；如果没有节点，保持空数组
+                          // 保持节点的独立内容，不要用 fullContent 覆盖
+                          // fullContent 是所有内容块的累加，不是每个节点的输出
+                          // 每个节点的内容应该已经在 node_complete 事件中正确设置了
                           const updatedNodes = msg.nodes && msg.nodes.length > 0 
                             ? msg.nodes.map(node => ({
                                 ...node,
-                                content: fullContent
+                                // 保持节点原有的 content，不要覆盖
+                                // 如果节点没有 content，保持空字符串
+                                content: node.content || ''
                               }))
                             : [];
                           
                           return {
                             ...msg,
+                            // 使用 fullContent 作为整体消息内容（用于没有节点信息的情况）
                             content: fullContent,
-                            nodes: updatedNodes
+                            nodes: updatedNodes,
+                            isStreaming: false
                           };
                         }
                         return msg;
@@ -1498,8 +1586,9 @@ const ChatPage: React.FC = () => {
                             </div>
                                                         <div className="message-text">
                               {msg.nodes && msg.nodes.length > 0 ? (
+                                // 按节点执行顺序显示（保持添加顺序，因为node_start是按执行顺序发送的）
                                 msg.nodes.map((node: any, nodeIndex: number) => (
-                                  <div key={`node-${node.node_id}`} className="node-group">
+                                  <div key={`node-${node.node_id}-${nodeIndex}`} className="node-group" style={{ marginBottom: '16px' }}>
                                     {/* 节点标题 */}
                                     <div className="node-header" style={{ 
                                       padding: '8px 16px', 

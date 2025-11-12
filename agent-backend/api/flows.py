@@ -151,28 +151,113 @@ async def delete_flow(flow_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{flow_id}/test")
 async def test_flow(flow_id: int, test_data: Dict[str, Any], db: Session = Depends(get_db)):
-    """测试流程图"""
-    try:
-        flow = db.query(DBFlow).filter(DBFlow.id == flow_id, DBFlow.is_active == True).first()
-        if not flow:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="流程图不存在"
-            )
-        
-        # 这里可以调用流程图执行逻辑
-        logger.info(f"测试流程图: {flow.name}")
-        
-        return {
-            "message": "流程图测试成功",
-            "flow_name": flow.name,
-            "test_data": test_data
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"测试流程图失败: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"测试流程图失败: {str(e)}"
-        ) 
+	"""测试流程图"""
+	try:
+		flow = db.query(DBFlow).filter(DBFlow.id == flow_id, DBFlow.is_active == True).first()
+		if not flow:
+			raise HTTPException(
+				status_code=status.HTTP_404_NOT_FOUND,
+				detail="流程图不存在"
+			)
+		
+		# 这里可以调用流程图执行逻辑
+		logger.info(f"测试流程图: {flow.name}")
+		
+		return {
+			"message": "流程图测试成功",
+			"flow_name": flow.name,
+			"test_data": test_data
+		}
+	except HTTPException:
+		raise
+	except Exception as e:
+		logger.error(f"测试流程图失败: {str(e)}")
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail=f"测试流程图失败: {str(e)}"
+		)
+
+@router.get("/templates", response_model=List[FlowResponse])
+async def get_flow_templates(db: Session = Depends(get_db)):
+	"""获取所有预制节点（模板）"""
+	try:
+		# 预制节点标记为模板类型
+		templates = db.query(DBFlow).filter(
+			DBFlow.is_active == True,
+			DBFlow.flow_config['is_template'].astext == 'true'
+		).all()
+		logger.info(f"获取到 {len(templates)} 个预制节点")
+		return templates
+	except Exception as e:
+		logger.error(f"获取预制节点失败: {str(e)}")
+		# 如果查询失败，返回空列表
+		return []
+
+@router.post("/templates", response_model=FlowResponse)
+async def create_flow_template(template_data: Dict[str, Any], db: Session = Depends(get_db)):
+	"""创建预制节点（模板）
+	
+	请求体格式：
+	{
+		"name": "模板名称",
+		"display_name": "显示名称",
+		"description": "描述",
+		"flow_config": {
+			"nodes": [...],
+			"edges": [...],
+			"is_template": true,
+			"input_mapping": {...},
+			"output_mapping": {...}
+		}
+	}
+	"""
+	try:
+		name = template_data.get('name')
+		if not name:
+			raise HTTPException(
+				status_code=status.HTTP_400_BAD_REQUEST,
+				detail="模板名称不能为空"
+			)
+		
+		# 检查名称是否重复
+		existing = db.query(DBFlow).filter(
+			DBFlow.name == name,
+			DBFlow.is_active == True
+		).first()
+		
+		if existing:
+			raise HTTPException(
+				status_code=status.HTTP_400_BAD_REQUEST,
+				detail="模板名称已存在"
+			)
+		
+		# 确保flow_config中包含is_template标记
+		flow_config = template_data.get('flow_config', {})
+		if not isinstance(flow_config, dict):
+			flow_config = {}
+		flow_config['is_template'] = True
+		
+		# 创建新模板
+		db_template = DBFlow(
+			name=name,
+			display_name=template_data.get('display_name', name),
+			description=template_data.get('description', ''),
+			flow_config=flow_config,
+			is_active=True
+		)
+		
+		db.add(db_template)
+		db.commit()
+		db.refresh(db_template)
+		
+		logger.info(f"创建预制节点模板: {db_template.name}")
+		return db_template
+	except HTTPException:
+		raise
+	except Exception as e:
+		logger.error(f"创建预制节点模板失败: {str(e)}")
+		db.rollback()
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail=f"创建预制节点模板失败: {str(e)}"
+		)

@@ -24,7 +24,10 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
 }) => {
   // 根据节点类型选择图标和颜色
   const getNodeIcon = () => {
-    switch (nodeType) {
+    // 统一处理路由节点类型
+    const normalizedType = nodeType.startsWith('router') ? 'router' : nodeType;
+    
+    switch (normalizedType) {
       case 'llm':
         return <RobotOutlined />;
       case 'tool':
@@ -36,7 +39,12 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
       case 'agent':
         return <CodeOutlined />;
       case 'knowledgeBase':
+      case 'knowledge_base':
         return <div style={{ fontSize: '16px' }}>📚</div>;
+      case 'start':
+        return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
+      case 'end':
+        return <CheckCircleOutlined style={{ color: '#ff4d4f' }} />;
 
       default:
         return <RobotOutlined />;
@@ -44,7 +52,10 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
   };
 
   const getNodeColor = () => {
-    switch (nodeType) {
+    // 统一处理路由节点类型
+    const normalizedType = nodeType.startsWith('router') ? 'router' : nodeType;
+    
+    switch (normalizedType) {
       case 'llm':
         return 'blue';
       case 'tool':
@@ -56,7 +67,12 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
       case 'agent':
         return 'cyan';
       case 'knowledgeBase':
+      case 'knowledge_base':
         return 'orange';
+      case 'start':
+        return 'success';
+      case 'end':
+        return 'error';
 
       default:
         return 'default';
@@ -64,7 +80,10 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
   };
 
   const getNodeTypeLabel = () => {
-    switch (nodeType) {
+    // 统一处理路由节点类型
+    const normalizedType = nodeType.startsWith('router') ? 'router' : nodeType;
+    
+    switch (normalizedType) {
       case 'llm':
         return 'LLM';
       case 'tool':
@@ -76,7 +95,12 @@ const NodeInfoTag: React.FC<NodeInfoTagProps> = ({
       case 'agent':
         return '智能体';
       case 'knowledgeBase':
+      case 'knowledge_base':
         return '知识库';
+      case 'start':
+        return '开始';
+      case 'end':
+        return '结束';
 
       default:
         return nodeType;

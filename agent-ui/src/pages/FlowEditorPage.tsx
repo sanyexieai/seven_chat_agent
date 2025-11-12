@@ -349,14 +349,87 @@ const InputNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
-const OutputNode = ({ data, id }: { data: any; id: string }) => (
-  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#fff2e8', position: 'relative' }}>
+const StartNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '2px solid #52c41a', borderRadius: '8px', background: '#f6ffed', position: 'relative' }}>
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: '20px', color: '#52c41a' }}>▶</div>
+      <div style={{ fontWeight: 'bold', color: '#52c41a' }}>{data.label}</div>
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+    {!data.isFixed && (
+      <Button
+        type="text"
+        size="small"
+        danger
+        icon={<DeleteOutlined />}
+        style={{
+          position: 'absolute',
+          top: '-8px',
+          right: '-8px',
+          minWidth: '20px',
+          height: '20px',
+          padding: '0',
+          borderRadius: '50%',
+          background: '#fff',
+          border: '1px solid #ff4d4f',
+          zIndex: 10
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (data.onDelete) {
+            data.onDelete(id);
+          }
+        }}
+      />
+    )}
+  </div>
+);
+
+const EndNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '2px solid #ff4d4f', borderRadius: '8px', background: '#fff1f0', position: 'relative' }}>
     <Handle type="target" position={Position.Top} />
     <div style={{ textAlign: 'center' }}>
-      <ExportOutlined style={{ fontSize: '20px', color: '#fa541c' }} />
-      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
-      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
+      <div style={{ fontSize: '20px', color: '#ff4d4f' }}>■</div>
+      <div style={{ fontWeight: 'bold', color: '#ff4d4f' }}>{data.label}</div>
     </div>
+    {!data.isFixed && (
+      <Button
+        type="text"
+        size="small"
+        danger
+        icon={<DeleteOutlined />}
+        style={{
+          position: 'absolute',
+          top: '-8px',
+          right: '-8px',
+          minWidth: '20px',
+          height: '20px',
+          padding: '0',
+          borderRadius: '50%',
+          background: '#fff',
+          border: '1px solid #ff4d4f',
+          zIndex: 10
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (data.onDelete) {
+            data.onDelete(id);
+          }
+        }}
+      />
+    )}
+  </div>
+);
+
+const CompositeNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '2px solid #722ed1', borderRadius: '8px', background: '#f9f0ff', position: 'relative' }}>
+    <Handle type="target" position={Position.Top} />
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: '20px', color: '#722ed1' }}>📦</div>
+      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>复合节点</div>
+    </div>
+    <Handle type="source" position={Position.Bottom} />
     <Button
       type="text"
       size="small"
@@ -386,12 +459,15 @@ const OutputNode = ({ data, id }: { data: any; id: string }) => (
 
 // 将nodeTypes移到组件外部，避免每次渲染都重新创建
 const nodeTypes: NodeTypes = {
-  agent: AgentNode,
-  action: ActionNode,
+  start: StartNode,
+  end: EndNode,
   llm: LlmNode,
   tool: ToolNode,
-  
   router: RouterNode,
+  composite: CompositeNode,
+  // 兼容旧类型
+  agent: AgentNode,
+  action: ActionNode,
   knowledgeBase: KnowledgeBaseNode
 };
 
@@ -414,6 +490,7 @@ const FlowEditorPage: React.FC = () => {
   const [currentFlowId, setCurrentFlowId] = useState<number | null>(null);
   const [currentMode, setCurrentMode] = useState<'create' | 'edit'>('create');
   const [flows, setFlows] = useState<any[]>([]);
+  const [templates, setTemplates] = useState<any[]>([]); // 预制节点列表
   const [isStartNode, setIsStartNode] = useState(false);
   const [configModalVisible, setConfigModalVisible] = useState(false);
   const [importModalVisible, setImportModalVisible] = useState(false);
@@ -438,27 +515,133 @@ const FlowEditorPage: React.FC = () => {
 
   const [isEditingExistingFlow, setIsEditingExistingFlow] = useState(false);
 
+  // 创建开始节点（固定，不能删除）
   const createStartNode = () => {
-    const hasStart = nodes.some((n: any) => n?.data?.isStartNode);
+    const hasStart = nodes.some((n: any) => n?.id === 'start_node');
     if (hasStart) return;
     const startNode: Node = {
-      id: `start_${Date.now()}`,
-      type: 'llm',
-      position: { x: 120, y: 60 },
+      id: 'start_node',
+      type: 'start', // ReactFlow节点类型
+      position: { x: 250, y: 50 },
       data: {
         label: '开始',
-        nodeType: 'llm',
+        nodeType: 'start', // 后端节点类型
         config: {},
         isStartNode: true,
-        onDelete: deleteNode
+        isFixed: true, // 标记为固定节点，不能删除
+        onDelete: () => message.warning('开始节点不能删除')
       }
     } as any;
     setNodes((nds) => [startNode, ...nds]);
+  };
+
+  // 创建结束节点（固定，不能删除）
+  const createEndNode = () => {
+    const hasEnd = nodes.some((n: any) => n?.id === 'end_node');
+    if (hasEnd) return;
+    const endNode: Node = {
+      id: 'end_node',
+      type: 'end', // ReactFlow节点类型
+      position: { x: 250, y: 500 },
+      data: {
+        label: '结束',
+        nodeType: 'end', // 后端节点类型
+        config: {},
+        isEndNode: true,
+        isFixed: true, // 标记为固定节点，不能删除
+        onDelete: () => message.warning('结束节点不能删除')
+      }
+    } as any;
+    setNodes((nds) => [...nds, endNode]);
+  };
+
+  // 统一的流程图配置格式化函数
+  const formatFlowConfig = () => {
+    // 节点类型映射：前端nodeType -> 后端implementation
+    const nodeTypeMapping: Record<string, string> = {
+      'llm': 'llm',
+      'tool': 'tool',
+      'router': 'router',
+      'start': 'start',
+      'end': 'end',
+      'knowledgeBase': 'knowledge_base',
+      'agent': 'agent',
+      'action': 'tool'
+    };
+
+    // 确保第一个节点是开始节点，最后一个节点是结束节点
+    let sortedNodes = [...nodes];
+    const startNode = sortedNodes.find(n => n.data.nodeType === 'start' || n.data.isStartNode);
+    const endNode = sortedNodes.find(n => n.data.nodeType === 'end' || n.data.isEndNode);
+    
+    // 移除开始和结束节点
+    sortedNodes = sortedNodes.filter(n => 
+      n.data.nodeType !== 'start' && 
+      n.data.nodeType !== 'end' && 
+      !n.data.isStartNode && 
+      !n.data.isEndNode
+    );
+    
+    // 重新排列：开始节点 -> 其他节点 -> 结束节点
+    if (startNode) {
+      sortedNodes.unshift(startNode);
+    } else {
+      // 如果没有开始节点，创建一个
+      createStartNode();
+      const newStart = nodes.find(n => n.data.nodeType === 'start' || n.data.isStartNode);
+      if (newStart) sortedNodes.unshift(newStart);
+    }
+    
+    if (endNode) {
+      sortedNodes.push(endNode);
+    } else {
+      // 如果没有结束节点，创建一个
+      createEndNode();
+      const newEnd = nodes.find(n => n.data.nodeType === 'end' || n.data.isEndNode);
+      if (newEnd) sortedNodes.push(newEnd);
+    }
+
+    return {
+      nodes: sortedNodes.map(node => {
+        const nodeType = node.data.nodeType || 'llm';
+        const implementation = nodeTypeMapping[nodeType] || nodeType;
+        
+        // 确定category
+        let category = 'processor';
+        if (implementation === 'start') category = 'start';
+        else if (implementation === 'end') category = 'end';
+        else if (implementation === 'router') category = 'router';
+        
+        return {
+          id: node.id,
+          type: implementation, // 兼容旧格式
+          category: category, // 新格式
+          implementation: implementation, // 新格式
+          position: node.position,
+          data: {
+            label: node.data.label || node.id,
+            config: node.data.config || {},
+            isStartNode: node.data.nodeType === 'start' || node.data.isStartNode || false,
+            isEndNode: node.data.nodeType === 'end' || node.data.isEndNode || false
+          }
+        };
+      }),
+      edges: edges.map(edge => ({ 
+        id: edge.id, 
+        source: edge.source, 
+        target: edge.target, 
+        type: edge.type,
+        sourceHandle: edge.sourceHandle,
+        targetHandle: edge.targetHandle
+      })),
+      metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
+    };
   };
   
   useEffect(() => {
     fetchAgents();
     fetchFlows(); // 组件加载时获取已保存的流程图
+    fetchTemplates(); // 获取预制节点
     
     // 初始化时加载知识库列表，确保知识库节点配置时可用
     fetchKnowledgeBases().then(kbs => {
@@ -480,11 +663,14 @@ const FlowEditorPage: React.FC = () => {
       setCurrentMode('edit');
       // 根据agent_id查询数据库获取智能体信息
       loadAgentById(parseInt(agentId));
-    } else if (mode === 'create') {
+      } else if (mode === 'create') {
       console.log('设置为创建模式');
       setCurrentMode('create');
-      // 创建默认开始节点
-      setTimeout(() => createStartNode(), 0);
+      // 创建默认开始和结束节点
+      setTimeout(() => {
+        createStartNode();
+        createEndNode();
+      }, 0);
     } else {
       console.log('未找到有效的模式参数');
     }
@@ -527,25 +713,56 @@ const FlowEditorPage: React.FC = () => {
     }
   };
 
+  // 获取预制节点（模板）
+  const fetchTemplates = async () => {
+    try {
+      const response = await fetch(`${API_PATHS.FLOWS}/templates`);
+      if (response.ok) {
+        const data = await response.json();
+        setTemplates(data || []);
+      }
+    } catch (error) {
+      console.error('获取预制节点失败:', error);
+    }
+  };
+
+  // 使用预制节点
+  const applyTemplate = (template: any) => {
+    if (!template.flow_config) {
+      message.error('预制节点配置无效');
+      return;
+    }
+
+    const templateConfig = template.flow_config;
+    const templateNodes = templateConfig.nodes || [];
+    const templateEdges = templateConfig.edges || [];
+
+    // 创建复合节点
+    const compositeNodeId = `composite_${Date.now()}`;
+    const compositeNode: Node = {
+      id: compositeNodeId,
+      type: 'composite',
+      position: { x: 400, y: 200 },
+      data: {
+        label: template.display_name || template.name,
+        nodeType: 'composite',
+        config: {
+          subflow: {
+            nodes: templateNodes,
+            edges: templateEdges
+          }
+        },
+        onDelete: deleteNode
+      }
+    };
+
+    setNodes((nds) => [...nds, compositeNode]);
+    message.success(`已添加预制节点: ${template.display_name || template.name}`);
+  };
+
   const exportFlowAsJSON = () => {
     try {
-      const flowConfig = {
-        nodes: nodes.map(node => ({
-          id: node.id,
-          type: node.data.nodeType,
-          position: node.position,
-          data: { ...node.data, isStartNode: node.data.isStartNode || false }
-        })),
-        edges: edges.map(edge => ({ 
-          id: edge.id, 
-          source: edge.source, 
-          target: edge.target, 
-          type: edge.type,
-          sourceHandle: edge.sourceHandle,
-          targetHandle: edge.targetHandle
-        })),
-        metadata: { name: flowName || '新流程', description: flowDescription || '', version: '1.0.0' }
-      };
+      const flowConfig = formatFlowConfig();
       const jsonStr = JSON.stringify(flowConfig, null, 2);
       const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -776,23 +993,7 @@ const FlowEditorPage: React.FC = () => {
     }
     try {
       setLoading(true);
-      const flowConfig = {
-        nodes: nodes.map(node => ({
-          id: node.id,
-          type: node.data.nodeType,
-          position: node.position,
-          data: { ...node.data, isStartNode: node.data.isStartNode || false }
-        })),
-        edges: edges.map(edge => ({ 
-          id: edge.id, 
-          source: edge.source, 
-          target: edge.target, 
-          type: edge.type,
-          sourceHandle: edge.sourceHandle,
-          targetHandle: edge.targetHandle
-        })),
-        metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
-      };
+      const flowConfig = formatFlowConfig();
 
       // 从设置表单获取配置
               const settings = await settingsForm.validateFields();
@@ -892,22 +1093,23 @@ const FlowEditorPage: React.FC = () => {
   );
 
   const addNode = (nodeType: string, position: { x: number; y: number }) => {
-    let defaultLabel = getNodeTypeLabel(nodeType);
-    
-    // 为知识库节点设置更友好的默认标签
-    if (nodeType === 'knowledgeBase') {
-      defaultLabel = '知识库查询';
+    // 不允许手动添加开始和结束节点
+    if (nodeType === 'start' || nodeType === 'end') {
+      message.warning('开始和结束节点是固定的，不能手动添加');
+      return;
     }
+    
+    let defaultLabel = getNodeTypeLabel(nodeType);
     
     const newNode: Node = {
       id: `node_${Date.now()}`,
-      type: nodeType,
+      type: nodeType, // ReactFlow渲染类型
       position,
       data: {
         label: defaultLabel,
-        nodeType: nodeType,
+        nodeType: nodeType, // 后端节点类型
         config: {},
-        onDelete: deleteNode // 传递删除函数
+        onDelete: deleteNode
       }
     };
     setNodes((nds) => [...nds, newNode]);
@@ -915,16 +1117,12 @@ const FlowEditorPage: React.FC = () => {
 
   const getNodeTypeLabel = (nodeType: string) => {
     switch (nodeType) {
-      case 'agent': return '智能体';
-      
-      case 'action': return '动作';
-      case 'llm': return 'LLM';
-      case 'tool': return '工具';
-
-      case 'router': return '路由';
-      case 'knowledgeBase': return '知识库';
-      case 'input': return '输入';
-      case 'output': return '输出';
+      case 'start': return '开始';
+      case 'end': return '结束';
+      case 'llm': return 'LLM节点';
+      case 'tool': return '工具节点';
+      case 'router': return '路由节点';
+      case 'composite': return '复合节点';
       default: return '节点';
     }
   };
@@ -1120,9 +1318,10 @@ const FlowEditorPage: React.FC = () => {
   };
 
   const deleteNode = (nodeId: string) => {
+    // 检查是否是固定节点（开始或结束节点）
     const target = nodes.find((n: any) => n.id === nodeId);
-    if (target && target.data && target.data.isStartNode) {
-      message.error('开始节点不可删除');
+    if (target && (target.data?.isFixed || target.id === 'start_node' || target.id === 'end_node')) {
+      message.warning('开始节点和结束节点不能删除');
       return;
     }
     setNodes((nds: Node[]) => nds.filter((node: Node) => node.id !== nodeId));
@@ -1252,23 +1451,7 @@ const FlowEditorPage: React.FC = () => {
 
     try {
       setLoading(true);
-      const flowConfig = {
-        nodes: nodes.map(node => ({
-          id: node.id,
-          type: node.data.nodeType,
-          position: node.position,
-          data: { ...node.data, isStartNode: node.data.isStartNode || false }
-        })),
-        edges: edges.map(edge => ({ 
-          id: edge.id, 
-          source: edge.source, 
-          target: edge.target, 
-          type: edge.type,
-          sourceHandle: edge.sourceHandle,
-          targetHandle: edge.targetHandle
-        })),
-        metadata: { name: flowName, description: flowDescription, version: '1.0.0' }
-      };
+      const flowConfig = formatFlowConfig();
 
       // 根据编辑状态决定是新建还是更新
       if (isEditingExistingFlow && currentAgentId) {
@@ -1410,13 +1593,40 @@ const FlowEditorPage: React.FC = () => {
         const flow = await response.json();
         const flowConfig = flow.flow_config;
         
-        // 加载节点
-        const loadedNodes = flowConfig.nodes.map((node: any) => ({
-          id: node.id,
-          type: node.type,
-          position: node.position,
-          data: { ...node.data, isStartNode: node.data.isStartNode || false }
-        }));
+        // 加载节点 - 使用正确的类型
+        const loadedNodes = flowConfig.nodes.map((node: any) => {
+          // 从implementation或type获取节点类型
+          const nodeType = node.implementation || node.type || 'llm';
+          const isStart = nodeType === 'start' || node.id === 'start_node';
+          const isEnd = nodeType === 'end' || node.id === 'end_node';
+          
+          return {
+            id: node.id,
+            type: nodeType, // ReactFlow渲染类型，使用实际节点类型
+            position: node.position || { x: 0, y: 0 },
+            data: {
+              ...node.data,
+              label: node.data?.label || node.id,
+              nodeType: nodeType, // 后端节点类型
+              isStartNode: isStart,
+              isEndNode: isEnd,
+              isFixed: isStart || isEnd, // 开始和结束节点固定
+              config: node.data?.config || {},
+              onDelete: (isStart || isEnd) ? () => message.warning('开始节点和结束节点不能删除') : deleteNode
+            }
+          };
+        });
+        
+        // 确保有开始和结束节点
+        const hasStart = loadedNodes.some((n: any) => n.id === 'start_node' || n.data.nodeType === 'start');
+        const hasEnd = loadedNodes.some((n: any) => n.id === 'end_node' || n.data.nodeType === 'end');
+        
+        if (!hasStart) {
+          createStartNode();
+        }
+        if (!hasEnd) {
+          createEndNode();
+        }
         
         // 加载连线，确保包含 sourceHandle
         const loadedEdges = flowConfig.edges.map((edge: any) => ({
@@ -1465,8 +1675,11 @@ const FlowEditorPage: React.FC = () => {
     setFlowName('');
     setFlowDescription('');
     setCurrentFlowId(null);
-    // 重新创建开始节点
-    setTimeout(() => createStartNode(), 0);
+    // 重新创建开始和结束节点
+    setTimeout(() => {
+      createStartNode();
+      createEndNode();
+    }, 0);
     message.success('流程图已清空');
   };
 
@@ -1478,30 +1691,7 @@ const FlowEditorPage: React.FC = () => {
 
     try {
       setLoading(true);
-      const flowConfig = {
-        nodes: nodes.map(node => ({
-          id: node.id,
-          type: node.data.nodeType,
-          position: node.position,
-          data: {
-            ...node.data,
-            isStartNode: node.data.isStartNode || false
-          }
-        })),
-        edges: edges.map(edge => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          type: edge.type,
-          sourceHandle: edge.sourceHandle,
-          targetHandle: edge.targetHandle
-        })),
-        metadata: {
-          name: flowName,
-          description: flowDescription,
-          version: '1.0.0'
-        }
-      };
+      const flowConfig = formatFlowConfig();
 
       const response = await fetch(API_PATHS.AGENT_CREATE_FROM_FLOW, {
         method: 'POST',
@@ -1570,23 +1760,7 @@ const FlowEditorPage: React.FC = () => {
                   // 强制走创建流程，而不是更新
                   try {
                     setLoading(true);
-                    const flowConfig = {
-                      nodes: nodes.map(node => ({
-                        id: node.id,
-                        type: node.data.nodeType,
-                        position: node.position,
-                        data: { ...node.data, isStartNode: node.data.isStartNode || false }
-                      })),
-                      edges: edges.map(edge => ({ 
-                        id: edge.id, 
-                        source: edge.source, 
-                        target: edge.target, 
-                        type: edge.type,
-                        sourceHandle: edge.sourceHandle,
-                        targetHandle: edge.targetHandle
-                      })),
-                      metadata: { name: flowName || '新流程', description: flowDescription || '', version: '1.0.0' }
-                    };
+                    const flowConfig = formatFlowConfig();
                     const response = await fetch(API_PATHS.FLOWS, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
@@ -1709,54 +1883,62 @@ const FlowEditorPage: React.FC = () => {
       {/* 侧边栏 */}
       <div style={{ display: 'flex', flex: 1 }}>
         <div style={{ width: 250, borderRight: '1px solid #f0f0f0', background: '#fafafa', padding: '16px' }}>
-          <Title level={4}>节点类型</Title>
+          <Title level={4}>基础节点</Title>
           <Space direction="vertical" style={{ width: '100%' }}>
             <Button
               icon={<RobotOutlined />}
               block
-              onClick={() => addNode('agent', { x: 100, y: 100 })}
-            >
-              智能体节点
-            </Button>
-            <Button
-              icon={<RobotOutlined />}
-              block
-              onClick={() => addNode('llm', { x: 100, y: 150 })}
+              onClick={() => addNode('llm', { x: 300, y: 150 })}
             >
               LLM 节点
-            </Button>
-
-            <Button
-              icon={<ThunderboltOutlined />}
-              block
-              onClick={() => addNode('action', { x: 100, y: 300 })}
-            >
-              动作节点
             </Button>
             <Button
               icon={<SettingOutlined />}
               block
-              onClick={() => addNode('tool', { x: 100, y: 350 })}
+              onClick={() => addNode('tool', { x: 300, y: 250 })}
             >
               工具节点
             </Button>
-
             <Button
-              icon={<div style={{ fontSize: '16px' }}>🔄</div>}
+              icon={<BranchesOutlined />}
               block
-              onClick={() => addNode('router', { x: 100, y: 450 })}
+              onClick={() => addNode('router', { x: 300, y: 350 })}
             >
               路由节点
             </Button>
-            
             <Button
-              icon={<div style={{ fontSize: '16px' }}>📚</div>}
+              icon={<div style={{ fontSize: '16px' }}>📦</div>}
               block
-              onClick={() => addNode('knowledgeBase', { x: 100, y: 500 })}
+              onClick={() => addNode('composite', { x: 300, y: 450 })}
             >
-              知识库节点
+              复合节点
             </Button>
           </Space>
+
+          <Divider />
+
+          <Title level={4}>预制节点</Title>
+          <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+            {templates.length === 0 ? (
+              <div style={{ fontSize: '12px', color: '#999', textAlign: 'center', padding: '16px' }}>
+                暂无预制节点
+              </div>
+            ) : (
+              templates.map((template) => (
+                <Card
+                  key={template.id}
+                  size="small"
+                  style={{ marginBottom: '8px', cursor: 'pointer' }}
+                  onClick={() => applyTemplate(template)}
+                >
+                  <Card.Meta
+                    title={template.display_name || template.name}
+                    description={template.description || '点击使用'}
+                  />
+                </Card>
+              ))
+            )}
+          </div>
 
           <Divider />
 
@@ -1821,18 +2003,21 @@ const FlowEditorPage: React.FC = () => {
 
           <Title level={4}>使用说明</Title>
           <div style={{ fontSize: '12px', color: '#666' }}>
-            <p><strong>配置起始节点：</strong></p>
-            <ol style={{ paddingLeft: '16px' }}>
-              <li>点击任意节点打开配置对话框</li>
-              <li>勾选"设为起始节点"选项</li>
-              <li>点击确定保存配置</li>
-            </ol>
-            <p><strong>删除连线：</strong></p>
-            <ol style={{ paddingLeft: '16px' }}>
-              <li>点击任意连线选中它</li>
-              <li>在左侧面板中点击"删除连线"按钮</li>
-            </ol>
-            <p><strong>注意：</strong>每个流程图只能有一个起始节点</p>
+            <p><strong>固定节点：</strong></p>
+            <ul style={{ paddingLeft: '16px' }}>
+              <li>开始节点和结束节点是固定的，不能删除</li>
+              <li>所有流程必须从开始节点开始，到结束节点结束</li>
+            </ul>
+            <p><strong>添加节点：</strong></p>
+            <ul style={{ paddingLeft: '16px' }}>
+              <li>点击左侧节点类型按钮添加节点</li>
+              <li>可以添加 LLM、工具、路由、复合节点</li>
+            </ul>
+            <p><strong>预制节点：</strong></p>
+            <ul style={{ paddingLeft: '16px' }}>
+              <li>点击预制节点卡片即可添加到画布</li>
+              <li>预制节点会作为复合节点添加</li>
+            </ul>
           </div>
         </div>
 

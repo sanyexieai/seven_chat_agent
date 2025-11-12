@@ -23,6 +23,7 @@ from .node_implementations import (
 	EndNode,
 	RouterNode
 )
+from .composite_node import CompositeNode
 
 # 注册常用节点实现
 NodeRegistry.register("llm", LLMNode)
@@ -30,6 +31,7 @@ NodeRegistry.register("tool", ToolNode)
 NodeRegistry.register("start", StartNode)
 NodeRegistry.register("end", EndNode)
 NodeRegistry.register("router", RouterNode)
+NodeRegistry.register("composite", CompositeNode)
 
 __all__ = [
 	'BaseFlowNode',
@@ -40,5 +42,6 @@ __all__ = [
 	'ToolNode',
 	'StartNode',
 	'EndNode',
-	'RouterNode'
+	'RouterNode',
+	'CompositeNode'
 ]

@@ -223,8 +223,10 @@ class ToolNode(BaseFlowNode):
 			
 			# 保存输出
 			self.save_output(context, result_text)
+			# 同时保存到节点的输出列表
+			self.append_node_output(context, result_text, node_id=self.id, also_save_as_last_output=False)
 			
-			# 输出工具结果
+			# 输出工具结果（tool_result 类型用于特殊处理）
 			yield self._create_stream_chunk(
 				chunk_type="tool_result",
 				content=result_text,
@@ -232,6 +234,15 @@ class ToolNode(BaseFlowNode):
 				metadata={
 					'tool_name': f"{actual_server}_{actual_tool}",
 					'tool_result': result
+				}
+			)
+			# 同时输出 content 类型，确保节点有内容显示
+			yield self._create_stream_chunk(
+				chunk_type="content",
+				content=f"工具执行结果: {result_text[:200]}{'...' if len(result_text) > 200 else ''}",
+				agent_name=agent_name,
+				metadata={
+					'tool_name': f"{actual_server}_{actual_tool}"
 				}
 			)
 		except Exception as e:
@@ -254,10 +265,14 @@ class StartNode(BaseFlowNode):
 	
 	async def execute_stream(self, user_id: str, message: str, context: Dict[str, Any], agent_name: str = None) -> AsyncGenerator[StreamChunk, None]:
 		"""起始节点流式执行"""
+		# 保存初始消息
 		self.save_output(context, message)
+		# 返回开始信息
+		start_content = "开始"
+		self.append_node_output(context, start_content, node_id=self.id, also_save_as_last_output=False)
 		yield self._create_stream_chunk(
 			chunk_type="content",
-			content=f"流程开始",
+			content=start_content,
 			agent_name=agent_name
 		)
 
@@ -395,7 +410,10 @@ class RouterNode(BaseFlowNode):
 		# 同时保存为临时属性，供 get_next_node_id 使用
 		self._selected_branch = selected_branch
 		
+		# 保存路由决策到节点的输出
 		content = f"路由决策: {field}={field_value} -> {selected_branch}"
+		self.append_node_output(context, content, node_id=self.id, also_save_as_last_output=False)
+		
 		yield self._create_stream_chunk(
 			chunk_type="content",
 			content=content,
@@ -438,6 +456,23 @@ class EndNode(BaseFlowNode):
 		"""结束节点流式执行"""
 		flow_state = self._get_flow_state(context)
 		final_content = flow_state.get('last_output', '')
+		
+		# 如果没有最终内容，至少返回"结束"
+		if not final_content:
+			final_content = "结束"
+		
+		# 保存结束节点的输出
+		self.append_node_output(context, final_content, node_id=self.id, also_save_as_last_output=False)
+		
+		# 先输出 content 类型，确保节点有内容显示
+		yield self._create_stream_chunk(
+			chunk_type="content",
+			content=final_content,
+			agent_name=agent_name,
+			metadata={'is_final': True}
+		)
+		
+		# 然后输出 final 类型，标记流程结束
 		yield self._create_stream_chunk(
 			chunk_type="final",
 			content=final_content,

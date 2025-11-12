@@ -244,8 +244,9 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                     business_handler=business_handler
                 ):
                     # 将 StreamChunk 转换为 SSE 格式
+                    # 确保所有类型的 chunk 都被传递，包括 node_start 和 node_complete
                     chunk_data = {
-                        'content': chunk.content,
+                        'content': chunk.content or '',
                         'type': chunk.type,
                         'chunk_id': chunk.chunk_id,
                         'metadata': chunk.metadata or {}
@@ -260,6 +261,18 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                         # 获取工具使用情况
                         tools_used = business_handler.get_tools_used()
                         chunk_data['tools_used'] = tools_used
+                    # node_start 和 node_complete 事件直接传递，不需要特殊处理
+                    # 但确保 metadata 中包含完整的节点信息
+                    elif chunk.type in ("node_start", "node_complete"):
+                        # 确保 metadata 中包含节点信息
+                        if chunk.metadata:
+                            # metadata 已经包含了 node_id, node_type, node_name, node_label 等信息
+                            # 这些信息由 BaseFlowNode._create_stream_chunk 自动添加
+                            pass
+                    
+                    # 记录日志以便调试
+                    if chunk.type in ("node_start", "node_complete"):
+                        logger.debug(f"发送节点事件: type={chunk.type}, node_id={chunk.metadata.get('node_id') if chunk.metadata else 'N/A'}")
                     
                     data_chunk = f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
                     yield data_chunk

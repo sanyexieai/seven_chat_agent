@@ -1,0 +1,141 @@
+{
+  "nodes": [
+    {
+      "id": "start_node",
+      "type": "start",
+      "category": "start",
+      "implementation": "start",
+      "position": {
+        "x": 250,
+        "y": 50
+      },
+      "data": {
+        "label": "开始",
+        "config": {},
+        "isStartNode": true,
+        "isEndNode": false
+      }
+    },
+    {
+      "id": "router_node_1",
+      "type": "router",
+      "category": "router",
+      "implementation": "router",
+      "position": {
+        "x": 250,
+        "y": 150
+      },
+      "data": {
+        "label": "路由判断",
+        "config": {
+          "routing_logic": {
+            "field": "message",
+            "operator": "contains",
+            "value": "搜索",
+            "true_branch": "tool_node_1",
+            "false_branch": "llm_node_1"
+          }
+        },
+        "isStartNode": false,
+        "isEndNode": false
+      }
+    },
+    {
+      "id": "llm_node_1",
+      "type": "llm",
+      "category": "processor",
+      "implementation": "llm",
+      "position": {
+        "x": 100,
+        "y": 300
+      },
+      "data": {
+        "label": "LLM处理",
+        "config": {
+          "system_prompt": "你是一个有用的AI助手。",
+          "user_prompt": "{{message}}",
+          "save_as": "last_output"
+        },
+        "isStartNode": false,
+        "isEndNode": false
+      }
+    },
+    {
+      "id": "tool_node_1",
+      "type": "tool",
+      "category": "processor",
+      "implementation": "tool",
+      "position": {
+        "x": 400,
+        "y": 300
+      },
+      "data": {
+        "label": "调用工具",
+        "config": {
+          "server": "http://localhost:8000",
+          "tool": "search",
+          "params": {},
+          "append_to_output": true,
+          "save_as": "last_output"
+        },
+        "isStartNode": false,
+        "isEndNode": false
+      }
+    },
+    {
+      "id": "end_node",
+      "type": "end",
+      "category": "end",
+      "implementation": "end",
+      "position": {
+        "x": 250,
+        "y": 450
+      },
+      "data": {
+        "label": "结束",
+        "config": {},
+        "isStartNode": false,
+        "isEndNode": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_start_to_router",
+      "source": "start_node",
+      "target": "router_node_1",
+      "type": "default"
+    },
+    {
+      "id": "edge_router_to_llm",
+      "source": "router_node_1",
+      "target": "llm_node_1",
+      "sourceHandle": "source-false",
+      "type": "default"
+    },
+    {
+      "id": "edge_router_to_tool",
+      "source": "router_node_1",
+      "target": "tool_node_1",
+      "sourceHandle": "source-true",
+      "type": "default"
+    },
+    {
+      "id": "edge_llm_to_end",
+      "source": "llm_node_1",
+      "target": "end_node",
+      "type": "default"
+    },
+    {
+      "id": "edge_tool_to_end",
+      "source": "tool_node_1",
+      "target": "end_node",
+      "type": "default"
+    }
+  ],
+  "metadata": {
+    "name": "路由流程示例",
+    "description": "一个包含开始节点、路由节点、LLM节点、工具节点和结束节点的流程图"
+  }
+}
+

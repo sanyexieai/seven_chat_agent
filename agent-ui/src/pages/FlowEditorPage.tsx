@@ -472,8 +472,35 @@ const nodeTypes: NodeTypes = {
 };
 
 const FlowEditorPage: React.FC = () => {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [nodes, setNodes, onNodesChangeBase] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  
+  // 自定义 onNodesChange，拦截开始节点和结束节点的删除操作
+  const onNodesChange = useCallback((changes: any[]) => {
+    // 过滤掉开始节点和结束节点的删除操作
+    const filteredChanges = changes.filter((change: any) => {
+      if (change.type === 'remove') {
+        // 检查要删除的节点是否是开始节点或结束节点
+        const nodeToDelete = nodes.find((n: any) => n.id === change.id);
+        if (nodeToDelete && (
+          nodeToDelete.data?.isFixed ||
+          nodeToDelete.data?.nodeType === 'start' ||
+          nodeToDelete.data?.nodeType === 'end' ||
+          nodeToDelete.id === 'start_node' ||
+          nodeToDelete.id === 'end_node'
+        )) {
+          message.warning('开始节点和结束节点不能删除');
+          return false; // 过滤掉这个删除操作
+        }
+      }
+      return true; // 保留其他所有操作
+    });
+    
+    // 应用过滤后的变更
+    if (filteredChanges.length > 0) {
+      onNodesChangeBase(filteredChanges);
+    }
+  }, [nodes, onNodesChangeBase]);
   
   // 监听连线状态变化
   useEffect(() => {
@@ -491,7 +518,6 @@ const FlowEditorPage: React.FC = () => {
   const [currentMode, setCurrentMode] = useState<'create' | 'edit'>('create');
   const [flows, setFlows] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]); // 预制节点列表
-  const [isStartNode, setIsStartNode] = useState(false);
   const [configModalVisible, setConfigModalVisible] = useState(false);
   const [importModalVisible, setImportModalVisible] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
@@ -571,15 +597,13 @@ const FlowEditorPage: React.FC = () => {
 
     // 确保第一个节点是开始节点，最后一个节点是结束节点
     let sortedNodes = [...nodes];
-    const startNode = sortedNodes.find(n => n.data.nodeType === 'start' || n.data.isStartNode);
-    const endNode = sortedNodes.find(n => n.data.nodeType === 'end' || n.data.isEndNode);
+    const startNode = sortedNodes.find(n => n.data.nodeType === 'start');
+    const endNode = sortedNodes.find(n => n.data.nodeType === 'end');
     
     // 移除开始和结束节点
     sortedNodes = sortedNodes.filter(n => 
       n.data.nodeType !== 'start' && 
-      n.data.nodeType !== 'end' && 
-      !n.data.isStartNode && 
-      !n.data.isEndNode
+      n.data.nodeType !== 'end'
     );
     
     // 重新排列：开始节点 -> 其他节点 -> 结束节点
@@ -588,7 +612,7 @@ const FlowEditorPage: React.FC = () => {
     } else {
       // 如果没有开始节点，创建一个
       createStartNode();
-      const newStart = nodes.find(n => n.data.nodeType === 'start' || n.data.isStartNode);
+      const newStart = nodes.find(n => n.data.nodeType === 'start');
       if (newStart) sortedNodes.unshift(newStart);
     }
     
@@ -597,7 +621,7 @@ const FlowEditorPage: React.FC = () => {
     } else {
       // 如果没有结束节点，创建一个
       createEndNode();
-      const newEnd = nodes.find(n => n.data.nodeType === 'end' || n.data.isEndNode);
+      const newEnd = nodes.find(n => n.data.nodeType === 'end');
       if (newEnd) sortedNodes.push(newEnd);
     }
 
@@ -621,8 +645,8 @@ const FlowEditorPage: React.FC = () => {
           data: {
             label: node.data.label || node.id,
             config: node.data.config || {},
-            isStartNode: node.data.nodeType === 'start' || node.data.isStartNode || false,
-            isEndNode: node.data.nodeType === 'end' || node.data.isEndNode || false
+            isStartNode: node.data.nodeType === 'start',
+            isEndNode: node.data.nodeType === 'end'
           }
         };
       }),
@@ -862,17 +886,24 @@ const FlowEditorPage: React.FC = () => {
       // 加载节点
       if (nodes && Array.isArray(nodes)) {
         console.log('加载节点:', nodes);
-        const nodesWithDelete = nodes.map((node: any) => ({
-          ...node,
-          data: {
-            ...node.data,
-            onDelete: (nodeId: string) => {
-              setNodes((nds: Node[]) => nds.filter((node: Node) => node.id !== nodeId));
-              setEdges((eds: Edge[]) => eds.filter((edge: Edge) => edge.source !== nodeId && edge.target !== nodeId));
-              message.success('节点已删除');
+        const nodesWithDelete = nodes.map((node: any) => {
+          const isStart = node.data?.nodeType === 'start' || node.id === 'start_node';
+          const isEnd = node.data?.nodeType === 'end' || node.id === 'end_node';
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              isFixed: isStart || isEnd,
+              onDelete: (isStart || isEnd)
+                ? () => message.warning('开始节点和结束节点不能删除')
+                : (nodeId: string) => {
+                    setNodes((nds: Node[]) => nds.filter((node: Node) => node.id !== nodeId));
+                    setEdges((eds: Edge[]) => eds.filter((edge: Edge) => edge.source !== nodeId && edge.target !== nodeId));
+                    message.success('节点已删除');
+                  }
             }
-          }
-        }));
+          };
+        });
         setNodes(nodesWithDelete);
         console.log('节点设置完成:', nodesWithDelete);
       } else {
@@ -1093,23 +1124,43 @@ const FlowEditorPage: React.FC = () => {
   );
 
   const addNode = (nodeType: string, position: { x: number; y: number }) => {
-    // 不允许手动添加开始和结束节点
-    if (nodeType === 'start' || nodeType === 'end') {
-      message.warning('开始和结束节点是固定的，不能手动添加');
-      return;
+    // 检查是否已经存在开始节点或结束节点
+    if (nodeType === 'start') {
+      const existingStart = nodes.find((n: any) => n.data?.nodeType === 'start' || n.id === 'start_node');
+      if (existingStart) {
+        message.warning('开始节点已存在，每个流程图只能有一个开始节点');
+        return;
+      }
+    }
+    if (nodeType === 'end') {
+      const existingEnd = nodes.find((n: any) => n.data?.nodeType === 'end' || n.id === 'end_node');
+      if (existingEnd) {
+        message.warning('结束节点已存在，每个流程图只能有一个结束节点');
+        return;
+      }
     }
     
     let defaultLabel = getNodeTypeLabel(nodeType);
     
+    // 开始节点和结束节点使用固定ID
+    const nodeId = nodeType === 'start' ? 'start_node' : 
+                   nodeType === 'end' ? 'end_node' : 
+                   `node_${Date.now()}`;
+    
     const newNode: Node = {
-      id: `node_${Date.now()}`,
+      id: nodeId,
       type: nodeType, // ReactFlow渲染类型
       position,
       data: {
         label: defaultLabel,
         nodeType: nodeType, // 后端节点类型
         config: {},
-        onDelete: deleteNode
+        isStartNode: nodeType === 'start',
+        isEndNode: nodeType === 'end',
+        isFixed: nodeType === 'start' || nodeType === 'end', // 开始和结束节点固定
+        onDelete: (nodeType === 'start' || nodeType === 'end') 
+          ? () => message.warning('开始节点和结束节点不能删除') 
+          : deleteNode
       }
     };
     setNodes((nds) => [...nds, newNode]);
@@ -1131,7 +1182,6 @@ const FlowEditorPage: React.FC = () => {
     setSelectedNode(node);
             configForm.setFieldsValue({
       label: node.data.label,
-      isStartNode: node.data.isStartNode || false,
       agent_name: node.data.config?.agent_name || '',
       
       action: node.data.config?.action || '',
@@ -1284,7 +1334,8 @@ const FlowEditorPage: React.FC = () => {
                 data: {
                   ...node.data,
                   label: values.label,
-                  isStartNode: values.isStartNode || false,
+                  // 开始节点和结束节点是固定的
+                  isStartNode: selectedNode.data.nodeType === 'start',
                   config: config
                 }
               }
@@ -1320,7 +1371,13 @@ const FlowEditorPage: React.FC = () => {
   const deleteNode = (nodeId: string) => {
     // 检查是否是固定节点（开始或结束节点）
     const target = nodes.find((n: any) => n.id === nodeId);
-    if (target && (target.data?.isFixed || target.id === 'start_node' || target.id === 'end_node')) {
+    if (target && (
+      target.data?.isFixed || 
+      target.data?.nodeType === 'start' || 
+      target.data?.nodeType === 'end' ||
+      target.id === 'start_node' || 
+      target.id === 'end_node'
+    )) {
       message.warning('开始节点和结束节点不能删除');
       return;
     }
@@ -1886,6 +1943,20 @@ const FlowEditorPage: React.FC = () => {
           <Title level={4}>基础节点</Title>
           <Space direction="vertical" style={{ width: '100%' }}>
             <Button
+              icon={<div style={{ fontSize: '16px', color: '#52c41a' }}>▶</div>}
+              block
+              onClick={() => addNode('start', { x: 300, y: 50 })}
+            >
+              开始节点
+            </Button>
+            <Button
+              icon={<div style={{ fontSize: '16px', color: '#ff4d4f' }}>■</div>}
+              block
+              onClick={() => addNode('end', { x: 300, y: 100 })}
+            >
+              结束节点
+            </Button>
+            <Button
               icon={<RobotOutlined />}
               block
               onClick={() => addNode('llm', { x: 300, y: 150 })}
@@ -2059,13 +2130,6 @@ const FlowEditorPage: React.FC = () => {
             <Input placeholder="请输入节点名称" />
           </Form.Item>
           
-          <Form.Item
-            name="isStartNode"
-            label="起始节点"
-            valuePropName="checked"
-          >
-            <Checkbox>设为起始节点</Checkbox>
-          </Form.Item>
 
           {/* 根据节点类型显示不同的配置项 */}
           {selectedNode?.data.nodeType === 'agent' && (
@@ -2365,13 +2429,20 @@ const FlowEditorPage: React.FC = () => {
             // 应用到编辑器
             if (flowConfig.metadata?.name) setFlowName(flowConfig.metadata.name);
             if (typeof flowConfig.metadata?.description === 'string') setFlowDescription(flowConfig.metadata.description);
-            const nodesWithDelete = flowConfig.nodes.map((node: any) => ({
-              ...node,
-              data: {
-                ...node.data,
-                onDelete: deleteNode
-              }
-            }));
+            const nodesWithDelete = flowConfig.nodes.map((node: any) => {
+              const isStart = node.data?.nodeType === 'start' || node.id === 'start_node';
+              const isEnd = node.data?.nodeType === 'end' || node.id === 'end_node';
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  isFixed: isStart || isEnd,
+                  onDelete: (isStart || isEnd) 
+                    ? () => message.warning('开始节点和结束节点不能删除') 
+                    : deleteNode
+                }
+              };
+            });
             setNodes(nodesWithDelete);
             
             // 确保连线包含所有必要字段

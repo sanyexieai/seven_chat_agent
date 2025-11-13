@@ -12,12 +12,14 @@ logger = get_logger("flow_driven_agent")
 
 class NodeType(str, Enum):
 	"""节点类型枚举"""
+	START = "start"           # 开始节点
 	AGENT = "agent"           # 智能体节点
 	ACTION = "action"         # 动作节点
 	LLM = "llm"               # LLM 调用节点
 	TOOL = "tool"             # 工具调用节点
 	ROUTER = "router"         # 路由节点（统一的路由逻辑处理）
 	KNOWLEDGE_BASE = "knowledge_base"  # 知识库查询节点
+	END = "end"               # 结束节点
 
 class FlowNode:
 	"""流程图节点"""
@@ -107,7 +109,13 @@ class FlowDrivenAgent(BaseAgent):
 			
 			for node_config in nodes_config:
 				node_id = node_config.get('id')
-				node_type = NodeType(node_config.get('type', 'agent'))
+				node_type_value = node_config.get('type', NodeType.AGENT.value)
+				try:
+					node_type = NodeType(node_type_value)
+				except ValueError:
+					# 回退：如果是旧格式，尝试根据类别或实现推断
+					implementation = node_config.get('implementation', node_type_value)
+					node_type = NodeType(implementation) if implementation in NodeType._value2member_map_ else NodeType.AGENT
 				node_data = node_config.get('data', {})
 				node_name = node_data.get('label', '')
 				
@@ -123,7 +131,7 @@ class FlowDrivenAgent(BaseAgent):
 				self.nodes[node_id] = node
 				
 				# 检查是否为起始节点
-				if node_data.get('isStartNode', False):
+				if node_data.get('isStartNode', False) or node_type == NodeType.START:
 					self.start_node_id = node_id
 					logger.info(f"设置起始节点: {node_id}")
 			
@@ -685,6 +693,66 @@ class FlowDrivenAgent(BaseAgent):
 				logger.info(f"🚀 执行节点 {step_guard}: {current_id} ({node.type.value}) - {node.name}")
 				vars_all = {**flow_state, **base_vars}
 
+				if node.type == NodeType.START:
+					start_message_raw = (
+						node.config.get('message')
+						or node.config.get('start_message')
+						or node.config.get('label', node.name)
+						or "开始"
+					)
+					start_message = str(start_message_raw)
+					
+					# 节点开始事件
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="node_start",
+						content=f"🚀 开始执行 {node.name or '开始节点'}",
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name)
+						}
+					)
+					
+					# 节点内容输出
+					if start_message:
+						yield StreamChunk(
+							chunk_id=str(uuid.uuid4()),
+							session_id=(context or {}).get('session_id', ''),
+							type="content",
+							content=start_message,
+							agent_name=self.name,
+							metadata={
+								'node_id': node.id,
+								'node_type': node.type.value,
+								'node_name': node.name,
+								'node_label': node.config.get('label', node.name)
+							}
+						)
+					
+					# 节点完成事件
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="node_complete",
+						content=f"✅ {node.name or '开始节点'} 执行完成",
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name),
+							'output': start_message
+						}
+					)
+					
+					nexts = node.connections or []
+					current_id = nexts[0] if nexts else None
+					continue
+
 				if node.type == NodeType.LLM:
 					logger.info(f"🚀 进入LLM节点处理分支: {current_id}")
 					# 发送节点开始标识
@@ -954,6 +1022,67 @@ class FlowDrivenAgent(BaseAgent):
 					
 					nexts = node.connections or []
 					current_id = nexts[0] if nexts else None
+					continue
+
+				if node.type == NodeType.END:
+					end_message_raw = (
+						node.config.get('message')
+						or node.config.get('end_message')
+						or flow_state.get('last_output', '')
+						or "结束"
+					)
+					end_message = str(end_message_raw)
+					
+					# 节点开始事件
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="node_start",
+						content=f"🚀 开始执行 {node.name or '结束节点'}",
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name)
+						}
+					)
+					
+					# 节点内容输出
+					if end_message:
+						yield StreamChunk(
+							chunk_id=str(uuid.uuid4()),
+							session_id=(context or {}).get('session_id', ''),
+							type="content",
+							content=end_message,
+							agent_name=self.name,
+							metadata={
+								'node_id': node.id,
+								'node_type': node.type.value,
+								'node_name': node.name,
+								'node_label': node.config.get('label', node.name)
+							}
+						)
+					
+					# 节点完成事件
+					yield StreamChunk(
+						chunk_id=str(uuid.uuid4()),
+						session_id=(context or {}).get('session_id', ''),
+						type="node_complete",
+						content=f"✅ {node.name or '结束节点'} 执行完成",
+						agent_name=self.name,
+						metadata={
+							'node_id': node.id,
+							'node_type': node.type.value,
+							'node_name': node.name,
+							'node_label': node.config.get('label', node.name),
+							'output': end_message
+						}
+					)
+					
+					# 更新最终输出并结束流程
+					flow_state['last_output'] = end_message
+					current_id = None
 					continue
 
 				# 未知节点，结束

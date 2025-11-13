@@ -1,0 +1,75 @@
+{
+  "nodes": [
+    {
+      "id": "start_node",
+      "type": "start",
+      "category": "start",
+      "implementation": "start",
+      "position": {
+        "x": 250,
+        "y": 50
+      },
+      "data": {
+        "label": "开始",
+        "config": {},
+        "isStartNode": true,
+        "isEndNode": false
+      }
+    },
+    {
+      "id": "llm_node_1",
+      "type": "llm",
+      "category": "processor",
+      "implementation": "llm",
+      "position": {
+        "x": 250,
+        "y": 200
+      },
+      "data": {
+        "label": "LLM处理",
+        "config": {
+          "system_prompt": "你是一个有用的AI助手。",
+          "user_prompt": "{{message}}",
+          "save_as": "last_output"
+        },
+        "isStartNode": false,
+        "isEndNode": false
+      }
+    },
+    {
+      "id": "end_node",
+      "type": "end",
+      "category": "end",
+      "implementation": "end",
+      "position": {
+        "x": 250,
+        "y": 350
+      },
+      "data": {
+        "label": "结束",
+        "config": {},
+        "isStartNode": false,
+        "isEndNode": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_start_to_llm",
+      "source": "start_node",
+      "target": "llm_node_1",
+      "type": "default"
+    },
+    {
+      "id": "edge_llm_to_end",
+      "source": "llm_node_1",
+      "target": "end_node",
+      "type": "default"
+    }
+  ],
+  "metadata": {
+    "name": "简单流程示例",
+    "description": "一个包含开始节点、LLM节点和结束节点的简单流程图"
+  }
+}
+

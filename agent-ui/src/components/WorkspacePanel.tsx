@@ -19,75 +19,127 @@ import { RobotOutlined, SettingOutlined, BranchesOutlined, ThunderboltOutlined }
 
 const { Text } = Typography;
 
+// 根据节点状态获取颜色
+const getNodeColors = (status?: 'pending' | 'running' | 'completed' | 'failed', defaultBorder?: string, defaultBg?: string) => {
+  switch (status) {
+    case 'pending':
+      return {
+        border: '#d9d9d9', // 灰色
+        background: '#f5f5f5',
+        iconColor: '#bfbfbf'
+      };
+    case 'running':
+      return {
+        border: '#faad14', // 黄色
+        background: '#fffbe6',
+        iconColor: '#faad14'
+      };
+    case 'completed':
+      return {
+        border: '#52c41a', // 绿色
+        background: '#f6ffed',
+        iconColor: '#52c41a'
+      };
+    case 'failed':
+      return {
+        border: '#ff4d4f', // 红色
+        background: '#fff1f0',
+        iconColor: '#ff4d4f'
+      };
+    default:
+      return {
+        border: defaultBorder || '#d9d9d9',
+        background: defaultBg || '#f5f5f5',
+        iconColor: '#bfbfbf'
+      };
+  }
+};
+
 // 自定义节点组件 - 参考FlowEditorPage
-const StartNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '2px solid #389e0d', borderRadius: '8px', background: '#f6ffed', minWidth: '80px' }}>
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: '16px', color: '#52c41a', marginBottom: '4px', fontWeight: 'bold' }}>▶</div>
-      <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+const StartNode = ({ data }: { data: any }) => {
+  const colors = getNodeColors(data.status, '#389e0d', '#f6ffed');
+  return (
+    <div style={{ padding: '10px', border: `2px solid ${colors.border}`, borderRadius: '8px', background: colors.background, minWidth: '80px' }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '16px', color: colors.iconColor, marginBottom: '4px', fontWeight: 'bold' }}>▶</div>
+        <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+      </div>
+      <Handle type="source" position={Position.Bottom} id="source-0" />
+      <Handle type="source" position={Position.Bottom} id="source-1" style={{ left: '30%' }} />
+      <Handle type="source" position={Position.Bottom} id="source-2" style={{ left: '70%' }} />
     </div>
-    <Handle type="source" position={Position.Bottom} id="source-0" />
-    <Handle type="source" position={Position.Bottom} id="source-1" style={{ left: '30%' }} />
-    <Handle type="source" position={Position.Bottom} id="source-2" style={{ left: '70%' }} />
-  </div>
-);
+  );
+};
 
-const LlmNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '2px solid #096dd9', borderRadius: '8px', background: '#e6f7ff', minWidth: '80px' }}>
-    <Handle type="target" position={Position.Top} />
-    <div style={{ textAlign: 'center' }}>
-      <RobotOutlined style={{ fontSize: '16px', color: '#1890ff', marginBottom: '4px' }} />
-      <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+const LlmNode = ({ data }: { data: any }) => {
+  const colors = getNodeColors(data.status, '#096dd9', '#e6f7ff');
+  return (
+    <div style={{ padding: '10px', border: `2px solid ${colors.border}`, borderRadius: '8px', background: colors.background, minWidth: '80px' }}>
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center' }}>
+        <RobotOutlined style={{ fontSize: '16px', color: colors.iconColor, marginBottom: '4px' }} />
+        <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+      </div>
+      <Handle type="source" position={Position.Bottom} />
     </div>
-    <Handle type="source" position={Position.Bottom} />
-  </div>
- );
+  );
+};
 
-const ToolNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '2px solid #d46b08', borderRadius: '8px', background: '#fff7e6', minWidth: '80px' }}>
-    <Handle type="target" position={Position.Top} />
-    <div style={{ textAlign: 'center' }}>
-      <SettingOutlined style={{ fontSize: '16px', color: '#fa8c16', marginBottom: '4px' }} />
-      <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+const ToolNode = ({ data }: { data: any }) => {
+  const colors = getNodeColors(data.status, '#d46b08', '#fff7e6');
+  return (
+    <div style={{ padding: '10px', border: `2px solid ${colors.border}`, borderRadius: '8px', background: colors.background, minWidth: '80px' }}>
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center' }}>
+        <SettingOutlined style={{ fontSize: '16px', color: colors.iconColor, marginBottom: '4px' }} />
+        <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+      </div>
+      <Handle type="source" position={Position.Bottom} />
     </div>
-    <Handle type="source" position={Position.Bottom} />
-  </div>
- );
+  );
+};
 
-
-
-const AgentNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '2px solid #08979c', borderRadius: '8px', background: '#e6fffb', minWidth: '80px' }}>
-    <Handle type="target" position={Position.Top} />
-    <div style={{ textAlign: 'center' }}>
-      <RobotOutlined style={{ fontSize: '16px', color: '#13c2c2', marginBottom: '4px' }} />
-      <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+const AgentNode = ({ data }: { data: any }) => {
+  const colors = getNodeColors(data.status, '#08979c', '#e6fffb');
+  return (
+    <div style={{ padding: '10px', border: `2px solid ${colors.border}`, borderRadius: '8px', background: colors.background, minWidth: '80px' }}>
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center' }}>
+        <RobotOutlined style={{ fontSize: '16px', color: colors.iconColor, marginBottom: '4px' }} />
+        <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+      </div>
+      <Handle type="source" position={Position.Bottom} />
     </div>
-    <Handle type="source" position={Position.Bottom} />
-  </div>
-);
+  );
+};
 
-const EndNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '2px solid #531dab', borderRadius: '8px', background: '#f9f0ff', minWidth: '80px' }}>
-    <Handle type="target" position={Position.Top} />
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: '16px', color: '#722ed1', marginBottom: '4px', fontWeight: 'bold' }}>●</div>
-      <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+const EndNode = ({ data }: { data: any }) => {
+  const colors = getNodeColors(data.status, '#531dab', '#f9f0ff');
+  return (
+    <div style={{ padding: '10px', border: `2px solid ${colors.border}`, borderRadius: '8px', background: colors.background, minWidth: '80px' }}>
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '16px', color: colors.iconColor, marginBottom: '4px', fontWeight: 'bold' }}>●</div>
+        <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
-const RouterNode = ({ data }: { data: any }) => (
-  <div style={{ padding: '10px', border: '2px solid #fa8c16', borderRadius: '8px', background: '#fff7e6', minWidth: '80px' }}>
-    <Handle type="target" position={Position.Top} />
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: '16px', color: '#fa8c16', marginBottom: '4px', fontWeight: 'bold' }}>🔄</div>
-      <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+const RouterNode = ({ data }: { data: any }) => {
+  const colors = getNodeColors(data.status, '#fa8c16', '#fff7e6');
+  return (
+    <div style={{ padding: '10px', border: `2px solid ${colors.border}`, borderRadius: '8px', background: colors.background, minWidth: '80px' }}>
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '16px', color: colors.iconColor, marginBottom: '4px', fontWeight: 'bold' }}>🔄</div>
+        <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+      </div>
+      <Handle type="source" position={Position.Bottom} id="source-true" style={{ left: '30%' }} />
+      <Handle type="source" position={Position.Bottom} id="source-false" style={{ left: '70%' }} />
     </div>
-    <Handle type="source" position={Position.Bottom} id="source-true" style={{ left: '30%' }} />
-    <Handle type="source" position={Position.Bottom} id="source-false" style={{ left: '70%' }} />
-  </div>
-);
+  );
+};
 
 // 节点类型映射
 const nodeTypes: NodeTypes = {
@@ -287,35 +339,66 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 			position,
 			data: { 
 				label: node.label, 
-				nodeType: node.nodeType 
+				nodeType: node.nodeType,
+				status: node.status || 'pending' // 传递状态信息
 			}
 		};
 	};
 
-	// 创建连接线 - 简单直线，参考FlowEditorPage
-	const createEdge = (edge: any, index: number) => {
-		// 为不同的连接线使用不同颜色
-		const colors = ['#1890ff', '#52c41a', '#fa8c16', '#722ed1', '#eb2f96', '#13c2c2'];
-		const color = colors[index % colors.length];
+	// 根据边的状态获取颜色
+	const getEdgeColor = (sourceStatus?: 'pending' | 'running' | 'completed' | 'failed', targetStatus?: 'pending' | 'running' | 'completed' | 'failed', sourceHandle?: string) => {
+		// 路由节点的分支使用特殊颜色
+		if (sourceHandle === 'source-true') {
+			// 真值分支：根据目标节点状态
+			switch (targetStatus) {
+				case 'pending': return '#d9d9d9'; // 灰色
+				case 'running': return '#faad14'; // 黄色
+				case 'completed': return '#52c41a'; // 绿色
+				case 'failed': return '#ff4d4f'; // 红色
+				default: return '#52c41a'; // 默认绿色
+			}
+		} else if (sourceHandle === 'source-false') {
+			// 假值分支：根据目标节点状态
+			switch (targetStatus) {
+				case 'pending': return '#d9d9d9'; // 灰色
+				case 'running': return '#faad14'; // 黄色
+				case 'completed': return '#52c41a'; // 绿色
+				case 'failed': return '#ff4d4f'; // 红色
+				default: return '#fa8c16'; // 默认橙色
+			}
+		}
 		
-		// 根据sourceHandle设置不同的颜色和样式
+		// 普通边：根据源节点和目标节点的状态
+		// 优先使用目标节点状态（因为边表示数据流向）
+		const status = targetStatus || sourceStatus;
+		switch (status) {
+			case 'pending': return '#d9d9d9'; // 灰色
+			case 'running': return '#faad14'; // 黄色
+			case 'completed': return '#52c41a'; // 绿色
+			case 'failed': return '#ff4d4f'; // 红色
+			default: return '#d9d9d9'; // 默认灰色
+		}
+	};
+
+	// 创建连接线 - 根据节点状态设置颜色
+	const createEdge = (edge: any, index: number, nodeStatusMap: Map<string, 'pending' | 'running' | 'completed' | 'failed'>) => {
+		const sourceStatus = nodeStatusMap.get(edge.source);
+		const targetStatus = nodeStatusMap.get(edge.target);
+		const color = getEdgeColor(sourceStatus, targetStatus, edge.sourceHandle);
+		
+		// 根据状态设置样式
 		let edgeStyle = { 
 			stroke: color, 
 			strokeWidth: 2
 		};
 		
-		// 路由节点的分支使用不同颜色
-		if (edge.sourceHandle === 'source-true') {
-			edgeStyle = { 
-				stroke: '#52c41a', // 绿色表示真值分支
-				strokeWidth: 3
-			};
-		} else if (edge.sourceHandle === 'source-false') {
-			edgeStyle = { 
-				stroke: '#fa8c16', // 橙色表示假值分支
-				strokeWidth: 3
-			};
+		// 路由节点的分支使用更粗的线
+		if (edge.sourceHandle === 'source-true' || edge.sourceHandle === 'source-false') {
+			edgeStyle.strokeWidth = 3;
 		}
+		
+		// 如果目标节点正在运行，添加动画效果
+		const animated = targetStatus === 'running';
 		
 		return {
 			id: edge.id,
@@ -324,7 +407,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 			sourceHandle: edge.sourceHandle, // 关键：保留sourceHandle
 			targetHandle: edge.targetHandle, // 保留targetHandle
 			style: edgeStyle,
-			animated: false
+			animated: animated
 		} as Edge;
 	};
 
@@ -345,11 +428,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 		// 计算节点位置
 		const positions = calculateNodePositions(flowData.nodes, flowData.edges);
 		
+		// 创建节点状态映射
+		const nodeStatusMap = new Map<string, 'pending' | 'running' | 'completed' | 'failed'>();
+		flowData.nodes.forEach(node => {
+			nodeStatusMap.set(node.id, node.status || 'pending');
+		});
+		
 		const nodes: Node[] = flowData.nodes.map(node => {
 			const position = positions.get(node.id) || { x: 200, y: 100 };
 			return createNode(node, position);
 		});
-		const edges: Edge[] = flowData.edges.map((edge, index) => createEdge(edge, index));
+		const edges: Edge[] = flowData.edges.map((edge, index) => createEdge(edge, index, nodeStatusMap));
 
 		console.log('🔍 创建的 ReactFlow 节点:', nodes);
 		console.log('🔍 创建的 ReactFlow 连线:', edges);
@@ -361,7 +450,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 			totalNodes: nodes.length,
 			nodeStatuses: nodes.map(node => ({
 				nodeId: node.id,
-				status: 'pending',
+				status: (node.data.status || 'pending') as 'pending' | 'running' | 'completed' | 'failed',
 				label: node.data.label,
 				nodeType: node.data.nodeType || 'default'
 			}))

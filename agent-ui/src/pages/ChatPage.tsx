@@ -742,9 +742,12 @@ const ChatPage: React.FC = () => {
         }
       } catch {}
 
+      console.log('📥 加载消息，sessionId:', sessionId, 'API:', getApiUrl(API_PATHS.SESSION_MESSAGES(sessionId)));
       const response = await fetch(getApiUrl(API_PATHS.SESSION_MESSAGES(sessionId)));
       if (response.ok) {
         const messages = await response.json();
+        console.log('📥 收到消息:', messages.length, '条');
+        console.log('📥 消息详情:', messages);
         
         if (Array.isArray(messages) && messages.length > 0) {
           // 按创建时间排序消息（升序：最早的在前）
@@ -765,6 +768,14 @@ const ChatPage: React.FC = () => {
               toolName: msg.metadata && msg.metadata.tool_name ? msg.metadata.tool_name : undefined,
               rawType: msg.message_type
             };
+            
+            console.log('📥 处理消息:', {
+              id: msg.id,
+              message_type: msg.message_type,
+              content: msg.content,
+              isUser: isUserMessage(msg.message_type),
+              isAgent: isAgentMessage(msg.message_type)
+            });
             
             if (isUserMessage(msg.message_type)) {
               // 用户消息：直接挂content
@@ -792,6 +803,7 @@ const ChatPage: React.FC = () => {
             }
           });
           
+          console.log('📥 格式化后的消息:', formattedMessages);
           setMessages(formattedMessages);
           
 
@@ -986,6 +998,11 @@ const ChatPage: React.FC = () => {
     // 发送消息到智能体
     // 如果没有session_id，创建一个临时的session_id
     const sessionId = currentSession?.session_id || `temp_${Date.now()}`;
+    console.log('📤 发送消息到智能体:', {
+      currentSession: currentSession,
+      sessionId: sessionId,
+      hasSessionId: !!currentSession?.session_id
+    });
     if (currentSession && !currentSession.session_id) {
       // 更新currentSession，添加session_id
       setCurrentSession({
@@ -1042,6 +1059,8 @@ const ChatPage: React.FC = () => {
               agent_name: agentName,  // 使用name字段，不是display_name
               context: {}
             }),
+            // 添加日志
+            // console.log('📤 流式请求:', { session_id: sessionId, agent_name: agentName, message: inputValue })
           });
 
         if (!response.ok) {
@@ -1584,70 +1603,74 @@ const ChatPage: React.FC = () => {
                             <div className="message-header">
                               <Text className="message-name">AI助手</Text>
                             </div>
-                                                        <div className="message-text">
-                              {msg.nodes && msg.nodes.length > 0 ? (
-                                // 按节点执行顺序显示（保持添加顺序，因为node_start是按执行顺序发送的）
-                                msg.nodes.map((node: any, nodeIndex: number) => (
-                                  <div key={`node-${node.node_id}-${nodeIndex}`} className="node-group" style={{ marginBottom: '16px' }}>
-                                    {/* 节点标题 */}
-                                    <div className="node-header" style={{ 
-                                      padding: '8px 16px', 
-                                      backgroundColor: '#f5f5f5', 
-                                      borderLeft: '4px solid #1890ff',
-                                      margin: '16px 0 8px 0',
-                                      borderRadius: '4px'
-                                    }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                        <NodeInfoTag
-                                          nodeType={node.node_type || 'unknown'}
-                                          nodeName={node.node_name || '未知节点'}
-                                          nodeLabel={node.node_label}
-                                          metadata={node}
-                                        />
-                                        <Text type="secondary" style={{ fontSize: '12px' }}>
-                                          片段数量: {node.chunk_count || node.chunk_list?.length || 0}
-                                        </Text>
-                                      </div>
-                                    </div>
-                                    
-                                    {/* 节点内容 - 支持两种格式 */}
-                                    <div className="node-content" style={{ padding: '0 16px 16px 16px' }}>
-                                      <div className="combined-content" style={{
-                                        padding: '12px',
-                                        backgroundColor: '#fafafa',
-                                        borderRadius: '4px',
-                                        border: '1px solid #e8e8e8'
+                              <div className="message-text"> 
+                              {/* 如果有节点，显示节点执行过程的详细信息 */}
+                              {msg.nodes && msg.nodes.length > 0 && (
+                                <div style={{ marginTop: msg.content ? '16px' : '0' }}>
+                                  {msg.nodes.map((node: any, nodeIndex: number) => (
+                                    <div key={`node-${node.node_id}-${nodeIndex}`} className="node-group" style={{ marginBottom: '16px' }}>
+                                      {/* 节点标题 */}
+                                      <div className="node-header" style={{ 
+                                        padding: '8px 16px', 
+                                        backgroundColor: '#f5f5f5', 
+                                        borderLeft: '4px solid #1890ff',
+                                        margin: '16px 0 8px 0',
+                                        borderRadius: '4px'
                                       }}>
-                                        {/* 优先使用后台存储的content，前端分片用于流式显示 */}
-                                        {node.content ? (
-                                          <ThinkTagRenderer
-                                            content={node.content}
-                                            nodeInfo={{
-                                              node_type: node.node_type,
-                                              node_name: node.node_name,
-                                              node_label: node.node_label
-                                            }}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                          <NodeInfoTag
+                                            nodeType={node.node_type || 'unknown'}
+                                            nodeName={node.node_name || '未知节点'}
+                                            nodeLabel={node.node_label}
+                                            metadata={node}
                                           />
-                                        ) : node.chunk_list && node.chunk_list.length > 0 ? (
-                                          <ThinkTagRenderer
-                                            content={node.chunk_list.map((chunk: any) => chunk.content).join('')}
-                                            nodeInfo={{
-                                              node_type: node.node_type,
-                                              node_name: node.node_name,
-                                              node_label: node.node_label
-                                            }}
-                                          />
-                                        ) : (
-                                          <Text type="secondary">暂无内容</Text>
-                                        )}
+                                          <Text type="secondary" style={{ fontSize: '12px' }}>
+                                            片段数量: {node.chunk_count || node.chunk_list?.length || 0}
+                                          </Text>
+                                        </div>
+                                      </div>
+                                      
+                                      {/* 节点内容 - 支持两种格式 */}
+                                      <div className="node-content" style={{ padding: '0 16px 16px 16px' }}>
+                                        <div className="combined-content" style={{
+                                          padding: '12px',
+                                          backgroundColor: '#fafafa',
+                                          borderRadius: '4px',
+                                          border: '1px solid #e8e8e8'
+                                        }}>
+                                          {/* 优先使用后台存储的content，前端分片用于流式显示 */}
+                                          {node.content ? (
+                                            <ThinkTagRenderer
+                                              content={node.content}
+                                              nodeInfo={{
+                                                node_type: node.node_type,
+                                                node_name: node.node_name,
+                                                node_label: node.node_label
+                                              }}
+                                            />
+                                          ) : node.chunk_list && node.chunk_list.length > 0 ? (
+                                            <ThinkTagRenderer
+                                              content={node.chunk_list.map((chunk: any) => chunk.content).join('')}
+                                              nodeInfo={{
+                                                node_type: node.node_type,
+                                                node_name: node.node_name,
+                                                node_label: node.node_label
+                                              }}
+                                            />
+                                          ) : (
+                                            <Text type="secondary">暂无内容</Text>
+                                          )}
+                                        </div>
                                       </div>
                                     </div>
-                                  </div>
-                                ))
-                              ) : (
-                                // 如果没有节点，显示消息内容
+                                  ))}
+                                </div>
+                              )}
+                              
+                              {/* 如果既没有内容也没有节点，显示提示 */}
+                              {!msg.content && (!msg.nodes || msg.nodes.length === 0) && (
                                 <div style={{ padding: '16px' }}>
-                                  {msg.content || '正在思考...'}
+                                  <Text type="secondary">正在思考...</Text>
                                 </div>
                               )}
                             </div>

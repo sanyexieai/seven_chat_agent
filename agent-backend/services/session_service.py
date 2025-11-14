@@ -73,6 +73,7 @@ class MessageService:
     def create_message(db: Session, message_data: MessageCreate) -> 'MessageResponse':
         """创建消息"""
         message_id = str(uuid.uuid4())
+        logger.info(f"创建消息：message_id={message_id}, session_id={message_data.session_id}, message_type={message_data.message_type}, content_length={len(message_data.content) if message_data.content else 0}")
         message = ChatMessage(
             message_id=message_id,
             session_id=message_data.session_id,
@@ -85,7 +86,12 @@ class MessageService:
         db.add(message)
         db.commit()
         db.refresh(message)
-        logger.info(f"创建消息: {message_id}")
+        logger.info(f"✅ 消息已保存到数据库：message_id={message_id}, id={message.id}, session_id={message.session_id}")
+        
+        # 验证保存的内容
+        db.refresh(message)
+        saved_content_length = len(message.content) if message.content else 0
+        logger.info(f"🔍 验证保存的内容：数据库中的 content length={saved_content_length}, content preview={repr(message.content[:100]) if message.content else 'None'}")
         
         # 返回Pydantic模型而不是数据库模型
         from models.database_models import MessageResponse
@@ -102,15 +108,25 @@ class MessageService:
         )
     
     @staticmethod
-    def get_session_messages(db: Session, session_id: int, limit: int = 100) -> List['MessageResponse']:
-        """获取会话的最近消息（优先包含最新的workspace_summary等）"""
+    def get_session_messages(db: Session, session_id: str, limit: int = 100) -> List['MessageResponse']:
+        """获取会话的最近消息（优先包含最新的workspace_summary等）
+        
+        Args:
+            db: 数据库会话
+            session_id: 会话ID（字符串类型，UUID格式）
+            limit: 返回消息数量限制
+        """
+        logger.info(f"查询消息：session_id={session_id}, limit={limit}")
         # 先按时间倒序获取更多条数，再过滤软删，然后取前limit条并升序返回
         recent = db.query(ChatMessage).filter(
             ChatMessage.session_id == session_id
         ).order_by(ChatMessage.created_at.desc()).limit(limit * 2).all()
         
+        logger.info(f"从数据库查询到 {len(recent)} 条原始消息")
         filtered = [m for m in recent if not ((m.message_metadata or {}).get('deleted') is True)]
+        logger.info(f"过滤后剩余 {len(filtered)} 条消息")
         messages = list(reversed(filtered[:limit]))
+        logger.info(f"最终返回 {len(messages)} 条消息")
         
         # 转换为Pydantic模型
         from models.database_models import MessageResponse, MessageNodeResponse
@@ -141,12 +157,19 @@ class MessageService:
             if message.content:
                 # 如果消息本身有content，直接使用
                 message_content = message.content
+                logger.debug(f"消息 {message.message_id} 使用数据库中的 content，length={len(message_content)}")
             else:
                 # 否则从节点中获取内容
+                logger.debug(f"消息 {message.message_id} 数据库中的 content 为空，尝试从节点获取")
                 for node in nodes:
                     if node.content:
                         message_content = node.content
+                        logger.debug(f"消息 {message.message_id} 从节点 {node.node_id} 获取内容，length={len(message_content)}")
                         break
+            
+            # 验证返回的内容
+            if message.message_type == "assistant" and not message_content:
+                logger.warning(f"⚠️ 助手消息 {message.message_id} 的 content 为空！数据库中的 content length={len(message.content) if message.content else 0}, 节点数量={len(nodes)}")
             
             result.append(MessageResponse(
                 id=message.id,

@@ -88,6 +88,19 @@ class LLMNode(BaseFlowNode):
 			# 尝试解析 JSON 并合并到 flow_state
 			self._merge_json_into_flow_state(accumulated, context.get('flow_state', {}))
 			
+			# 流式执行完成后，发送 final chunk 标记结束
+			# 这样引擎的 on_final 钩子才能被调用，从而保存助手消息
+			logger.info(f"LLM节点 {self.id} 流式执行完成，发送 final chunk，accumulated type={type(accumulated)}, content length={len(accumulated) if accumulated else 0}, content preview={repr(accumulated[:200]) if accumulated else 'None'}")
+			final_chunk = self._create_stream_chunk(
+				chunk_type="final",
+				content=accumulated,
+				agent_name=agent_name,
+				is_end=True,
+				metadata={'is_final': True}
+			)
+			logger.info(f"LLM节点 {self.id} 创建的 final chunk: type={final_chunk.type}, content type={type(final_chunk.content)}, content length={len(final_chunk.content) if final_chunk.content else 0}, content preview={repr(final_chunk.content[:200]) if final_chunk.content else 'None'}")
+			yield final_chunk
+			
 		except Exception as e:
 			logger.error(f"LLM节点流式执行失败: {str(e)}")
 			yield self._create_stream_chunk(

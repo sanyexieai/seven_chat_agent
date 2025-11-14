@@ -887,13 +887,21 @@ const FlowEditorPage: React.FC = () => {
       if (nodes && Array.isArray(nodes)) {
         console.log('加载节点:', nodes);
         const nodesWithDelete = nodes.map((node: any) => {
-          const isStart = node.data?.nodeType === 'start' || node.id === 'start_node';
-          const isEnd = node.data?.nodeType === 'end' || node.id === 'end_node';
+          // 从implementation或type获取节点类型
+          const nodeType = node.implementation || node.type || node.data?.nodeType || 'llm';
+          const isStart = nodeType === 'start' || node.id === 'start_node';
+          const isEnd = nodeType === 'end' || node.id === 'end_node';
           return {
             ...node,
+            type: nodeType, // ReactFlow渲染类型
             data: {
               ...node.data,
+              label: node.data?.label || node.id,
+              nodeType: nodeType, // 后端节点类型
+              isStartNode: isStart,
+              isEndNode: isEnd,
               isFixed: isStart || isEnd,
+              config: node.data?.config || {}, // 确保config被正确加载
               onDelete: (isStart || isEnd)
                 ? () => message.warning('开始节点和结束节点不能删除')
                 : (nodeId: string) => {
@@ -1226,38 +1234,30 @@ const FlowEditorPage: React.FC = () => {
     if (!selectedNode) return;
     
     try {
-      // 构建节点配置
-      const config = {
-        ...selectedNode.data.config,
-        ...values
-      };
-      
-      // 移除不需要的字段，但保留节点类型特定的配置
-      delete config.label;
-      delete config.isStartNode;
-      delete config.config; // 高级配置字段
+      // 从原有配置开始，只更新相关字段，避免覆盖其他配置
+      const config = { ...selectedNode.data.config };
       
       // 根据节点类型保留相应的配置字段
       if (selectedNode.data.nodeType === 'agent') {
         // 保留智能体相关配置
-        config.agent_name = values.agent_name;
+        if (values.agent_name !== undefined) config.agent_name = values.agent_name;
       } else if (selectedNode.data.nodeType === 'condition') {
         // 保留条件相关配置
-        config.condition = values.condition;
+        if (values.condition !== undefined) config.condition = values.condition;
       } else if (selectedNode.data.nodeType === 'action') {
         // 保留动作相关配置
-        config.action = values.action;
+        if (values.action !== undefined) config.action = values.action;
       } else if (selectedNode.data.nodeType === 'llm') {
-        // LLM 节点配置
-        config.system_prompt = values.system_prompt || '';
-        config.user_prompt = values.user_prompt || '{{message}}';
-        if (values.save_as) config.save_as = values.save_as;
+        // LLM 节点配置 - 确保保存所有相关字段
+        if (values.system_prompt !== undefined) config.system_prompt = values.system_prompt || '';
+        if (values.user_prompt !== undefined) config.user_prompt = values.user_prompt || '{{message}}';
+        if (values.save_as !== undefined) config.save_as = values.save_as;
       } else if (selectedNode.data.nodeType === 'tool') {
-        // 工具 节点配置
-        if (values.server) config.server = values.server;
-        if (values.tool) config.tool = values.tool;
+        // 工具 节点配置 - 只更新提供的字段
+        if (values.server !== undefined) config.server = values.server;
+        if (values.tool !== undefined) config.tool = values.tool;
         if (typeof values.append_to_output !== 'undefined') config.append_to_output = !!values.append_to_output;
-        if (values.save_as) config.save_as = values.save_as;
+        if (values.save_as !== undefined) config.save_as = values.save_as;
         if (typeof values.params !== 'undefined') {
           try {
             const parsed = JSON.parse(values.params);
@@ -1268,16 +1268,15 @@ const FlowEditorPage: React.FC = () => {
         }
       
       } else if (selectedNode.data.nodeType === 'router') {
-        // 路由节点配置
-        config.routing_logic = {
-          field: values.field || '',
-          value: values.value || undefined,
-          operator: values.operator || undefined,
-          threshold: values.threshold || undefined,
-          pattern: values.pattern || undefined,
-          true_branch: values.true_branch || '',
-          false_branch: values.false_branch || ''
-        };
+        // 路由节点配置 - 保留原有配置，只更新提供的字段
+        if (!config.routing_logic) config.routing_logic = {};
+        if (values.field !== undefined) config.routing_logic.field = values.field || '';
+        if (values.value !== undefined) config.routing_logic.value = values.value;
+        if (values.operator !== undefined) config.routing_logic.operator = values.operator;
+        if (values.threshold !== undefined) config.routing_logic.threshold = values.threshold;
+        if (values.pattern !== undefined) config.routing_logic.pattern = values.pattern;
+        if (values.true_branch !== undefined) config.routing_logic.true_branch = values.true_branch || '';
+        if (values.false_branch !== undefined) config.routing_logic.false_branch = values.false_branch || '';
         // 清理undefined值
         Object.keys(config.routing_logic).forEach(key => {
           if (config.routing_logic[key] === undefined) {
@@ -1316,14 +1315,13 @@ const FlowEditorPage: React.FC = () => {
           setEdges(eds => [...eds, newFalseEdge]);
         }
       } else if (selectedNode.data.nodeType === 'knowledgeBase') {
-        // 知识库节点配置
-        config.knowledge_base_config = {
-          knowledge_base_id: values.knowledge_base_id,
-          query_type: values.query_type || 'semantic',
-          max_results: values.max_results || 5,
-          query_template: values.query_template || '{{message}}',
-          save_as: values.save_as || 'knowledge_result'
-        };
+        // 知识库节点配置 - 保留原有配置，只更新提供的字段
+        if (!config.knowledge_base_config) config.knowledge_base_config = {};
+        if (values.knowledge_base_id !== undefined) config.knowledge_base_config.knowledge_base_id = values.knowledge_base_id;
+        if (values.query_type !== undefined) config.knowledge_base_config.query_type = values.query_type || 'semantic';
+        if (values.max_results !== undefined) config.knowledge_base_config.max_results = values.max_results || 5;
+        if (values.query_template !== undefined) config.knowledge_base_config.query_template = values.query_template || '{{message}}';
+        if (values.save_as !== undefined) config.knowledge_base_config.save_as = values.save_as || 'knowledge_result';
       }
       
       setNodes((nds) =>

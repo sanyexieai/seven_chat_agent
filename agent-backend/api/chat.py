@@ -233,6 +233,9 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                 business_handler.session_id = request.session_id
                 business_handler.agent_name = agent.description if hasattr(agent, 'description') else agent.name
                 
+                # 记录session_id信息用于调试
+                logger.info(f"流式聊天请求：session_id={request.session_id}, user_id={request.user_id}, agent_name={business_handler.agent_name}")
+                
                 # 执行流式处理
                 async for chunk in execute_agent_stream(
                     agent=agent,
@@ -278,15 +281,36 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                     yield data_chunk
                     
                     # 如果是最终块或错误块，发送完成信号
-                    if chunk.type in ("final", "error", "done"):
-                        if chunk.type != "done":
-                            # 发送完成信号
-                            done_data = {
-                                'type': 'done',
-                                'tools_used': business_handler.get_tools_used()
-                            }
-                            yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+                    # 注意：不要立即 break，因为流程可能还没有执行到结束节点
+                    # 继续接收后续的 chunk，直到收到 done 类型的 chunk 或者生成器结束
+                    if chunk.type == "error":
+                        # 错误块：立即发送完成信号并 break
+                        done_data = {
+                            'type': 'done',
+                            'tools_used': business_handler.get_tools_used()
+                        }
+                        yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
                         break
+                    elif chunk.type == "done":
+                        # done 块：发送完成信号并 break
+                        done_data = {
+                            'type': 'done',
+                            'tools_used': business_handler.get_tools_used()
+                        }
+                        yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+                        break
+                    elif chunk.type == "final":
+                        # final 块：发送完成信号，但不要立即 break，继续接收后续的 chunk
+                        # 这样可以让流程继续执行到结束节点
+                        # 注意：前端可能会在收到 final chunk 后停止显示，但后端会继续执行
+                        done_data = {
+                            'type': 'done',
+                            'tools_used': business_handler.get_tools_used()
+                        }
+                        yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+                        # 不要 break，继续接收后续的 chunk（如结束节点的 chunk）
+                        # 但是，为了避免无限等待，我们需要一个机制来检测是否真的结束了
+                        # 暂时不 break，让流程继续执行
                 
                 logger.info(f"智能体 {agent.name} 流式处理消息完成")
                 
@@ -391,8 +415,9 @@ async def get_chat_messages(session_id: str, db: Session = Depends(get_db)):
     """获取聊天消息"""
     try:
         # 使用 MessageService 获取消息和节点信息
+        # session_id 是字符串类型（UUID），不是整数
         from services.session_service import MessageService
-        messages = MessageService.get_session_messages(db, int(session_id))
+        messages = MessageService.get_session_messages(db, session_id)
         
         # 转换为 ChatMessageResponse 格式
         from models.database_models import ChatMessageResponse, MessageNodeResponse
@@ -419,6 +444,7 @@ async def get_chat_messages(session_id: str, db: Session = Depends(get_db)):
                 session_id=message.session_id,
                 user_id=message.user_id,
                 message_type=message.message_type,
+                content=message.content,  # 添加消息内容！
                 agent_name=message.agent_name,
                 metadata=message.metadata,
                 created_at=message.created_at,

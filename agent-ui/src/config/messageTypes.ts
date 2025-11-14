@@ -6,7 +6,7 @@
 // 用户消息类型
 export const USER_MESSAGE_TYPES = ['user', 'human'] as const;
 
-// 智能体消息类型
+// 智能体消息类型（包括 assistant，这是后端保存助手消息时使用的类型）
 export const AGENT_MESSAGE_TYPES = ['agent', 'assistant', 'ai'] as const;
 
 // 系统消息类型

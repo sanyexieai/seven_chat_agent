@@ -392,6 +392,7 @@ class ChatMessageResponse(BaseModel):
     session_id: str
     user_id: str
     message_type: str
+    content: str  # 添加消息内容字段！
     agent_name: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     created_at: datetime

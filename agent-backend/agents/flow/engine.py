@@ -290,6 +290,7 @@ class FlowEngine:
 				yield error_chunk
 			return
 		
+		logger.info(f"FlowEngine.run_stream 开始执行，start_node_id={current_id}, session_id={session_id}, on_final={self.on_final is not None}")
 		final_chunk = None
 		
 		while current_id:
@@ -323,16 +324,19 @@ class FlowEngine:
 			# 收集当前节点的输出内容（从 content chunk 中收集）
 			# 注意：只收集属于当前节点的 content chunk，不收集其他类型的 chunk
 			node_output_content = ""
+			current_node_final_chunk = None  # 当前节点的 final chunk（如果有）
 			async for chunk in node.execute_stream(user_id=user_id, message=message, context=context, agent_name=agent_name):
 				# 收集 content 类型的 chunk 内容
 				if chunk.type == "content" and chunk.content is not None:
 					# 累加节点的输出内容
 					# 注意：对于流式输出，每个 chunk 是增量内容，直接累加即可
-					node_output_content += chunk.content
+					chunk_content = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+					node_output_content += chunk_content
+					logger.debug(f"节点 {node.id} 累加 content chunk，当前 node_output_content length={len(node_output_content)}")
 					# 若为内容流，尝试增量保存 last_output
 					try:
 						if hasattr(node, "save_output"):
-							node.save_output(context, chunk.content)
+							node.save_output(context, chunk_content)
 					except Exception:
 						pass
 				# 对于 tool_result 类型，也收集内容（工具节点会同时发送 tool_result 和 content）
@@ -340,13 +344,34 @@ class FlowEngine:
 					# 工具结果已经通过 content chunk 发送，这里不需要重复收集
 					pass
 				
+				# 如果是最终块，在调用钩子之前先保存引用（避免钩子修改或过滤）
+				if chunk and chunk.type == "final":
+					final_chunk_content = chunk.content if isinstance(chunk.content, str) else str(chunk.content) if chunk.content else ""
+					logger.info(f"节点 {node.id} 发送了 final chunk，保存引用，content type={type(chunk.content)}, content length={len(final_chunk_content)}, node_output_content length={len(node_output_content)}, content preview={repr(final_chunk_content[:200]) if final_chunk_content else 'None'}")
+					final_chunk = chunk
+					current_node_final_chunk = chunk  # 保存当前节点的 final chunk
+					
+					# 对于 LLM 节点，final chunk 包含完整的输出内容
+					# 优先使用 final chunk 的内容（它包含完整的输出），因为它可能比累加的 node_output_content 更完整
+					if final_chunk_content:
+						# 如果 final chunk 的内容更长或 node_output_content 为空，使用 final chunk 的内容
+						if len(final_chunk_content) >= len(node_output_content):
+							node_output_content = final_chunk_content
+							logger.info(f"节点 {node.id} 使用 final chunk 的内容更新 node_output_content，length={len(node_output_content)}")
+						else:
+							logger.warning(f"节点 {node.id} final chunk 的内容比 node_output_content 短，final_chunk length={len(final_chunk_content)}, node_output_content length={len(node_output_content)}")
+					
+					# 注意：不要在这里调用 on_final 钩子，因为流程可能还没有执行到结束节点
+					# on_final 钩子应该在所有节点执行完成后调用（在 while 循环结束后）
+					# 但是，由于 api/chat.py 在收到 final chunk 后会 break，我们需要延迟调用 on_final
+					# 暂时不调用，让流程继续执行到结束节点
+					# 但是，我们需要确保消息被保存，所以如果这是第一个 final chunk，先保存消息
+					# 但不要 break，让流程继续执行到结束节点
+				
 				# 调用钩子处理块
 				if self.on_chunk:
 					chunk = self.on_chunk(chunk)
-				
-				# 如果是最终块，保存引用
-				if chunk and chunk.type == "final":
-					final_chunk = chunk
+					# 如果钩子返回 None，说明被过滤了，但我们已经保存了 final_chunk 的引用
 				
 				# 透传节点流
 				if chunk:
@@ -383,9 +408,12 @@ class FlowEngine:
 			
 			# 如果还是没有，根据节点类型决定
 			if not node_output_content:
-				if node.category.value in ('start', 'end'):
-					# start 和 end 节点通常没有输出内容
+				if node.category.value == 'start':
+					# start 节点通常没有输出内容
 					node_output_content = ""
+				elif node.category.value == 'end':
+					# end 节点如果没有输出内容，使用默认的"结束"
+					node_output_content = "结束"
 				elif node.category.value == 'router':
 					# 路由节点：尝试从路由决策中获取
 					try:
@@ -404,13 +432,33 @@ class FlowEngine:
 			
 			# 发送节点完成事件
 			# _create_stream_chunk 会自动添加 node_id, node_category, node_implementation, node_name, node_label 到 metadata
+			# 对于 LLM 节点，如果发送了 final chunk，应该使用 final chunk 的内容作为节点输出
+			# 否则使用收集到的 node_output_content
+			final_output = node_output_content
+			if current_node_final_chunk and current_node_final_chunk.content:
+				# 如果当前节点发送了 final chunk，优先使用 final chunk 的内容（它包含完整的输出）
+				# 但是，如果 node_output_content 更长，说明它已经包含了所有内容，使用它
+				final_chunk_content = current_node_final_chunk.content if isinstance(current_node_final_chunk.content, str) else str(current_node_final_chunk.content)
+				if len(final_chunk_content) > len(node_output_content):
+					final_output = final_chunk_content
+					logger.info(f"📝 节点 {node.id} ({node.name}) 使用 final chunk 的内容作为输出，length={len(final_output)}, preview={repr(final_output[:100])}")
+				else:
+					# node_output_content 已经包含了完整内容，使用它
+					final_output = node_output_content
+					logger.info(f"📝 节点 {node.id} ({node.name}) 使用收集到的 node_output_content（比 final chunk 更长），length={len(final_output)}, preview={repr(final_output[:100])}")
+			elif node_output_content:
+				logger.info(f"📝 节点 {node.id} ({node.name}) 使用收集到的 node_output_content，length={len(node_output_content)}, preview={repr(node_output_content[:100])}")
+			else:
+				logger.warning(f"⚠️ 节点 {node.id} ({node.name}) 没有输出内容")
+			
 			node_complete_chunk = node._create_stream_chunk(
 				chunk_type="node_complete",
 				content=node.name,
 				session_id=session_id,
 				agent_name=agent_name,
-				metadata={"output": node_output_content}  # 使用当前节点的输出，而不是全局的 last_output
+				metadata={"output": final_output}  # 使用当前节点的输出，而不是全局的 last_output
 			)
+			logger.info(f"📤 发送节点完成事件：node_id={node.id}, output length={len(final_output) if final_output else 0}")
 			if self.on_chunk:
 				node_complete_chunk = self.on_chunk(node_complete_chunk)
 			if node_complete_chunk:
@@ -437,9 +485,13 @@ class FlowEngine:
 			
 			current_id = next_id
 		
+		# while循环结束后，处理最终块和钩子
+		logger.info(f"while循环结束，current_id={current_id}, final_chunk={final_chunk is not None}")
+		
 		# 如果没有最终块，创建一个
 		if not final_chunk:
 			final_content = context.get('flow_state', {}).get('last_output', '')
+			logger.info(f"未找到 final chunk，创建新的 final chunk，content length={len(final_content) if final_content else 0}")
 			final_chunk = StreamChunk(
 				chunk_id=str(uuid.uuid4()),
 				session_id=session_id,
@@ -448,18 +500,40 @@ class FlowEngine:
 				agent_name=agent_name or "FlowEngine",
 				is_end=True
 			)
+		else:
+			logger.info(f"找到 final chunk，type={final_chunk.type}, content length={len(final_chunk.content) if final_chunk.content else 0}")
 		
-		# 调用最终钩子
+		# 调用最终钩子（在yield之前调用，确保消息被保存）
+		# 注意：如果 final chunk 已经在 while 循环中被处理，on_final 已经在那个时候被调用了
+		# 但是，此时所有节点应该都已经完成了，所以需要再次保存节点信息以确保所有节点输出都被保存
 		if self.on_final:
-			try:
-				self.on_final(final_chunk)
-			except Exception as e:
-				logger.error(f"Final hook failed: {e}")
+			if not final_chunk:
+				# 如果没有 final chunk，创建一个并调用 on_final
+				try:
+					logger.info(f"while循环结束后没有 final chunk，创建新的并调用 on_final 钩子")
+					self.on_final(final_chunk)
+					logger.info("on_final 钩子执行完成")
+				except Exception as e:
+					logger.error(f"Final hook failed: {e}", exc_info=True)
+			else:
+				# 此时所有节点应该都已经完成了，包括结束节点
+				# 调用 on_final 钩子保存消息和节点信息
+				try:
+					logger.info(f"while循环结束后调用 on_final 钩子，final_chunk type={final_chunk.type}, content length={len(final_chunk.content) if final_chunk.content else 0}")
+					self.on_final(final_chunk)
+					logger.info("on_final 钩子执行完成")
+				except Exception as e:
+					logger.error(f"Final hook failed: {e}", exc_info=True)
+		else:
+			logger.warning("on_final 钩子未设置，无法保存助手消息")
 		
-		# 发送最终块
+		# 发送最终块（在on_final之后发送，确保消息已保存）
 		if self.on_chunk:
 			final_chunk = self.on_chunk(final_chunk) or final_chunk
 		if final_chunk:
+			logger.info(f"yield final chunk，type={final_chunk.type}, content length={len(final_chunk.content) if final_chunk.content else 0}")
 			yield final_chunk
+		
+		logger.info("FlowEngine.run_stream 执行完成")
 
 

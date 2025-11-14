@@ -95,7 +95,7 @@ class MessageNode(Base):
     node_label = Column(String(200), nullable=True)  # 节点标签
     content = Column(Text, nullable=True)  # 节点输出内容
     node_metadata = Column(JSON, nullable=True)  # 节点元数据
-    chunk_count = Column(Integer, default=0)  # 片段数量
+    chunk_count = Column(Integer, default=0)  # token
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # 关联关系
@@ -380,7 +380,7 @@ class MessageNodeResponse(BaseModel):
     node_label: Optional[str] = None
     content: Optional[str] = None  # 节点输出内容
     node_metadata: Optional[Dict[str, Any]] = None
-    chunk_count: Optional[int] = 0  # 片段数量
+    chunk_count: Optional[int] = 0  # tokens
     created_at: datetime
     
     class Config:

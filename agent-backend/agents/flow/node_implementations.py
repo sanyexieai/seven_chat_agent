@@ -467,25 +467,29 @@ class EndNode(BaseFlowNode):
 	
 	async def execute_stream(self, user_id: str, message: str, context: Dict[str, Any], agent_name: str = None) -> AsyncGenerator[StreamChunk, None]:
 		"""结束节点流式执行"""
-		flow_state = self._get_flow_state(context)
-		final_content = flow_state.get('last_output', '')
-		
-		# 如果没有最终内容，至少返回"结束"
-		if not final_content:
-			final_content = "结束"
+		# 参考开始节点，直接返回"结束"文本
+		end_content = "结束"
 		
 		# 保存结束节点的输出
-		self.append_node_output(context, final_content, node_id=self.id, also_save_as_last_output=False)
+		self.append_node_output(context, end_content, node_id=self.id, also_save_as_last_output=False)
 		
 		# 先输出 content 类型，确保节点有内容显示
 		yield self._create_stream_chunk(
 			chunk_type="content",
-			content=final_content,
+			content=end_content,
 			agent_name=agent_name,
 			metadata={'is_final': True}
 		)
 		
 		# 然后输出 final 类型，标记流程结束
+		# 注意：final chunk 的 content 应该包含完整的助手回复内容
+		# 从 flow_state 中获取 last_output 作为最终的助手回复
+		flow_state = self._get_flow_state(context)
+		final_content = flow_state.get('last_output', '')
+		# 如果 last_output 为空，使用"结束"作为最终内容
+		if not final_content:
+			final_content = end_content
+		
 		yield self._create_stream_chunk(
 			chunk_type="final",
 			content=final_content,

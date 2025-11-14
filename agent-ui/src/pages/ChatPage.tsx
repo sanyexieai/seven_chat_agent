@@ -33,7 +33,7 @@ interface Message {
     node_name: string;
     node_label: string;
     content?: string;
-    chunk_count?: number; // 片段数量（从数据库获取）
+    chunk_count?: number; // tokens（从数据库获取）
     chunk_list: Array<{
       chunk_id: string;
       content: string;
@@ -1625,7 +1625,7 @@ const ChatPage: React.FC = () => {
                                             metadata={node}
                                           />
                                           <Text type="secondary" style={{ fontSize: '12px' }}>
-                                            片段数量: {node.chunk_count || node.chunk_list?.length || 0}
+                                            tokens: {node.chunk_count || node.chunk_list?.length || 0}
                                           </Text>
                                         </div>
                                       </div>

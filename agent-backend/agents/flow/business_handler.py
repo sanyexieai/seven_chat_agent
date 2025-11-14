@@ -80,10 +80,23 @@ class FlowBusinessHandler:
 						'node_name': chunk.metadata.get('node_name'),
 						'node_label': chunk.metadata.get('node_label'),
 						'node_metadata': chunk.metadata,
-						'output': ''  # 初始化输出为空字符串，后续通过 node_complete 事件更新
+						'output': '',  # 初始化输出为空字符串，后续通过 node_complete 事件更新
+						'chunk_count': 0  # 初始化 chunk 计数为 0
 					}
 					self.collected_nodes.append(node_info)
 					logger.info(f"📝 收集节点信息：node_id={node_id}, node_type={node_type}, node_name={chunk.metadata.get('node_name')}, 当前已收集 {len(self.collected_nodes)} 个节点")
+		
+		# 统计 content chunk 数量（属于当前节点的 content chunk）
+		if chunk.type == "content" and chunk.metadata:
+			node_id = chunk.metadata.get('node_id')
+			if node_id:
+				existing_node = next(
+					(node for node in self.collected_nodes if node['node_id'] == node_id),
+					None
+				)
+				if existing_node:
+					# 增加该节点的 chunk 计数
+					existing_node['chunk_count'] = existing_node.get('chunk_count', 0) + 1
 		
 		# 更新节点输出
 		if chunk.type == "node_complete" and chunk.metadata:
@@ -98,11 +111,11 @@ class FlowBusinessHandler:
 					node_output = chunk.metadata.get('output', '')
 					if node_output:
 						existing_node['output'] = node_output
-						logger.info(f"✅ 更新节点 {node_id} 的输出，length={len(node_output)}, preview={repr(node_output[:100])}")
+						logger.info(f"✅ 更新节点 {node_id} 的输出，length={len(node_output)}, preview={repr(node_output[:100])}, chunk_count={existing_node.get('chunk_count', 0)}")
 						
 						# 如果助手消息已经保存，立即更新数据库中的节点信息
 						if self.assistant_message_id and self.db:
-							self._update_node_info_in_db(node_id, node_output)
+							self._update_node_info_in_db(node_id, node_output, existing_node.get('chunk_count', 0))
 					else:
 						logger.warning(f"⚠️ 节点 {node_id} 的 node_complete 事件中没有 output 字段，metadata keys={list(chunk.metadata.keys())}")
 				else:
@@ -298,7 +311,8 @@ class FlowBusinessHandler:
 				for node_info in self.collected_nodes:
 					node_output = node_info.get('output', '')
 					node_id = node_info['node_id']
-					logger.info(f"保存节点记录：node_id={node_id}, node_type={node_info.get('node_type')}, output length={len(node_output) if node_output else 0}, output preview={repr(node_output[:100]) if node_output else 'None'}")
+					chunk_count = node_info.get('chunk_count', 0)
+					logger.info(f"保存节点记录：node_id={node_id}, node_type={node_info.get('node_type')}, output length={len(node_output) if node_output else 0}, chunk_count={chunk_count}, output preview={repr(node_output[:100]) if node_output else 'None'}")
 					
 					# 检查节点是否已经保存
 					existing_node = self.db.query(MessageNode).filter(
@@ -313,8 +327,9 @@ class FlowBusinessHandler:
 						existing_node.node_name = node_info.get('node_name')
 						existing_node.node_label = node_info.get('node_label')
 						existing_node.node_metadata = node_info.get('node_metadata', {})
+						existing_node.chunk_count = chunk_count  # 更新 chunk_count
 						updated_count += 1
-						logger.info(f"✅ 更新节点记录：node_id={node_id}")
+						logger.info(f"✅ 更新节点记录：node_id={node_id}, chunk_count={chunk_count}")
 					else:
 						# 创建新节点（即使输出为空也要保存，确保所有节点都被记录）
 						node_record = MessageNode(
@@ -324,11 +339,12 @@ class FlowBusinessHandler:
 							node_name=node_info.get('node_name', node_id),
 							node_label=node_info.get('node_label'),
 							content=node_output,  # 使用节点的输出作为节点的 content
-							node_metadata=node_info.get('node_metadata', {})
+							node_metadata=node_info.get('node_metadata', {}),
+							chunk_count=chunk_count  # 设置 chunk_count
 						)
 						self.db.add(node_record)
 						saved_count += 1
-						logger.info(f"✅ 添加节点记录：node_id={node_id}, node_type={node_info.get('node_type')}")
+						logger.info(f"✅ 添加节点记录：node_id={node_id}, node_type={node_info.get('node_type')}, chunk_count={chunk_count}")
 				
 				self.db.commit()
 				logger.info(f"✅ 成功保存节点信息：新增 {saved_count} 个，更新 {updated_count} 个，总计 {len(self.collected_nodes)} 个节点，消息ID: {self.assistant_message_id}")
@@ -337,7 +353,7 @@ class FlowBusinessHandler:
 			import traceback
 			logger.error(traceback.format_exc())
 	
-	def _update_node_info_in_db(self, node_id: str, node_output: str) -> None:
+	def _update_node_info_in_db(self, node_id: str, node_output: str, chunk_count: int = 0) -> None:
 		"""更新数据库中的节点信息"""
 		if not self.assistant_message_id or not self.db:
 			return
@@ -352,8 +368,9 @@ class FlowBusinessHandler:
 			
 			if existing_node:
 				existing_node.content = node_output
+				existing_node.chunk_count = chunk_count  # 更新 chunk_count
 				self.db.commit()
-				logger.info(f"✅ 更新节点 {node_id} 的输出到数据库，length={len(node_output)}")
+				logger.info(f"✅ 更新节点 {node_id} 的输出到数据库，length={len(node_output)}, chunk_count={chunk_count}")
 			else:
 				# 如果节点不存在，尝试保存所有节点信息
 				self._save_node_info()

@@ -525,6 +525,8 @@ const FlowEditorPage: React.FC = () => {
   const [importModalVisible, setImportModalVisible] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
   const [currentAgentId, setCurrentAgentId] = useState<number | null>(null);
+  const [nodeLlmConfigs, setNodeLlmConfigs] = useState<any[]>([]);
+  const [nodeLlmConfigsLoading, setNodeLlmConfigsLoading] = useState(false);
   
   // 设置侧边栏相关状态（参考通用智能体，除提示词外）
   const [settingsCollapsed, setSettingsCollapsed] = useState(true);
@@ -1196,13 +1198,28 @@ const FlowEditorPage: React.FC = () => {
     }
   };
 
-  const onNodeClick = (event: React.MouseEvent, node: Node) => {
+  const onNodeClick = async (event: React.MouseEvent, node: Node) => {
     setSelectedNode(node);
-            configForm.setFieldsValue({
+    
+    // 如果是LLM节点，加载LLM配置列表
+    if (node.data.nodeType === 'llm') {
+      try {
+        setNodeLlmConfigsLoading(true);
+        const configs = await fetchLlmConfigs();
+        setNodeLlmConfigs(configs);
+      } catch (e) {
+        console.error('加载LLM配置失败:', e);
+      } finally {
+        setNodeLlmConfigsLoading(false);
+      }
+    }
+    
+    configForm.setFieldsValue({
       label: node.data.label,
       agent_name: node.data.config?.agent_name || '',
       
       action: node.data.config?.action || '',
+      llm_config_id: node.data.nodeType === 'llm' ? (node.data.config?.llm_config_id || undefined) : undefined,
       system_prompt: node.data.nodeType === 'llm' ? (node.data.config?.system_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
       user_prompt: node.data.nodeType === 'llm' ? (node.data.config?.user_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
       save_as: node.data.nodeType === 'llm' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'tool' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'judge' ? (node.data.config?.save_as || 'judge_result') : undefined)),
@@ -1259,6 +1276,9 @@ const FlowEditorPage: React.FC = () => {
         if (values.action !== undefined) config.action = values.action;
       } else if (selectedNode.data.nodeType === 'llm') {
         // LLM 节点配置 - 确保保存所有相关字段
+        if (typeof values.llm_config_id !== 'undefined') {
+          config.llm_config_id = values.llm_config_id || null; // 允许清空，使用全局配置
+        }
         if (values.system_prompt !== undefined) config.system_prompt = values.system_prompt || '';
         if (values.user_prompt !== undefined) config.user_prompt = values.user_prompt || '{{message}}';
         if (values.save_as !== undefined) config.save_as = values.save_as;
@@ -2295,6 +2315,33 @@ const FlowEditorPage: React.FC = () => {
 
           {selectedNode?.data.nodeType === 'llm' && (
             <>
+              <Form.Item 
+                name="llm_config_id" 
+                label="LLM配置" 
+                extra="选择此节点使用的LLM配置（可选，不选择则使用全局配置）"
+              >
+                <Select 
+                  placeholder="选择LLM配置（可选，默认使用全局配置）" 
+                  allowClear 
+                  loading={nodeLlmConfigsLoading}
+                  showSearch
+                  optionFilterProp="children"
+                  filterOption={(input, option) =>
+                    (option?.children as unknown as string)?.toLowerCase().includes(input.toLowerCase())
+                  }
+                >
+                  {nodeLlmConfigs.map((cfg: any) => (
+                    <Select.Option key={cfg.id} value={cfg.id}>
+                      <Space>
+                        {cfg.display_name || cfg.name}
+                        {cfg.provider && <Tag color="blue">{cfg.provider}</Tag>}
+                        {cfg.model_name && <Tag color="green">{cfg.model_name}</Tag>}
+                        {cfg.is_default && <Tag color="orange">默认</Tag>}
+                      </Space>
+                    </Select.Option>
+                  ))}
+                </Select>
+              </Form.Item>
               <Form.Item name="system_prompt" label="系统提示词">
                 <Input.TextArea rows={3} placeholder="可选：系统提示词，支持 {{message}} 与 {{last_output}} 模板" />
               </Form.Item>

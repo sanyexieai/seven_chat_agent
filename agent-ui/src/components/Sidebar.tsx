@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import { API_PATHS } from '../config/api';
+import { SidebarWidthContext } from './Layout';
 import { 
   Layout, 
   Menu, 
@@ -12,7 +13,6 @@ import {
   Input, 
   Select, 
   Divider, 
-  Drawer
 } from 'antd';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -55,10 +55,18 @@ interface Session {
 const Sidebar: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { setSidebarWidth } = useContext(SidebarWidthContext);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSession, setSelectedSession] = useState<number | null>(null);
-  const [isSettingsDrawerVisible, setIsSettingsDrawerVisible] = useState(false);
+  const [isSettingsCollapsed, setIsSettingsCollapsed] = useState(true);
+
+  // 当设置侧边栏展开/收起时，更新总宽度
+  useEffect(() => {
+    const settingsWidth = isSettingsCollapsed ? 64 : 250; // 收起时保留64px显示图标
+    const mainWidth = 280;
+    setSidebarWidth(settingsWidth + mainWidth);
+  }, [isSettingsCollapsed, setSidebarWidth]);
 
   // 获取智能体列表
   useEffect(() => {
@@ -164,28 +172,163 @@ const Sidebar: React.FC = () => {
 
   const handleSettingsMenuClick = (key: string) => {
     navigate(key);
-    setIsSettingsDrawerVisible(false);
+    setIsSettingsCollapsed(true);
   };
 
   return (
     <>
-      <Sider
-        width={280}
-        style={{
-          background: '#001529',
-          overflow: 'hidden',
-          height: '100vh',
-          position: 'fixed',
-          left: 0,
-          top: 0,
-          zIndex: 1000,
-        }}
-      >
+      <Layout style={{ height: '100vh', position: 'fixed', left: 0, top: 0, zIndex: 1000, display: 'flex', flexDirection: 'row' }}>
+        {/* 设置侧边栏 - 最左侧 */}
+        <Sider
+          collapsible
+          collapsed={isSettingsCollapsed}
+          onCollapse={setIsSettingsCollapsed}
+          width={250}
+          collapsedWidth={64}
+          theme="light"
+          style={{
+            background: '#fff',
+            borderRight: '1px solid #f0f0f0',
+            overflow: 'hidden',
+            height: '100vh',
+          }}
+          trigger={null}
+        >
+          {isSettingsCollapsed ? (
+            <div style={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              alignItems: 'center', 
+              padding: '8px',
+              height: '100%',
+              gap: '8px'
+            }}>
+              <Menu
+                mode="inline"
+                onClick={({ key }) => handleSettingsMenuClick(key)}
+                selectedKeys={[location.pathname]}
+                style={{ 
+                  background: 'transparent',
+                  border: 'none',
+                  width: '100%'
+                }}
+                items={[
+                  {
+                    key: '/agent-management',
+                    icon: <SettingOutlined />,
+                    label: '',
+                    title: '智能体管理',
+                  },
+                  {
+                    key: '/agent-test',
+                    icon: <ExperimentOutlined />,
+                    label: '',
+                    title: '智能体测试',
+                  },
+                  {
+                    key: '/mcp',
+                    icon: <RobotOutlined />,
+                    label: '',
+                    title: 'MCP配置',
+                  },
+                  {
+                    key: '/llm-config',
+                    icon: <ApiOutlined />,
+                    label: '',
+                    title: 'LLM配置',
+                  },
+                  {
+                    key: '/knowledge-base',
+                    icon: <BookOutlined />,
+                    label: '',
+                    title: '知识库管理',
+                  },
+                  {
+                    key: '/knowledge-query',
+                    icon: <SearchOutlined />,
+                    label: '',
+                    title: '知识库查询',
+                  },
+                  {
+                    key: '/flow-editor',
+                    icon: <BranchesOutlined />,
+                    label: '',
+                    title: '流程图编辑器',
+                  },
+                ]}
+              />
+            </div>
+          ) : (
+            <div style={{ padding: '16px', height: '100%', overflow: 'auto' }}>
+              <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text strong style={{ fontSize: '16px' }}>设置</Text>
+                <Button 
+                  type="text" 
+                  icon={<MenuOutlined />} 
+                  onClick={() => setIsSettingsCollapsed(true)}
+                />
+              </div>
+              <Menu
+                mode="inline"
+                onClick={({ key }) => handleSettingsMenuClick(key)}
+                selectedKeys={[location.pathname]}
+                items={[
+                  {
+                    key: '/agent-management',
+                    icon: <SettingOutlined />,
+                    label: '智能体管理',
+                  },
+                  {
+                    key: '/agent-test',
+                    icon: <ExperimentOutlined />,
+                    label: '智能体测试',
+                  },
+                  {
+                    key: '/mcp',
+                    icon: <RobotOutlined />,
+                    label: 'MCP配置',
+                  },
+                  {
+                    key: '/llm-config',
+                    icon: <ApiOutlined />,
+                    label: 'LLM配置',
+                  },
+                  {
+                    key: '/knowledge-base',
+                    icon: <BookOutlined />,
+                    label: '知识库管理',
+                  },
+                  {
+                    key: '/knowledge-query',
+                    icon: <SearchOutlined />,
+                    label: '知识库查询',
+                  },
+                  {
+                    key: '/flow-editor',
+                    icon: <BranchesOutlined />,
+                    label: '流程图编辑器',
+                  },
+                ]}
+              />
+            </div>
+          )}
+        </Sider>
+
+        {/* 主侧边栏 - 会话列表 */}
+        <Sider
+          width={280}
+          style={{
+            background: '#001529',
+            overflow: 'hidden',
+            height: '100vh',
+          }}
+        >
         <div style={{ 
           height: '100vh', 
           display: 'flex', 
           flexDirection: 'column',
-          overflow: 'hidden'
+          overflow: 'hidden',
+          position: 'relative'
         }}>
           <div style={{ padding: '16px', textAlign: 'center' }}>
             <h2 style={{ color: 'white', margin: 0 }}>AI Agent</h2>
@@ -193,12 +336,13 @@ const Sidebar: React.FC = () => {
 
           <Divider style={{ margin: '16px', borderColor: '#303030' }} />
 
-                    {/* 会话列表 */}
+          {/* 会话列表 */}
           <div style={{ 
             padding: '0 16px', 
             flex: 1, 
             overflow: 'auto',
-            marginBottom: '60px'
+            marginBottom: '60px',
+            minHeight: 0
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <Text style={{ color: 'white', fontSize: '14px', fontWeight: 'bold' }}>
@@ -208,6 +352,7 @@ const Sidebar: React.FC = () => {
             <List
               size="small"
               dataSource={sessions}
+              style={{ backgroundColor: 'transparent' }}
               renderItem={(session) => (
                 <List.Item
                   style={{
@@ -216,13 +361,14 @@ const Sidebar: React.FC = () => {
                     backgroundColor: selectedSession === session.id ? '#1890ff' : 'transparent',
                     borderRadius: '4px',
                     marginBottom: '4px',
+                    border: 'none'
                   }}
                   onClick={() => handleSessionSelect(session.id || parseInt(session.session_id))}
                 >
                   <List.Item.Meta
                     avatar={<Avatar icon={<MessageOutlined />} size="small" />}
                     title={
-                      <Text style={{ color: 'white', fontSize: '12px' }}>
+                      <Text style={{ color: 'white', fontSize: '12px' }} ellipsis>
                         {session.title || session.session_name || '新对话'}
                       </Text>
                     }
@@ -272,54 +418,15 @@ const Sidebar: React.FC = () => {
                   border: '1px solid #303030',
                   borderRadius: '4px'
                 }}
-                onClick={() => setIsSettingsDrawerVisible(true)}
+                onClick={() => setIsSettingsCollapsed(!isSettingsCollapsed)}
               >
                 设置
               </Button>
             </div>
           </div>
         </div>
-
-
       </Sider>
-
-      {/* 设置抽屉 */}
-      <Drawer
-        title="设置"
-        placement="right"
-        onClose={() => setIsSettingsDrawerVisible(false)}
-        open={isSettingsDrawerVisible}
-        width={300}
-      >
-        <Menu
-          mode="inline"
-          onClick={({ key }) => handleSettingsMenuClick(key)}
-          selectedKeys={[location.pathname]}
-        >
-          <Menu.Item key="/agent-management" icon={<SettingOutlined />}>
-            智能体管理
-          </Menu.Item>
-          <Menu.Item key="/agent-test" icon={<ExperimentOutlined />}>
-            智能体测试
-          </Menu.Item>
-          <Menu.Item key="/mcp" icon={<RobotOutlined />}>
-            MCP配置
-          </Menu.Item>
-          <Menu.Item key="/llm-config" icon={<ApiOutlined />}>
-            LLM配置
-          </Menu.Item>
-          <Menu.Item key="/knowledge-base" icon={<BookOutlined />}>
-            知识库管理
-          </Menu.Item>
-          <Menu.Item key="/knowledge-query" icon={<SearchOutlined />}>
-            知识库查询
-          </Menu.Item>
-
-          <Menu.Item key="/flow-editor" icon={<BranchesOutlined />}>
-            流程图编辑器
-          </Menu.Item>
-        </Menu>
-      </Drawer>
+      </Layout>
     </>
   );
 };

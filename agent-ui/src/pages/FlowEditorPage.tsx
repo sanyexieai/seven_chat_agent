@@ -11,13 +11,13 @@ import {
   Divider,
   Tag,
   Popconfirm,
-  Drawer,
   Tabs,
   Checkbox,
   Modal,
   Form,
   message,
-  TreeSelect
+  TreeSelect,
+  Layout
 } from 'antd';
 import {
   PlusOutlined,
@@ -29,7 +29,9 @@ import {
   BranchesOutlined,
   ThunderboltOutlined,
   ImportOutlined,
-  ExportOutlined
+  ExportOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined
 } from '@ant-design/icons';
 import ReactFlow, {
   addEdge,
@@ -52,6 +54,7 @@ import { API_PATHS } from '../config/api';
 const { Title, Paragraph } = Typography;
 const { Option } = Select;
 const { TabPane } = Tabs;
+const { Sider } = Layout;
 
 interface FlowNode {
   id: string;
@@ -523,8 +526,8 @@ const FlowEditorPage: React.FC = () => {
   const [importJsonText, setImportJsonText] = useState('');
   const [currentAgentId, setCurrentAgentId] = useState<number | null>(null);
   
-  // 设置抽屉相关状态（参考通用智能体，除提示词外）
-  const [settingsVisible, setSettingsVisible] = useState(false);
+  // 设置侧边栏相关状态（参考通用智能体，除提示词外）
+  const [settingsCollapsed, setSettingsCollapsed] = useState(true);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSubmitting, setSettingsSubmitting] = useState(false);
   const [llmConfigs, setLlmConfigs] = useState<any[]>([]);
@@ -956,10 +959,18 @@ const FlowEditorPage: React.FC = () => {
     return res.data || [];
   };
 
-  const openSettings = async () => {
-    try {
-      setSettingsVisible(true);
-      setSettingsLoading(true);
+  const toggleSettings = async () => {
+    const willOpen = settingsCollapsed;
+    console.log('=== 切换设置侧边栏 ===');
+    console.log('当前状态 (settingsCollapsed):', settingsCollapsed);
+    console.log('将变为:', !settingsCollapsed);
+    console.log('侧边栏位置: 左侧 (Sider组件)');
+    setSettingsCollapsed(!settingsCollapsed);
+    
+    if (willOpen) {
+      // 展开时加载数据
+      try {
+        setSettingsLoading(true);
       const [llms, kbs, servers] = await Promise.all([
         fetchLlmConfigs(),
         fetchKnowledgeBases(),
@@ -1013,15 +1024,14 @@ const FlowEditorPage: React.FC = () => {
           bound_knowledge_bases: []
         });
       }
-    } catch (e) {
-      console.error(e);
-      message.error('加载设置失败');
-    } finally {
-      setSettingsLoading(false);
+      } catch (e) {
+        console.error(e);
+        message.error('加载设置失败');
+      } finally {
+        setSettingsLoading(false);
+      }
     }
   };
-
-  const closeSettings = () => setSettingsVisible(false);
 
   // 保存智能体时一并带上设置（除提示词外）
   // 右侧按钮：保存/更新 智能体（flow_driven）
@@ -1725,17 +1735,25 @@ const FlowEditorPage: React.FC = () => {
   };
 
   const clearFlow = () => {
-    setNodes([]);
+    // 保留开始和结束节点，只删除其他节点和所有边
+    setNodes((nds) => {
+      const startNode = nds.find((n: any) => n.id === 'start_node' || n.data?.nodeType === 'start');
+      const endNode = nds.find((n: any) => n.id === 'end_node' || n.data?.nodeType === 'end');
+      const keptNodes = [];
+      if (startNode) keptNodes.push(startNode);
+      if (endNode) keptNodes.push(endNode);
+      return keptNodes;
+    });
     setEdges([]);
     setFlowName('');
     setFlowDescription('');
     setCurrentFlowId(null);
-    // 重新创建开始和结束节点
+    // 确保开始和结束节点存在
     setTimeout(() => {
       createStartNode();
       createEndNode();
     }, 0);
-    message.success('流程图已清空');
+    message.success('流程图已清空（保留开始和结束节点）');
   };
 
   const createAgentFromFlow = async () => {
@@ -1882,7 +1900,10 @@ const FlowEditorPage: React.FC = () => {
               <Button icon={<PlayCircleOutlined />} onClick={testFlow}>
                 测试
               </Button>
-              <Button icon={<SettingOutlined />} onClick={openSettings}>
+              <Button 
+                icon={settingsCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} 
+                onClick={toggleSettings}
+              >
                 设置
               </Button>
               {currentFlowId && (
@@ -1935,181 +1956,292 @@ const FlowEditorPage: React.FC = () => {
         </Row>
       </div>
 
-      {/* 侧边栏 */}
-      <div style={{ display: 'flex', flex: 1 }}>
-        <div style={{ width: 250, borderRight: '1px solid #f0f0f0', background: '#fafafa', padding: '16px' }}>
-          <Title level={4}>基础节点</Title>
-          <Space direction="vertical" style={{ width: '100%' }}>
-            <Button
-              icon={<div style={{ fontSize: '16px', color: '#52c41a' }}>▶</div>}
-              block
-              onClick={() => addNode('start', { x: 300, y: 50 })}
-            >
-              开始节点
-            </Button>
-            <Button
-              icon={<div style={{ fontSize: '16px', color: '#ff4d4f' }}>■</div>}
-              block
-              onClick={() => addNode('end', { x: 300, y: 100 })}
-            >
-              结束节点
-            </Button>
-            <Button
-              icon={<RobotOutlined />}
-              block
-              onClick={() => addNode('llm', { x: 300, y: 150 })}
-            >
-              LLM 节点
-            </Button>
-            <Button
-              icon={<SettingOutlined />}
-              block
-              onClick={() => addNode('tool', { x: 300, y: 250 })}
-            >
-              工具节点
-            </Button>
-            <Button
-              icon={<BranchesOutlined />}
-              block
-              onClick={() => addNode('router', { x: 300, y: 350 })}
-            >
-              路由节点
-            </Button>
-            <Button
-              icon={<div style={{ fontSize: '16px' }}>📦</div>}
-              block
-              onClick={() => addNode('composite', { x: 300, y: 450 })}
-            >
-              复合节点
-            </Button>
-          </Space>
-
-          <Divider />
-
-          <Title level={4}>预制节点</Title>
-          <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
-            {templates.length === 0 ? (
-              <div style={{ fontSize: '12px', color: '#999', textAlign: 'center', padding: '16px' }}>
-                暂无预制节点
-              </div>
-            ) : (
-              templates.map((template) => (
-                <Card
-                  key={template.id}
-                  size="small"
-                  style={{ marginBottom: '8px', cursor: 'pointer' }}
-                  onClick={() => applyTemplate(template)}
-                >
-                  <Card.Meta
-                    title={template.display_name || template.name}
-                    description={template.description || '点击使用'}
-                  />
-                </Card>
-              ))
-            )}
-          </div>
-
-          <Divider />
-
-          <Title level={4}>已保存的流程图</Title>
-          <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-            {flows.map((flow) => (
-              <Card
-                key={flow.id}
-                size="small"
-                style={{ marginBottom: '8px' }}
-                actions={[
-                  <Button
-                    type="link"
-                    size="small"
-                    onClick={() => loadSavedFlow(flow.id)}
-                  >
-                    加载
-                  </Button>,
-                  <Popconfirm
-                    title="确定要删除这个流程图吗？"
-                    onConfirm={() => deleteFlow(flow.id)}
-                    okText="确定"
-                    cancelText="取消"
-                  >
-                    <Button type="link" size="small" danger>
-                      删除
-                    </Button>
-                  </Popconfirm>
-                ]}
-              >
-                <Card.Meta
-                  title={flow.display_name}
-                  description={flow.description || '暂无描述'}
+      {/* 设置侧边栏和主内容区域 - 左侧侧边栏 */}
+      <Layout style={{ flex: 1, display: 'flex', flexDirection: 'row', height: '100%', overflow: 'hidden' }}>
+        <Sider
+          collapsible
+          collapsed={settingsCollapsed}
+          onCollapse={setSettingsCollapsed}
+          width={400}
+          collapsedWidth={0}
+          theme="light"
+          style={{
+            background: '#fff',
+            borderRight: '1px solid #f0f0f0',
+            overflow: 'auto',
+            height: '100%',
+            position: 'relative',
+            zIndex: 1
+          }}
+          trigger={null}
+        >
+          {!settingsCollapsed && (
+            <div style={{ padding: '16px', height: '100%', overflow: 'auto' }}>
+              <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Title level={4} style={{ margin: 0 }}>智能体设置</Title>
+                <Button 
+                  type="text" 
+                  icon={<MenuFoldOutlined />} 
+                  onClick={() => setSettingsCollapsed(true)}
                 />
-              </Card>
-            ))}
-          </div>
+              </div>
+              <Form layout="vertical" form={settingsForm}>
+                <Form.Item name="llm_config_id" label="LLM配置" extra="选择智能体使用的LLM配置（可选）">
+                  <Select placeholder="选择LLM配置（可选）" allowClear loading={settingsLoading}>
+                    {llmConfigs.map((cfg: any) => (
+                      <Select.Option key={cfg.id} value={cfg.id}>
+                        <Space>
+                          {cfg.display_name || cfg.name}
+                          {cfg.provider && <Tag color="blue">{cfg.provider}</Tag>}
+                          {cfg.model_name && <Tag color="green">{cfg.model_name}</Tag>}
+                          {cfg.is_default && <Tag color="orange">默认</Tag>}
+                        </Space>
+                      </Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
 
-          <Divider />
+                <Form.Item name="bound_tools" label="绑定工具" extra="选择智能体可用工具（可选，多选）">
+                  <TreeSelect
+                    treeData={toolTreeData}
+                    placeholder="选择要绑定的工具"
+                    treeCheckable
+                    showCheckedStrategy={TreeSelect.SHOW_CHILD}
+                    allowClear
+                    style={{ width: '100%' }}
+                    dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+                    treeDefaultExpandAll
+                  />
+                </Form.Item>
 
-          <Title level={4}>连线信息</Title>
-          {selectedEdge ? (
-            <div style={{ fontSize: '12px', color: '#666', marginBottom: '16px' }}>
-              <p><strong>选中的连线：</strong></p>
-              <p>从: {selectedEdge.source}</p>
-              <p>到: {selectedEdge.target}</p>
-              <Button 
-                type="primary" 
-                danger 
-                size="small" 
-                onClick={() => deleteEdge(selectedEdge.id)}
-                style={{ marginTop: '8px' }}
-              >
-                删除连线
-              </Button>
-            </div>
-          ) : (
-            <div style={{ fontSize: '12px', color: '#666', marginBottom: '16px' }}>
-              <p>点击连线查看信息或删除</p>
+                <Form.Item name="bound_knowledge_bases" label="绑定知识库" extra="选择智能体可查询的知识库（可多选）">
+                  <Select
+                    mode="multiple"
+                    placeholder="选择知识库"
+                    allowClear
+                    loading={settingsLoading}
+                    options={(knowledgeBases || []).map((kb: any) => ({
+                      label: kb.display_name || kb.name,
+                      value: kb.id
+                    }))}
+                  />
+                </Form.Item>
+
+                <Divider />
+                <Space>
+                  <Button type="primary" loading={settingsSubmitting} onClick={async () => {
+                    if (!currentAgentId) {
+                      message.warning('请先保存智能体后再更新设置');
+                      return;
+                    }
+                    try {
+                      setSettingsSubmitting(true);
+                      const values = await settingsForm.validateFields();
+                      const payload: any = {};
+                      if (typeof values.llm_config_id !== 'undefined') payload.llm_config_id = values.llm_config_id;
+                      if (Array.isArray(values.bound_tools)) payload.bound_tools = values.bound_tools;
+                      if (Array.isArray(values.bound_knowledge_bases)) payload.bound_knowledge_bases = values.bound_knowledge_bases;
+                      const resp = await fetch(API_PATHS.AGENT_BY_ID(currentAgentId), {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                      });
+                      if (resp.ok) {
+                        message.success('设置已更新');
+                      } else {
+                        const err = await resp.json().catch(() => ({}));
+                        message.error(`更新失败: ${err.detail || '未知错误'}`);
+                      }
+                    } catch (e) {
+                      console.error(e);
+                    } finally {
+                      setSettingsSubmitting(false);
+                    }
+                  }}>保存设置</Button>
+                </Space>
+              </Form>
             </div>
           )}
+        </Sider>
+        
+        <Layout.Content style={{ display: 'flex', flex: 1, height: '100%', overflow: 'hidden' }}>
+          {/* 节点选择侧边栏和画布 */}
+          <div style={{ display: 'flex', flex: 1, height: '100%' }}>
+            <div style={{ width: 250, borderRight: '1px solid #f0f0f0', background: '#fafafa', padding: '16px' }}>
+              <Title level={4}>基础节点</Title>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Button
+                  icon={<div style={{ fontSize: '16px', color: '#52c41a' }}>▶</div>}
+                  block
+                  onClick={() => addNode('start', { x: 300, y: 50 })}
+                >
+                  开始节点
+                </Button>
+                <Button
+                  icon={<div style={{ fontSize: '16px', color: '#ff4d4f' }}>■</div>}
+                  block
+                  onClick={() => addNode('end', { x: 300, y: 100 })}
+                >
+                  结束节点
+                </Button>
+                <Button
+                  icon={<RobotOutlined />}
+                  block
+                  onClick={() => addNode('llm', { x: 300, y: 150 })}
+                >
+                  LLM 节点
+                </Button>
+                <Button
+                  icon={<SettingOutlined />}
+                  block
+                  onClick={() => addNode('tool', { x: 300, y: 250 })}
+                >
+                  工具节点
+                </Button>
+                <Button
+                  icon={<BranchesOutlined />}
+                  block
+                  onClick={() => addNode('router', { x: 300, y: 350 })}
+                >
+                  路由节点
+                </Button>
+                <Button
+                  icon={<div style={{ fontSize: '16px' }}>📦</div>}
+                  block
+                  onClick={() => addNode('composite', { x: 300, y: 450 })}
+                >
+                  复合节点
+                </Button>
+              </Space>
 
-          <Title level={4}>使用说明</Title>
-          <div style={{ fontSize: '12px', color: '#666' }}>
-            <p><strong>固定节点：</strong></p>
-            <ul style={{ paddingLeft: '16px' }}>
-              <li>开始节点和结束节点是固定的，不能删除</li>
-              <li>所有流程必须从开始节点开始，到结束节点结束</li>
-            </ul>
-            <p><strong>添加节点：</strong></p>
-            <ul style={{ paddingLeft: '16px' }}>
-              <li>点击左侧节点类型按钮添加节点</li>
-              <li>可以添加 LLM、工具、路由、复合节点</li>
-            </ul>
-            <p><strong>预制节点：</strong></p>
-            <ul style={{ paddingLeft: '16px' }}>
-              <li>点击预制节点卡片即可添加到画布</li>
-              <li>预制节点会作为复合节点添加</li>
-            </ul>
+              <Divider />
+
+              <Title level={4}>预制节点</Title>
+              <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                {templates.length === 0 ? (
+                  <div style={{ fontSize: '12px', color: '#999', textAlign: 'center', padding: '16px' }}>
+                    暂无预制节点
+                  </div>
+                ) : (
+                  templates.map((template) => (
+                    <Card
+                      key={template.id}
+                      size="small"
+                      style={{ marginBottom: '8px', cursor: 'pointer' }}
+                      onClick={() => applyTemplate(template)}
+                    >
+                      <Card.Meta
+                        title={template.display_name || template.name}
+                        description={template.description || '点击使用'}
+                      />
+                    </Card>
+                  ))
+                )}
+              </div>
+
+              <Divider />
+
+              <Title level={4}>已保存的流程图</Title>
+              <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                {flows.map((flow) => (
+                  <Card
+                    key={flow.id}
+                    size="small"
+                    style={{ marginBottom: '8px' }}
+                    actions={[
+                      <Button
+                        type="link"
+                        size="small"
+                        onClick={() => loadSavedFlow(flow.id)}
+                      >
+                        加载
+                      </Button>,
+                      <Popconfirm
+                        title="确定要删除这个流程图吗？"
+                        onConfirm={() => deleteFlow(flow.id)}
+                        okText="确定"
+                        cancelText="取消"
+                      >
+                        <Button type="link" size="small" danger>
+                          删除
+                        </Button>
+                      </Popconfirm>
+                    ]}
+                  >
+                    <Card.Meta
+                      title={flow.display_name}
+                      description={flow.description || '暂无描述'}
+                    />
+                  </Card>
+                ))}
+              </div>
+
+              <Divider />
+
+              <Title level={4}>连线信息</Title>
+              {selectedEdge ? (
+                <div style={{ fontSize: '12px', color: '#666', marginBottom: '16px' }}>
+                  <p><strong>选中的连线：</strong></p>
+                  <p>从: {selectedEdge.source}</p>
+                  <p>到: {selectedEdge.target}</p>
+                  <Button 
+                    type="primary" 
+                    danger 
+                    size="small" 
+                    onClick={() => deleteEdge(selectedEdge.id)}
+                    style={{ marginTop: '8px' }}
+                  >
+                    删除连线
+                  </Button>
+                </div>
+              ) : (
+                <div style={{ fontSize: '12px', color: '#666', marginBottom: '16px' }}>
+                  <p>点击连线查看信息或删除</p>
+                </div>
+              )}
+
+              <Title level={4}>使用说明</Title>
+              <div style={{ fontSize: '12px', color: '#666' }}>
+                <p><strong>固定节点：</strong></p>
+                <ul style={{ paddingLeft: '16px' }}>
+                  <li>开始节点和结束节点是固定的，不能删除</li>
+                  <li>所有流程必须从开始节点开始，到结束节点结束</li>
+                </ul>
+                <p><strong>添加节点：</strong></p>
+                <ul style={{ paddingLeft: '16px' }}>
+                  <li>点击左侧节点类型按钮添加节点</li>
+                  <li>可以添加 LLM、工具、路由、复合节点</li>
+                </ul>
+                <p><strong>预制节点：</strong></p>
+                <ul style={{ paddingLeft: '16px' }}>
+                  <li>点击预制节点卡片即可添加到画布</li>
+                  <li>预制节点会作为复合节点添加</li>
+                </ul>
+              </div>
+            </div>
+
+            {/* 流程图画布 */}
+            <div style={{ flex: 1, height: '100%' }}>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={onConnect}
+                onNodeClick={onNodeClick}
+                onEdgeClick={onEdgeClick}
+                onPaneClick={onPaneClick}
+                nodeTypes={nodeTypes}
+                fitView
+              >
+                <Controls />
+                <Background />
+                <MiniMap />
+              </ReactFlow>
+            </div>
           </div>
-        </div>
-
-        {/* 流程图画布 */}
-        <div style={{ flex: 1, height: '100%' }}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={onNodeClick}
-            onEdgeClick={onEdgeClick}
-            onPaneClick={onPaneClick}
-            nodeTypes={nodeTypes}
-            fitView
-          >
-            <Controls />
-            <Background />
-            <MiniMap />
-          </ReactFlow>
-        </div>
-      </div>
+        </Layout.Content>
+      </Layout>
 
       {/* 节点配置模态框 */}
       <Modal
@@ -2319,94 +2451,6 @@ const FlowEditorPage: React.FC = () => {
         </Form>
       </Modal>
 
-      {/* 设置抽屉（除提示词外） */}
-      <Drawer
-        title="智能体设置"
-        placement="right"
-        width={520}
-        open={settingsVisible}
-        onClose={closeSettings}
-        destroyOnClose
-      >
-        <Form layout="vertical" form={settingsForm}>
-          <Form.Item name="llm_config_id" label="LLM配置" extra="选择智能体使用的LLM配置（可选）">
-            <Select placeholder="选择LLM配置（可选）" allowClear loading={settingsLoading}>
-              {llmConfigs.map((cfg: any) => (
-                <Select.Option key={cfg.id} value={cfg.id}>
-                  <Space>
-                    {cfg.display_name || cfg.name}
-                    {cfg.provider && <Tag color="blue">{cfg.provider}</Tag>}
-                    {cfg.model_name && <Tag color="green">{cfg.model_name}</Tag>}
-                    {cfg.is_default && <Tag color="orange">默认</Tag>}
-                  </Space>
-                </Select.Option>
-              ))}
-            </Select>
-          </Form.Item>
-
-          <Form.Item name="bound_tools" label="绑定工具" extra="选择智能体可用工具（可选，多选）">
-            <TreeSelect
-              treeData={toolTreeData}
-              placeholder="选择要绑定的工具"
-              treeCheckable
-              showCheckedStrategy={TreeSelect.SHOW_CHILD}
-              allowClear
-              style={{ width: '100%' }}
-              dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
-              treeDefaultExpandAll
-            />
-          </Form.Item>
-
-          <Form.Item name="bound_knowledge_bases" label="绑定知识库" extra="选择智能体可查询的知识库（可多选）">
-            <Select
-              mode="multiple"
-              placeholder="选择知识库"
-              allowClear
-              loading={settingsLoading}
-              options={(knowledgeBases || []).map((kb: any) => ({
-                label: kb.display_name || kb.name,
-                value: kb.id
-              }))}
-            />
-          </Form.Item>
-
-          <Divider />
-          <Space>
-            <Button onClick={closeSettings}>取消</Button>
-            <Button type="primary" loading={settingsSubmitting} onClick={async () => {
-              if (!currentAgentId) {
-                message.warning('请先保存智能体后再更新设置');
-                return;
-              }
-              try {
-                setSettingsSubmitting(true);
-                const values = await settingsForm.validateFields();
-                const payload: any = {};
-                if (typeof values.llm_config_id !== 'undefined') payload.llm_config_id = values.llm_config_id;
-                if (Array.isArray(values.bound_tools)) payload.bound_tools = values.bound_tools;
-                if (Array.isArray(values.bound_knowledge_bases)) payload.bound_knowledge_bases = values.bound_knowledge_bases;
-                const resp = await fetch(API_PATHS.AGENT_BY_ID(currentAgentId), {
-                  method: 'PUT',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload)
-                });
-                if (resp.ok) {
-                  message.success('设置已更新');
-                  closeSettings();
-                } else {
-                  const err = await resp.json().catch(() => ({}));
-                  message.error(`更新失败: ${err.detail || '未知错误'}`);
-                }
-              } catch (e) {
-                console.error(e);
-              } finally {
-                setSettingsSubmitting(false);
-              }
-            }}>确定</Button>
-          </Space>
-        </Form>
-      </Drawer>
-
       {/* 导入流程 JSON 模态框 */}
       <Modal
         title="导入流程JSON"
@@ -2427,13 +2471,27 @@ const FlowEditorPage: React.FC = () => {
             // 应用到编辑器
             if (flowConfig.metadata?.name) setFlowName(flowConfig.metadata.name);
             if (typeof flowConfig.metadata?.description === 'string') setFlowDescription(flowConfig.metadata.description);
-            const nodesWithDelete = flowConfig.nodes.map((node: any) => {
-              const isStart = node.data?.nodeType === 'start' || node.id === 'start_node';
-              const isEnd = node.data?.nodeType === 'end' || node.id === 'end_node';
+            
+            // 检查当前是否已有开始和结束节点
+            const existingStartNode = nodes.find((n: any) => n.id === 'start_node' || n.data?.nodeType === 'start');
+            const existingEndNode = nodes.find((n: any) => n.id === 'end_node' || n.data?.nodeType === 'end');
+            
+            // 先处理所有导入的节点
+            const processedNodes = flowConfig.nodes.map((node: any) => {
+              // 从implementation、type或data.nodeType获取节点类型
+              const nodeType = node.implementation || node.type || node.data?.nodeType || 'llm';
+              const isStart = nodeType === 'start' || node.id === 'start_node';
+              const isEnd = nodeType === 'end' || node.id === 'end_node';
               return {
                 ...node,
+                type: nodeType, // ReactFlow渲染类型
                 data: {
                   ...node.data,
+                  label: node.data?.label || node.id,
+                  nodeType: nodeType, // 后端节点类型，必须保留
+                  config: node.data?.config || {}, // 必须保留config，包含提示词等配置
+                  isStartNode: isStart,
+                  isEndNode: isEnd,
                   isFixed: isStart || isEnd,
                   onDelete: (isStart || isEnd) 
                     ? () => message.warning('开始节点和结束节点不能删除') 
@@ -2441,7 +2499,57 @@ const FlowEditorPage: React.FC = () => {
                 }
               };
             });
-            setNodes(nodesWithDelete);
+            
+            // 从导入的节点中找到开始和结束节点（在过滤之前）
+            const importedStartNode = processedNodes.find((n: any) => n.data?.nodeType === 'start' || n.id === 'start_node');
+            const importedEndNode = processedNodes.find((n: any) => n.data?.nodeType === 'end' || n.id === 'end_node');
+            
+            // 过滤掉开始和结束节点（如果已存在），保留其他节点
+            const otherImportedNodes = processedNodes.filter((node: any) => {
+              const isStart = node.data?.nodeType === 'start' || node.id === 'start_node';
+              const isEnd = node.data?.nodeType === 'end' || node.id === 'end_node';
+              
+              // 如果已有开始节点，过滤掉导入的开始节点
+              if (isStart && existingStartNode) {
+                return false;
+              }
+              // 如果已有结束节点，过滤掉导入的结束节点
+              if (isEnd && existingEndNode) {
+                return false;
+              }
+              return true;
+            });
+            
+            // 合并节点：保留现有的开始和结束节点，替换其他节点为导入的节点
+            setNodes((currentNodes) => {
+              // 组合：现有的开始节点（如果存在）+ 导入的其他节点 + 现有的结束节点（如果存在）
+              const result = [];
+              
+              // 添加开始节点：优先使用现有的，否则使用导入的，都没有则创建新的
+              if (existingStartNode) {
+                result.push(existingStartNode);
+              } else if (importedStartNode) {
+                result.push(importedStartNode);
+              } else {
+                // 如果导入的也没有，创建新的
+                setTimeout(() => createStartNode(), 0);
+              }
+              
+              // 添加导入的其他节点（已过滤掉开始和结束节点）
+              result.push(...otherImportedNodes);
+              
+              // 添加结束节点：优先使用现有的，否则使用导入的，都没有则创建新的
+              if (existingEndNode) {
+                result.push(existingEndNode);
+              } else if (importedEndNode) {
+                result.push(importedEndNode);
+              } else {
+                // 如果导入的也没有，创建新的
+                setTimeout(() => createEndNode(), 0);
+              }
+              
+              return result;
+            });
             
             // 确保连线包含所有必要字段
             const loadedEdges = flowConfig.edges.map((edge: any) => ({

@@ -14,7 +14,6 @@ from typing import List, AsyncGenerator, Tuple
 
 try:
     from genie_tool.util.log_util import logger, timer
-    from genie_tool.util.llm_util import ask_llm
     from genie_tool.model.document import Doc
     from genie_tool.tool.search_component.query_process import query_decompose
     from genie_tool.tool.search_component.answer import answer_question
@@ -28,7 +27,6 @@ except ImportError:
     from utils.log_helper import get_logger
     logger = get_logger("deepsearch")
     from tools.genie_tool_adapter.util.log_util import timer
-    from tools.genie_tool_adapter.util.llm_util import ask_llm
     from tools.genie_tool_adapter.model.document import Doc
     from tools.search_component.query_process import query_decompose
     from tools.search_component.answer import answer_question

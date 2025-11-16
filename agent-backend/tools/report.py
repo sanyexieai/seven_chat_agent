@@ -16,16 +16,16 @@ from loguru import logger
 try:
     from genie_tool.util.file_util import download_all_files, truncate_files, flatten_search_file
     from genie_tool.util.prompt_util import get_prompt
-    from genie_tool.util.llm_util import ask_llm
     from genie_tool.util.log_util import timer
     from genie_tool.model.context import LLMModelInfoFactory
 except ImportError:
     # 使用适配层
     from tools.genie_tool_adapter.util.file_util import download_all_files, truncate_files, flatten_search_file
     from tools.genie_tool_adapter.util.prompt_util import get_prompt
-    from tools.genie_tool_adapter.util.llm_util import ask_llm
     from tools.genie_tool_adapter.util.log_util import timer
     from tools.genie_tool_adapter.model.context import LLMModelInfoFactory
+
+from utils.llm_helper import get_llm_helper
 
 load_dotenv()
 
@@ -72,8 +72,12 @@ async def ppt_report(
     prompt = Template(get_prompt("report")["ppt_prompt"]) \
         .render(task=task, files=truncate_flat_files, date=datetime.now().strftime("%Y-%m-%d"))
 
-    async for chunk in ask_llm(messages=prompt, model=model, stream=True,
-                               temperature=temperature, top_p=top_p, only_content=True):
+    # 使用全局统一的 llm_helper
+    # 不传入配置，让它自动从数据库获取默认配置
+    llm_helper = get_llm_helper()
+    
+    # 传递 temperature 和 top_p 参数
+    async for chunk in llm_helper.call_stream(messages=prompt, temperature=temperature, top_p=top_p):
         yield chunk
 
 
@@ -98,8 +102,12 @@ async def markdown_report(
     prompt = Template(get_prompt("report")["markdown_prompt"]) \
         .render(task=task, files=truncate_flat_files, current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    async for chunk in ask_llm(messages=prompt, model=model, stream=True,
-                               temperature=temperature, top_p=top_p, only_content=True):
+    # 使用全局统一的 llm_helper
+    # 不传入配置，让它自动从数据库获取默认配置
+    llm_helper = get_llm_helper()
+    
+    # 传递 temperature 和 top_p 参数
+    async for chunk in llm_helper.call_stream(messages=prompt, temperature=temperature, top_p=top_p):
         yield chunk
 
 
@@ -150,10 +158,16 @@ async def html_report(
     prompt = Template(report_prompts["html_task"]) \
         .render(task=task, key_files=key_files, files=flat_files, date=datetime.now().strftime('%Y年%m月%d日'))
 
-    async for chunk in ask_llm(
+    # 使用全局统一的 llm_helper
+    # 不传入配置，让它自动从数据库获取默认配置
+    llm_helper = get_llm_helper()
+    
+    # 如果需要自定义 temperature 和 top_p，可以通过 kwargs 传递
+    
+    async for chunk in llm_helper.call_stream(
             messages=[{"role": "system", "content": report_prompts["html_prompt"]},
                       {"role": "user", "content": prompt}],
-            model=model, stream=True, temperature=temperature, top_p=top_p, only_content=True):
+            temperature=temperature, top_p=top_p):
         yield chunk
 
 

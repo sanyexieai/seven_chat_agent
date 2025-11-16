@@ -15,12 +15,12 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 try:
-    from genie_tool.model.document import Doc
     from genie_tool.util.log_util import timer
 except ImportError:
-    # 使用适配层
-    from tools.genie_tool_adapter.model.document import Doc
     from tools.genie_tool_adapter.util.log_util import timer
+
+# 始终使用适配层的 Doc，确保类型一致性
+from tools.genie_tool_adapter.model.document import Doc
 
 
 class SearchBase(ABC):
@@ -59,17 +59,48 @@ class SearchBase(ABC):
         try:
             # Python 3.11+
             async with asyncio.TaskGroup() as tg:
-                tasks = [tg.create_task(_parser(doc.link, timeout)) for doc in docs]
+                tasks = [tg.create_task(_parser(doc.link, timeout)) for doc in docs if doc.link]
             results = [BeautifulSoup(task.result(), "html.parser") for task in tasks]
         except AttributeError:
             # Python 3.10 及以下版本
-            tasks = [_parser(doc.link, timeout) for doc in docs]
+            tasks = [_parser(doc.link, timeout) for doc in docs if doc.link]
             results = await asyncio.gather(*tasks)
             results = [BeautifulSoup(result, "html.parser") for result in results]
-        results = [soup.get_text() if soup.get_text() and len(soup.get_text().strip()) > 50 else str(soup.text) for soup in results]
-        for i, result in enumerate(results):
-            if result and i < len(docs):
-                docs[i].content = result
+        except Exception as e:
+            logger.warning(f"parser 执行失败: {e}")
+            results = []
+        
+        # 确保 results 长度与 docs 长度匹配
+        # 只处理有 link 的文档
+        docs_with_link = [doc for doc in docs if doc.link]
+        parsed_results = []
+        
+        for i, soup in enumerate(results):
+            if i < len(docs_with_link):
+                try:
+                    soup_text = soup.get_text() if hasattr(soup, 'get_text') else str(soup)
+                    # 确保结果是字符串
+                    result = str(soup_text) if soup_text and len(str(soup_text).strip()) > 50 else str(soup.text) if hasattr(soup, 'text') else ""
+                    parsed_results.append(result if result else "")
+                except Exception as e:
+                    logger.warning(f"解析文档内容失败: {e}")
+                    parsed_results.append("")
+        
+        # 更新文档内容，确保是字符串类型
+        doc_index = 0
+        for doc in docs:
+            if doc.link and doc_index < len(parsed_results):
+                try:
+                    # 确保 content 是字符串类型
+                    new_content = str(parsed_results[doc_index]) if parsed_results[doc_index] else ""
+                    # 如果原 content 为空或新内容更长，则更新
+                    if not doc.content or len(new_content) > len(doc.content):
+                        doc.content = new_content
+                    doc_index += 1
+                except Exception as e:
+                    logger.warning(f"更新文档内容失败: {e}, doc={doc}")
+                    doc_index += 1
+        
         return docs
 
     @timer()
@@ -133,16 +164,44 @@ class BingSearch(SearchBase):
         body = self.construct_body(query, request_id)
         async with aiohttp.ClientSession() as session:
             async with session.post(self._url, json=body, headers=self.headers, timeout=self._timeout) as response:
-                result = json.loads(await response.text())
-                return [
-                    Doc(
-                        doc_type="web_page",
-                        content=item.get("snippet", ""),
-                        title=item.get("name", ""),
-                        link=item.get("url", ""),
-                        data={"search_engine": self._engine},
-                    ) for item in result.get("webPages", {}).get("value", [])
-                ]
+                try:
+                    result = json.loads(await response.text())
+                except (json.JSONDecodeError, Exception) as e:
+                    logger.warning(f"BingSearch 解析响应失败: {e}")
+                    return []
+                
+                items = result.get("webPages", {}).get("value", [])
+                if not items:
+                    return []
+                
+                docs = []
+                for item in items:
+                    try:
+                        snippet = item.get("snippet", "")
+                        if not snippet:
+                            continue
+                        
+                        # 确保所有参数都是字符串类型
+                        content = str(snippet) if snippet else ""
+                        title = str(item.get("name", "") or "")
+                        link = str(item.get("url", "") or "")
+                        
+                        if not content:
+                            continue
+                        
+                        doc = Doc(
+                            content=content,
+                            title=title,
+                            link=link,
+                            doc_type="web_page",
+                            data={"search_engine": self._engine},
+                        )
+                        docs.append(doc)
+                    except Exception as e:
+                        logger.warning(f"创建 Doc 对象失败: {e}, item={item}")
+                        continue
+                
+                return docs
 
 
 class JinaSearch(BingSearch):
@@ -159,16 +218,36 @@ class JinaSearch(BingSearch):
             body = self.construct_body(query, request_id)
             async with aiohttp.ClientSession() as session:
                 async with session.post(self._url, json=body, headers=self.headers, timeout=self._timeout) as response:
-                    result = json.loads(await response.text())
-                    return [
-                        Doc(
-                            doc_type="web_page",
-                            content=item.get("content", ""),
-                            title=item.get("title", ""),
-                            link=item.get("link", ""),
-                            data={"search_engine": self._engine},
-                        ) for item in result.get("search_result", [])
-                    ]
+                    try:
+                        result = json.loads(await response.text())
+                    except (json.JSONDecodeError, Exception) as e:
+                        logger.warning(f"JinaSearch 解析响应失败: {e}")
+                        return []
+                    
+                    items = result.get("search_result", [])
+                    if not items:
+                        return []
+                    
+                    docs = []
+                    for item in items:
+                        try:
+                            content = item.get("content", "")
+                            if not content:
+                                continue
+                            
+                            doc = Doc(
+                                content=str(content),
+                                title=str(item.get("title", "") or ""),
+                                link=str(item.get("link", "") or ""),
+                                doc_type="web_page",
+                                data={"search_engine": self._engine},
+                            )
+                            docs.append(doc)
+                        except Exception as e:
+                            logger.warning(f"创建 Doc 对象失败: {e}, item={item}")
+                            continue
+                    
+                    return docs
         else:
             headers = {
                 "Accept": "application/json",
@@ -176,16 +255,36 @@ class JinaSearch(BingSearch):
             }
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"{self._url}?q={query}", headers=headers, timeout=self._timeout) as response:
-                    result = json.loads(await response.text())
-                    return [
-                        Doc(
-                            doc_type="web_page",
-                            content=item.get("content", ""),
-                            title=item.get("title", ""),
-                            link=item.get("url", ""),
-                            data={"search_engine": self._engine},
-                        ) for item in result.get("data", [])
-                    ]
+                    try:
+                        result = json.loads(await response.text())
+                    except (json.JSONDecodeError, Exception) as e:
+                        logger.warning(f"JinaSearch 解析响应失败: {e}")
+                        return []
+                    
+                    items = result.get("data", [])
+                    if not items:
+                        return []
+                    
+                    docs = []
+                    for item in items:
+                        try:
+                            content = item.get("content", "")
+                            if not content:
+                                continue
+                            
+                            doc = Doc(
+                                content=str(content),
+                                title=str(item.get("title", "") or ""),
+                                link=str(item.get("url", "") or ""),
+                                doc_type="web_page",
+                                data={"search_engine": self._engine},
+                            )
+                            docs.append(doc)
+                        except Exception as e:
+                            logger.warning(f"创建 Doc 对象失败: {e}, item={item}")
+                            continue
+                    
+                    return docs
 
 
 class SogouSearch(JinaSearch):
@@ -219,16 +318,36 @@ class SerperSearch(JinaSearch):
         body = self.construct_body(query, request_id)
         async with aiohttp.ClientSession() as session:
             async with session.post(self._url, json=body, headers=self.headers, timeout=self._timeout) as response:
-                result = json.loads(await response.text())
-                return [
-                    Doc(
-                        doc_type="web_page",
-                        content=item.get("snippet", ""),
-                        title=item.get("title", ""),
-                        link=item.get("link", ""),
-                        data={"search_engine": self._engine},
-                    ) for item in result.get("organic", [])
-                ]
+                try:
+                    result = json.loads(await response.text())
+                except (json.JSONDecodeError, Exception) as e:
+                    logger.warning(f"SerperSearch 解析响应失败: {e}")
+                    return []
+                
+                items = result.get("organic", [])
+                if not items:
+                    return []
+                
+                docs = []
+                for item in items:
+                    try:
+                        snippet = item.get("snippet", "")
+                        if not snippet:
+                            continue
+                        
+                        doc = Doc(
+                            content=str(snippet),
+                            title=str(item.get("title", "") or ""),
+                            link=str(item.get("link", "") or ""),
+                            doc_type="web_page",
+                            data={"search_engine": self._engine},
+                        )
+                        docs.append(doc)
+                    except Exception as e:
+                        logger.warning(f"创建 Doc 对象失败: {e}, item={item}")
+                        continue
+                
+                return docs
 
 
 class MixSearch(BingSearch):
@@ -248,22 +367,54 @@ class MixSearch(BingSearch):
         assert use_bing or use_jina or use_sogou or use_serp
         engines = []
         if use_bing:
-            engines.append(self._bing_engine)
+            engines.append(("bing", self._bing_engine))
         if use_jina:
-            engines.append(self._jina_engine)
+            engines.append(("jina", self._jina_engine))
         if use_sogou:
-            engines.append(self._sogou_engine)
+            engines.append(("sogou", self._sogou_engine))
         if use_serp:
-            engines.append(self._serp_engine)
+            engines.append(("serp", self._serp_engine))
+        
+        # 包装搜索函数，捕获单个引擎的错误
+        async def safe_search(engine_name, engine):
+            try:
+                return await engine.search_and_dedup(query=query, request_id=request_id)
+            except Exception as e:
+                logger.warning(f"{engine_name} 搜索引擎执行失败: {e}")
+                return []
+        
         # 使用 asyncio.gather 替代 TaskGroup（兼容 Python 3.10+）
+        # 使用 return_exceptions=True 确保单个引擎失败不影响其他引擎
         try:
-            # Python 3.11+
-            async with asyncio.TaskGroup() as tg:
-                tasks = [tg.create_task(engine.search_and_dedup(query=query, request_id=request_id)) for engine in engines]
-            results = [task.result() for task in tasks]
+            # Python 3.11+ 尝试使用 TaskGroup
+            try:
+                async with asyncio.TaskGroup() as tg:
+                    tasks = [tg.create_task(safe_search(name, engine)) for name, engine in engines]
+                results = [task.result() for task in tasks]
+            except Exception as e:
+                # TaskGroup 中任何任务失败都会抛出异常，回退到顺序执行
+                logger.warning(f"TaskGroup 执行失败，回退到顺序执行: {e}")
+                results = []
+                for name, engine in engines:
+                    try:
+                        result = await safe_search(name, engine)
+                        results.append(result)
+                    except Exception as err:
+                        logger.warning(f"{name} 搜索引擎执行失败: {err}")
+                        results.append([])
         except AttributeError:
-            # Python 3.10 及以下版本
-            tasks = [engine.search_and_dedup(query=query, request_id=request_id) for engine in engines]
-            results = await asyncio.gather(*tasks)
+            # Python 3.10 及以下版本，使用 gather 并捕获异常
+            tasks = [safe_search(name, engine) for name, engine in engines]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 过滤掉异常结果
+            filtered_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.warning(f"{engines[i][0]} 搜索引擎执行失败: {result}")
+                    filtered_results.append([])
+                else:
+                    filtered_results.append(result)
+            results = filtered_results
+        
         return [doc for docs in results for doc in docs]
 

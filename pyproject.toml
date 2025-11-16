@@ -59,7 +59,8 @@ dependencies = [
     "python-docx>=0.8.11",
     "docx2txt>=0.8",
     "aiohttp",
-    "sentence-transformers>=2.2.2"
+    "sentence-transformers>=2.2.2",
+    "json-repair>=0.7.0"
 ]
 
 [project.optional-dependencies]

@@ -4,6 +4,19 @@ import httpx
 import asyncio
 from bs4 import BeautifulSoup
 import json
+import os
+
+# 导入真实的搜索引擎
+try:
+    from tools.search_component.search_engine import MixSearch
+    from tools.genie_tool_adapter.model.document import Doc
+except ImportError:
+    try:
+        from genie_tool.tool.search_component.search_engine import MixSearch
+        from genie_tool.model.document import Doc
+    except ImportError:
+        MixSearch = None
+        Doc = None
 
 class WebSearchTool(BaseTool):
     """网络搜索工具"""
@@ -19,6 +32,13 @@ class WebSearchTool(BaseTool):
                 "max_results": 10
             }
         )
+        self._search_engine = None
+    
+    def _get_search_engine(self):
+        """获取搜索引擎实例"""
+        if self._search_engine is None and MixSearch:
+            self._search_engine = MixSearch()
+        return self._search_engine
     
     async def execute(self, parameters: Dict[str, Any]) -> str:
         """执行网络搜索"""
@@ -29,10 +49,37 @@ class WebSearchTool(BaseTool):
             return "搜索查询不能为空"
         
         try:
-            # 这里应该调用实际的搜索API
-            # 目前使用模拟数据
-            search_results = await self._mock_web_search(query, keywords)
-            return search_results
+            # 尝试使用真实的搜索引擎
+            search_engine = self._get_search_engine()
+            if search_engine:
+                # 使用真实的搜索引擎
+                docs = await search_engine.search_and_dedup(query, request_id=None)
+                
+                if docs:
+                    # 格式化搜索结果
+                    results = [f"关于 '{query}' 的搜索结果：\n"]
+                    for i, doc in enumerate(docs[:10], 1):  # 最多返回10个结果
+                        # Doc 对象有 title, content, link 属性
+                        title = getattr(doc, 'title', '无标题') or '无标题'
+                        content = getattr(doc, 'content', '') or ''
+                        link = getattr(doc, 'link', '') or ''
+                        
+                        results.append(f"{i}. {title}")
+                        if content:
+                            # 截取前200个字符
+                            content_preview = content[:200] + "..." if len(content) > 200 else content
+                            results.append(f"   内容: {content_preview}")
+                        if link:
+                            results.append(f"   链接: {link}")
+                        results.append("")
+                    
+                    results.append(f"共找到 {len(docs)} 个相关结果")
+                    return "\n".join(results)
+                else:
+                    return f"未找到关于 '{query}' 的搜索结果"
+            else:
+                # 如果没有搜索引擎，返回提示信息
+                return f"搜索功能暂不可用：缺少搜索引擎配置。请配置 BING_SEARCH_URL 和 BING_SEARCH_API_KEY 环境变量。"
         except Exception as e:
             return f"搜索失败: {str(e)}"
     
@@ -53,19 +100,6 @@ class WebSearchTool(BaseTool):
             },
             "required": ["query"]
         }
-    
-    async def _mock_web_search(self, query: str, keywords: List[str]) -> str:
-        """模拟网络搜索"""
-        # 模拟搜索结果
-        results = [
-            f"关于 '{query}' 的搜索结果：",
-            f"1. 找到 {len(keywords)} 个相关关键词",
-            f"2. 主要信息：{query} 是一个重要的话题",
-            f"3. 相关链接：https://example.com/search?q={query}",
-            f"4. 总结：基于搜索结果，{query} 涉及多个方面的内容"
-        ]
-        
-        return "\n".join(results)
 
 class DocumentSearchTool(BaseTool):
     """文档搜索工具"""

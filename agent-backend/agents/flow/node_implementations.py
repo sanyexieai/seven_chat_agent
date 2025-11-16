@@ -135,23 +135,117 @@ class LLMNode(BaseFlowNode):
 
 
 class ToolNode(BaseFlowNode):
-	"""工具节点实现：调用 MCP 工具"""
+	"""工具节点实现：调用所有类型的工具（内置工具、MCP工具、临时工具）"""
 	
 	async def execute(self, user_id: str, message: str, context: Dict[str, Any], agent_name: str = None) -> AgentMessage:
 		"""执行工具调用（同步）"""
 		inputs = self.prepare_inputs(message, context)
 		
 		# 获取配置
+		tool_name = self._render_template_value(self.config.get('tool_name'), inputs)
 		server = self._render_template_value(self.config.get('server'), inputs)
 		tool = self._render_template_value(self.config.get('tool'), inputs)
+		tool_type = self.config.get('tool_type')  # builtin, mcp, temporary
 		params_raw = self.config.get('params', {})
 		params = self._render_template_value(params_raw, inputs)
 		save_as = self.config.get('save_as', 'last_output')
 		
 		try:
 			from main import agent_manager
-			if not agent_manager or not getattr(agent_manager, 'mcp_helper', None):
-				raise RuntimeError("MCP助手未初始化")
+			if not agent_manager:
+				raise RuntimeError("智能体管理器未初始化")
+			
+			# 优先使用 ToolManager 执行工具
+			# 如果有 tool_name 或者有 tool_type，尝试使用 ToolManager
+			if (tool_name or tool_type) and agent_manager.tool_manager:
+				tool_manager = agent_manager.tool_manager
+				
+				# 如果没有 tool_name 但有 tool，尝试构建 tool_name
+				if not tool_name and tool:
+					if tool_type == 'mcp' and server:
+						tool_name = f"mcp_{server}_{tool}"
+					elif tool_type == 'temporary':
+						tool_name = f"temp_{tool}"
+					elif tool_type == 'builtin':
+						tool_name = tool
+					else:
+						# 尝试从 tool_manager 中查找匹配的工具
+						available_tools = tool_manager.get_available_tools()
+						for available_tool in available_tools:
+							if available_tool.get('name') == tool or available_tool.get('name').endswith(f"_{tool}"):
+								tool_name = available_tool.get('name')
+								break
+				
+				# 如果找到了 tool_name，使用 ToolManager 执行
+				if tool_name:
+					# 确保参数是字典格式
+					if not isinstance(params, dict):
+						params = {"query": str(params)} if params else {}
+					
+					# 如果参数为空，尝试从上下文中获取默认值
+					if not params:
+						params = {}
+					
+					# 获取工具的参数模式，检查必需参数
+					tool_obj = tool_manager.get_tool(tool_name)
+					if tool_obj:
+						schema = tool_obj.get_parameters_schema()
+						required_params = schema.get("required", [])
+						
+						# 如果缺少必需参数，尝试从上下文中获取
+						for param_name in required_params:
+							if param_name not in params:
+								# 尝试从上下文中获取默认值
+								# 优先使用 message，其次是 last_output
+								if param_name == "query":
+									# query 参数通常从 message 或 last_output 获取
+									if message:
+										params[param_name] = message
+									else:
+										flow_state = context.get('flow_state', {})
+										last_output = flow_state.get('last_output', '')
+										if last_output:
+											params[param_name] = last_output
+										else:
+											# 如果都没有，使用空字符串（工具可能会处理）
+											params[param_name] = ""
+									logger.info(f"工具节点 {self.id} 自动填充必需参数 {param_name}={params[param_name][:50]}...")
+								else:
+									# 其他必需参数，尝试从 flow_state 中获取
+									flow_state = context.get('flow_state', {})
+									if param_name in flow_state:
+										params[param_name] = flow_state[param_name]
+										logger.info(f"工具节点 {self.id} 从 flow_state 获取参数 {param_name}")
+					
+					# 执行工具
+					result = await tool_manager.execute_tool(tool_name, params)
+					
+					# 格式化结果
+					if isinstance(result, dict):
+						# 如果是 ToolResult 对象，提取前台输出
+						if 'frontend_output' in result:
+							result_text = result.get('frontend_output', '')
+						else:
+							result_text = json.dumps(result, ensure_ascii=False)
+					elif isinstance(result, list):
+						# 如果是列表，转换为字符串
+						result_text = "\n".join(str(item) for item in result)
+					else:
+						result_text = str(result)
+					
+					# 保存输出
+					self.save_output(context, result_text)
+					
+					return self._create_agent_message(result_text, agent_name, metadata={
+						'tool_name': tool_name,
+						'tool_type': tool_type,
+						'tool_result': result
+					})
+			
+			# 向后兼容：如果没有 tool_name，使用旧的 MCP 调用方式
+			if not agent_manager.mcp_helper:
+				raise RuntimeError("MCP助手未初始化，且未指定工具名称")
+			
 			mcp = agent_manager.mcp_helper
 			
 			# 处理 server_tool 格式
@@ -197,15 +291,144 @@ class ToolNode(BaseFlowNode):
 		inputs = self.prepare_inputs(message, context)
 		
 		# 获取配置
+		tool_name = self._render_template_value(self.config.get('tool_name'), inputs)
 		server = self._render_template_value(self.config.get('server'), inputs)
 		tool = self._render_template_value(self.config.get('tool'), inputs)
+		tool_type = self.config.get('tool_type')  # builtin, mcp, temporary
 		params_raw = self.config.get('params', {})
 		params = self._render_template_value(params_raw, inputs)
 		
 		try:
 			from main import agent_manager
-			if not agent_manager or not getattr(agent_manager, 'mcp_helper', None):
-				raise RuntimeError("MCP助手未初始化")
+			if not agent_manager:
+				raise RuntimeError("智能体管理器未初始化")
+			
+			# 优先使用 ToolManager 执行工具
+			# 如果有 tool_name 或者有 tool_type，尝试使用 ToolManager
+			if (tool_name or tool_type) and agent_manager.tool_manager:
+				tool_manager = agent_manager.tool_manager
+				
+				# 如果没有 tool_name 但有 tool，尝试构建 tool_name
+				if not tool_name and tool:
+					if tool_type == 'mcp' and server:
+						tool_name = f"mcp_{server}_{tool}"
+					elif tool_type == 'temporary':
+						tool_name = f"temp_{tool}"
+					elif tool_type == 'builtin':
+						tool_name = tool
+					else:
+						# 尝试从 tool_manager 中查找匹配的工具
+						available_tools = tool_manager.get_available_tools()
+						for available_tool in available_tools:
+							if available_tool.get('name') == tool or available_tool.get('name').endswith(f"_{tool}"):
+								tool_name = available_tool.get('name')
+								break
+				
+				# 如果找到了 tool_name，使用 ToolManager 执行
+				if tool_name:
+					# 确保参数是字典格式
+					if not isinstance(params, dict):
+						params = {"query": str(params)} if params else {}
+					
+					# 如果参数为空，尝试从上下文中获取默认值
+					if not params:
+						params = {}
+					
+					# 获取工具的参数模式，检查必需参数
+					tool_obj = tool_manager.get_tool(tool_name)
+					if tool_obj:
+						schema = tool_obj.get_parameters_schema()
+						required_params = schema.get("required", [])
+						
+						# 如果缺少必需参数，尝试从上下文中获取
+						for param_name in required_params:
+							if param_name not in params:
+								# 尝试从上下文中获取默认值
+								# 优先使用 message，其次是 last_output
+								if param_name == "query":
+									# query 参数通常从 message 或 last_output 获取
+									if message:
+										params[param_name] = message
+									else:
+										flow_state = context.get('flow_state', {})
+										last_output = flow_state.get('last_output', '')
+										if last_output:
+											params[param_name] = last_output
+										else:
+											# 如果都没有，使用空字符串（工具可能会处理）
+											params[param_name] = ""
+									logger.info(f"工具节点 {self.id} 自动填充必需参数 {param_name}={params[param_name][:50]}...")
+								else:
+									# 其他必需参数，尝试从 flow_state 中获取
+									flow_state = context.get('flow_state', {})
+									if param_name in flow_state:
+										params[param_name] = flow_state[param_name]
+										logger.info(f"工具节点 {self.id} 从 flow_state 获取参数 {param_name}")
+					
+					# 执行工具
+					result = await tool_manager.execute_tool(tool_name, params)
+					
+					# 格式化结果
+					if isinstance(result, dict):
+						# 如果是 ToolResult 对象，提取前台输出
+						if 'frontend_output' in result:
+							result_text = result.get('frontend_output', '')
+						else:
+							result_text = json.dumps(result, ensure_ascii=False)
+					elif isinstance(result, list):
+						# 如果是列表，转换为字符串
+						result_text = "\n".join(str(item) for item in result)
+					else:
+						result_text = str(result)
+					
+					# 保存输出
+					self.save_output(context, result_text)
+					# 同时保存到节点的输出列表
+					self.append_node_output(context, result_text, node_id=self.id, also_save_as_last_output=False)
+					
+					# 输出工具结果（tool_result 类型用于特殊处理）
+					yield self._create_stream_chunk(
+						chunk_type="tool_result",
+						content=result_text,
+						agent_name=agent_name,
+						metadata={
+							'tool_name': tool_name,
+							'tool_type': tool_type,
+							'tool_result': result
+						}
+					)
+					# 输出完整的工具执行结果作为 content
+					yield self._create_stream_chunk(
+						chunk_type="content",
+						content=result_text,
+						agent_name=agent_name,
+						metadata={
+							'tool_name': tool_name,
+							'tool_type': tool_type
+						}
+					)
+					
+					# 发送 final chunk 标记节点执行完成
+					logger.info(f"工具节点 {self.id} 流式执行完成，发送 final chunk，工具名称={tool_name}, 结果长度={len(result_text)}")
+					final_chunk = self._create_stream_chunk(
+						chunk_type="final",
+						content=result_text,
+						agent_name=agent_name,
+						is_end=True,
+						metadata={
+							'is_final': True,
+							'tool_name': tool_name,
+							'tool_type': tool_type,
+							'tool_result': result
+						}
+					)
+					yield final_chunk
+					return
+			
+			# 向后兼容：如果没有 tool_name，使用旧的 MCP 调用方式
+			if not agent_manager.mcp_helper:
+				raise RuntimeError("MCP助手未初始化，且未指定工具名称")
+			
 			mcp = agent_manager.mcp_helper
 			
 			# 处理 server_tool 格式
@@ -249,15 +472,30 @@ class ToolNode(BaseFlowNode):
 					'tool_result': result
 				}
 			)
-			# 同时输出 content 类型，确保节点有内容显示
+			# 输出完整的工具执行结果作为 content
 			yield self._create_stream_chunk(
 				chunk_type="content",
-				content=f"工具执行结果: {result_text[:200]}{'...' if len(result_text) > 200 else ''}",
+				content=result_text,
 				agent_name=agent_name,
 				metadata={
 					'tool_name': f"{actual_server}_{actual_tool}"
 				}
 			)
+			
+			# 发送 final chunk 标记节点执行完成
+			logger.info(f"工具节点 {self.id} 流式执行完成（MCP方式），发送 final chunk，工具名称={actual_server}_{actual_tool}, 结果长度={len(result_text)}")
+			final_chunk = self._create_stream_chunk(
+				chunk_type="final",
+				content=result_text,
+				agent_name=agent_name,
+				is_end=True,
+				metadata={
+					'is_final': True,
+					'tool_name': f"{actual_server}_{actual_tool}",
+					'tool_result': result
+				}
+			)
+			yield final_chunk
 		except Exception as e:
 			logger.error(f"工具节点流式执行失败: {str(e)}")
 			yield self._create_stream_chunk(
@@ -483,12 +721,32 @@ class EndNode(BaseFlowNode):
 		
 		# 然后输出 final 类型，标记流程结束
 		# 注意：final chunk 的 content 应该包含完整的助手回复内容
-		# 从 flow_state 中获取 last_output 作为最终的助手回复
+		# 优先从 flow_state 中获取 last_output 作为最终的助手回复
 		flow_state = self._get_flow_state(context)
 		final_content = flow_state.get('last_output', '')
-		# 如果 last_output 为空，使用"结束"作为最终内容
+		
+		# 如果 last_output 为空，尝试从所有节点的输出中收集内容
 		if not final_content:
-			final_content = end_content
+			# 从 nodes 容器中收集所有非结束节点的输出
+			nodes = flow_state.get('nodes', {})
+			all_outputs = []
+			for node_id, node_data in nodes.items():
+				# 跳过结束节点本身
+				if node_id == self.id:
+					continue
+				outputs = node_data.get('outputs', [])
+				if outputs:
+					# 获取最后一个输出
+					last_output = outputs[-1] if isinstance(outputs, list) else outputs
+					if last_output and isinstance(last_output, str) and last_output.strip():
+						all_outputs.append(last_output)
+			
+			# 如果有收集到输出，合并它们
+			if all_outputs:
+				final_content = "\n\n".join(all_outputs)
+			else:
+				# 如果还是没有内容，使用"结束"作为最终内容
+				final_content = end_content
 		
 		yield self._create_stream_chunk(
 			chunk_type="final",

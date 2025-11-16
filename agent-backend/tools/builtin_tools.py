@@ -6,6 +6,7 @@
 from typing import Dict, Any, List, Optional
 from tools.base_tool import BaseTool
 from utils.log_helper import get_logger
+import json
 
 logger = get_logger("builtin_tools")
 
@@ -144,13 +145,28 @@ class DeepSearchTool(BaseTool):
     def _get_search_instance(self):
         """获取搜索实例"""
         if self._search_instance is None:
+            # 动态导入，确保依赖可用
+            try:
+                from tools.deepsearch import DeepSearch
+            except ImportError:
+                try:
+                    from genie_tool.tool.deepsearch import DeepSearch
+                except ImportError:
+                    raise RuntimeError("深度搜索工具不可用：缺少依赖 json-repair，请运行 'pip install json-repair' 安装")
             self._search_instance = DeepSearch()
         return self._search_instance
     
     async def execute(self, parameters: Dict[str, Any]) -> Any:
         """执行深度搜索"""
-        if not DEEPSEARCH_AVAILABLE:
-            raise RuntimeError("深度搜索工具不可用")
+        # 动态检查工具是否可用，而不是依赖模块级别的标志
+        # 这样即使服务器在安装依赖前启动，也能在依赖安装后正常工作
+        try:
+            from tools.deepsearch import DeepSearch
+        except ImportError:
+            try:
+                from genie_tool.tool.deepsearch import DeepSearch
+            except ImportError:
+                raise RuntimeError("深度搜索工具不可用：缺少依赖 json-repair，请运行 'pip install json-repair' 安装")
         
         query = parameters.get("query", "")
         request_id = parameters.get("request_id", "")
@@ -160,6 +176,9 @@ class DeepSearchTool(BaseTool):
         search_instance = self._get_search_instance()
         
         results = []
+        final_answer = ""
+        all_docs = []
+        
         async for chunk in search_instance.run(
             query=query,
             request_id=request_id,
@@ -170,8 +189,72 @@ class DeepSearchTool(BaseTool):
                 results.append(chunk)
             else:
                 results.append(chunk)
+            
+            # 尝试解析 JSON 并提取答案
+            try:
+                chunk_data = json.loads(chunk)
+                if chunk_data.get("messageType") == "report" and chunk_data.get("answer"):
+                    final_answer += chunk_data.get("answer", "")
+                # 收集搜索结果
+                search_result = chunk_data.get("searchResult", {})
+                if search_result.get("docs"):
+                    for docs_list in search_result.get("docs", []):
+                        all_docs.extend(docs_list)
+            except (json.JSONDecodeError, TypeError):
+                # 如果不是 JSON，可能是纯文本答案
+                if chunk and not chunk.startswith("{"):
+                    final_answer += chunk
         
-        return results if stream else "".join(results)
+        # 如果 stream=False，解析所有结果
+        if not stream:
+            combined_result = "".join(results)
+            try:
+                # 尝试解析最后一个 JSON（通常是最终答案）
+                lines = combined_result.strip().split("\n")
+                for line in reversed(lines):
+                    if line.strip().startswith("{"):
+                        try:
+                            data = json.loads(line)
+                            if data.get("messageType") == "report" and data.get("answer"):
+                                final_answer = data.get("answer", "")
+                                break
+                        except json.JSONDecodeError:
+                            continue
+            except Exception:
+                pass
+        
+        # 如果有最终答案，返回答案；否则返回格式化的搜索结果
+        if final_answer:
+            return final_answer
+        elif all_docs:
+            # 格式化搜索结果
+            formatted_results = [f"关于 '{query}' 的搜索结果：\n"]
+            for i, doc in enumerate(all_docs[:10], 1):
+                if isinstance(doc, dict):
+                    title = doc.get("title", "无标题") or "无标题"
+                    content = doc.get("content", "") or ""
+                    link = doc.get("link", "") or ""
+                else:
+                    title = getattr(doc, 'title', '无标题') or '无标题'
+                    content = getattr(doc, 'content', '') or ''
+                    link = getattr(doc, 'link', '') or ''
+                
+                formatted_results.append(f"{i}. {title}")
+                if content:
+                    content_preview = content[:200] + "..." if len(content) > 200 else content
+                    formatted_results.append(f"   内容: {content_preview}")
+                if link:
+                    formatted_results.append(f"   链接: {link}")
+                formatted_results.append("")
+            
+            formatted_results.append(f"共找到 {len(all_docs)} 个相关结果")
+            return "\n".join(formatted_results)
+        else:
+            # 如果没有结果，返回原始 JSON（用于调试）
+            if stream:
+                return results
+            else:
+                return combined_result if results else f"未找到关于 '{query}' 的搜索结果"
     
     def get_parameters_schema(self) -> Dict[str, Any]:
         """获取参数模式"""

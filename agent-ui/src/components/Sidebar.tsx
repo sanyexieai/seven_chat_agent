@@ -255,6 +255,12 @@ const Sidebar: React.FC = () => {
                     label: '',
                     title: '流程图编辑器',
                   },
+                  {
+                    key: '/tools',
+                    icon: <ToolOutlined />,
+                    label: '',
+                    title: '工具管理',
+                  },
                 ]}
               />
             </div>
@@ -307,6 +313,11 @@ const Sidebar: React.FC = () => {
                     key: '/flow-editor',
                     icon: <BranchesOutlined />,
                     label: '流程图编辑器',
+                  },
+                  {
+                    key: '/tools',
+                    icon: <ToolOutlined />,
+                    label: '工具管理',
                   },
                 ]}
               />

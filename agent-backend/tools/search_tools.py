@@ -11,7 +11,13 @@ class WebSearchTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="web_search",
-            description="在网络上搜索信息"
+            description="在网络上搜索信息",
+            container_type=BaseTool.CONTAINER_TYPE_BROWSER,  # 绑定浏览容器
+            container_config={
+                "browser_type": "headless",
+                "timeout": 30,
+                "max_results": 10
+            }
         )
     
     async def execute(self, parameters: Dict[str, Any]) -> str:
@@ -67,7 +73,12 @@ class DocumentSearchTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="document_search",
-            description="在本地文档中搜索信息"
+            description="在本地文档中搜索信息",
+            container_type=BaseTool.CONTAINER_TYPE_FILE,  # 绑定文件容器
+            container_config={
+                "workspace_dir": "documents",
+                "index_format": "vector"
+            }
         )
         self.documents = {}  # 模拟文档存储
     

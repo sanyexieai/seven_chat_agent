@@ -101,6 +101,12 @@ def run_migrations():
         
         # 运行知识图谱相关表迁移
         run_knowledge_graph_migrations()
+        
+        # 运行临时工具表迁移
+        run_temporary_tools_migrations()
+        
+        # 运行工具配置表迁移
+        run_tool_config_migrations()
             
     except Exception as e:
         logger.error(f"数据库迁移失败: {str(e)}")
@@ -192,10 +198,26 @@ def run_mcp_migrations():
                         elif column == 'tool_schema':
                             conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN tool_schema JSON;"))
                             logger.info("添加 tool_schema 字段")
+                        elif column == 'container_type':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN container_type VARCHAR(50) DEFAULT 'none';"))
+                            logger.info("添加 container_type 字段")
+                        elif column == 'container_config':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN container_config JSON;"))
+                            logger.info("添加 container_config 字段")
                     
                     logger.info("MCP工具表迁移完成")
                 else:
                     logger.info("MCP工具表结构已是最新版本")
+                    
+                    # 检查容器相关字段
+                    if not check_column_exists('mcp_tools', 'container_type'):
+                        logger.info("添加 container_type 字段到 mcp_tools 表...")
+                        conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN container_type VARCHAR(50) DEFAULT 'none';"))
+                        logger.info("成功添加 container_type 字段")
+                    if not check_column_exists('mcp_tools', 'container_config'):
+                        logger.info("添加 container_config 字段到 mcp_tools 表...")
+                        conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN container_config JSON;"))
+                        logger.info("成功添加 container_config 字段")
             
             conn.commit()
                 
@@ -636,6 +658,76 @@ def run_knowledge_graph_migrations():
         logger.error(f"知识图谱相关表迁移失败: {str(e)}")
         raise
 
+def run_temporary_tools_migrations():
+    """运行临时工具表的数据库迁移"""
+    logger.info("开始检查临时工具表迁移...")
+    
+    try:
+        with engine.connect() as conn:
+            # 检查temporary_tools表是否存在
+            inspector = inspect(engine)
+            if 'temporary_tools' not in inspector.get_table_names():
+                logger.info("temporary_tools表不存在，创建临时工具表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("临时工具表创建完成")
+                return
+            
+            logger.info("临时工具表已存在，检查字段...")
+            
+            # 检查字段是否存在
+            missing_columns = []
+            
+            if not check_column_exists('temporary_tools', 'code'):
+                missing_columns.append('code')
+            if not check_column_exists('temporary_tools', 'input_schema'):
+                missing_columns.append('input_schema')
+            if not check_column_exists('temporary_tools', 'output_schema'):
+                missing_columns.append('output_schema')
+            if not check_column_exists('temporary_tools', 'examples'):
+                missing_columns.append('examples')
+            if not check_column_exists('temporary_tools', 'is_temporary'):
+                missing_columns.append('is_temporary')
+            if not check_column_exists('temporary_tools', 'container_type'):
+                missing_columns.append('container_type')
+            if not check_column_exists('temporary_tools', 'container_config'):
+                missing_columns.append('container_config')
+            
+            if missing_columns:
+                logger.info(f"发现缺失字段: {missing_columns}")
+                for column in missing_columns:
+                    if column == 'code':
+                        conn.execute(text("ALTER TABLE temporary_tools ADD COLUMN code TEXT;"))
+                        logger.info("添加 code 字段")
+                    elif column == 'input_schema':
+                        conn.execute(text("ALTER TABLE temporary_tools ADD COLUMN input_schema JSON;"))
+                        logger.info("添加 input_schema 字段")
+                    elif column == 'output_schema':
+                        conn.execute(text("ALTER TABLE temporary_tools ADD COLUMN output_schema JSON;"))
+                        logger.info("添加 output_schema 字段")
+                    elif column == 'examples':
+                        conn.execute(text("ALTER TABLE temporary_tools ADD COLUMN examples JSON;"))
+                        logger.info("添加 examples 字段")
+                    elif column == 'is_temporary':
+                        conn.execute(text("ALTER TABLE temporary_tools ADD COLUMN is_temporary BOOLEAN DEFAULT 1;"))
+                        logger.info("添加 is_temporary 字段")
+                    elif column == 'container_type':
+                        conn.execute(text("ALTER TABLE temporary_tools ADD COLUMN container_type VARCHAR(50) DEFAULT 'none';"))
+                        logger.info("添加 container_type 字段")
+                    elif column == 'container_config':
+                        conn.execute(text("ALTER TABLE temporary_tools ADD COLUMN container_config JSON;"))
+                        logger.info("添加 container_config 字段")
+                
+                logger.info("临时工具表迁移完成")
+            else:
+                logger.info("临时工具表结构已是最新版本")
+            
+            conn.commit()
+            logger.info("临时工具表迁移完成")
+                
+    except Exception as e:
+        logger.error(f"临时工具表迁移失败: {str(e)}")
+        raise
+
 def create_default_agents():
     """创建默认智能体"""
     logger.info("检查默认智能体...")
@@ -683,6 +775,61 @@ def create_default_agents():
         raise
     finally:
         db.close()
+
+def run_tool_config_migrations():
+    """运行工具配置表的数据库迁移"""
+    logger.info("开始检查工具配置表迁移...")
+    
+    try:
+        with engine.connect() as conn:
+            # 检查tool_configs表是否存在
+            inspector = inspect(engine)
+            if 'tool_configs' not in inspector.get_table_names():
+                logger.info("tool_configs表不存在，创建工具配置表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("工具配置表创建完成")
+                return
+            
+            logger.info("工具配置表已存在，检查字段...")
+            
+            # 检查字段是否存在
+            missing_columns = []
+            
+            if not check_column_exists('tool_configs', 'tool_name'):
+                missing_columns.append('tool_name')
+            if not check_column_exists('tool_configs', 'tool_type'):
+                missing_columns.append('tool_type')
+            if not check_column_exists('tool_configs', 'container_type'):
+                missing_columns.append('container_type')
+            if not check_column_exists('tool_configs', 'container_config'):
+                missing_columns.append('container_config')
+            
+            if missing_columns:
+                logger.info(f"发现缺失字段: {missing_columns}")
+                for column in missing_columns:
+                    if column == 'tool_name':
+                        conn.execute(text("ALTER TABLE tool_configs ADD COLUMN tool_name VARCHAR(100) NOT NULL;"))
+                        logger.info("添加 tool_name 字段")
+                    elif column == 'tool_type':
+                        conn.execute(text("ALTER TABLE tool_configs ADD COLUMN tool_type VARCHAR(50) NOT NULL;"))
+                        logger.info("添加 tool_type 字段")
+                    elif column == 'container_type':
+                        conn.execute(text("ALTER TABLE tool_configs ADD COLUMN container_type VARCHAR(50) DEFAULT 'none';"))
+                        logger.info("添加 container_type 字段")
+                    elif column == 'container_config':
+                        conn.execute(text("ALTER TABLE tool_configs ADD COLUMN container_config JSON;"))
+                        logger.info("添加 container_config 字段")
+                
+                logger.info("工具配置表迁移完成")
+            else:
+                logger.info("工具配置表结构已是最新版本")
+            
+            conn.commit()
+            logger.info("工具配置表迁移完成")
+                
+    except Exception as e:
+        logger.error(f"工具配置表迁移失败: {str(e)}")
+        raise
 
 def create_default_mcp_servers():
     """创建默认MCP服务器"""

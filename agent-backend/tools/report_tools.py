@@ -9,7 +9,12 @@ class DataAnalysisTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="data_analysis",
-            description="分析数据并生成统计信息"
+            description="分析数据并生成统计信息",
+            container_type=BaseTool.CONTAINER_TYPE_FILE,  # 绑定文件容器
+            container_config={
+                "workspace_dir": "analysis",
+                "output_format": "json"
+            }
         )
     
     async def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
@@ -76,7 +81,12 @@ class ReportGeneratorTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="report_generator",
-            description="生成结构化报告"
+            description="生成结构化报告",
+            container_type=BaseTool.CONTAINER_TYPE_FILE,  # 绑定文件容器
+            container_config={
+                "workspace_dir": "reports",
+                "allowed_formats": ["markdown", "html", "json"]
+            }
         )
     
     async def execute(self, parameters: Dict[str, Any]) -> str:

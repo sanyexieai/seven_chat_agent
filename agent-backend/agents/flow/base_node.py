@@ -465,10 +465,13 @@ class BaseFlowNode(ABC):
 			AgentMessage 实例
 		"""
 		from models.chat_models import MessageType
+		# 优先使用 config 中的 nodeType（如果存在），否则使用 implementation
+		node_type = self.config.get('nodeType') or self.implementation
 		base_metadata = {
 			'node_id': self.id,
 			'node_category': self.category.value,
 			'node_implementation': self.implementation,
+			'node_type': node_type,  # 添加 node_type，优先使用 config 中的 nodeType
 			'node_name': self.name,
 			'node_label': self.label
 		}
@@ -505,10 +508,14 @@ class BaseFlowNode(ABC):
 		Returns:
 			StreamChunk 实例
 		"""
+		# 优先使用 config 中的 nodeType（如果存在），否则使用 implementation
+		# 这样可以确保前端保存的 nodeType 被正确传递到 metadata
+		node_type = self.config.get('nodeType') or self.implementation
 		base_metadata = {
 			'node_id': self.id,
 			'node_category': self.category.value,
 			'node_implementation': self.implementation,
+			'node_type': node_type,  # 添加 node_type，优先使用 config 中的 nodeType
 			'node_name': self.name,
 			'node_label': self.label
 		}
@@ -574,32 +581,58 @@ class BaseFlowNode(ABC):
 		node_config_dict = node_data.get('config', {})
 		position = node_config.get('position', {'x': 0, 'y': 0})
 		
-		# 优先使用新格式（category 和 implementation）
-		# 如果配置中有 category，优先使用它
-		category_str = node_config.get('category')
-		if category_str:
-			try:
-				category = NodeCategory(category_str)
-			except ValueError:
-				raise ValueError(f"未知的节点类别: {category_str}")
-			# implementation 从配置中获取，如果没有则使用 category
-			implementation = node_config.get('implementation', category_str)
+		# 优先使用 data.nodeType（前端保存的原始类型），这是最准确的节点类型
+		# 需要将前端的 nodeType 映射到后端的 implementation
+		node_type_mapping = {
+			'llm': 'llm',
+			'tool': 'tool',
+			'router': 'router',
+			'start': 'start',
+			'end': 'end',
+			'knowledgeBase': 'knowledge_base',
+			'knowledge_base': 'knowledge_base',
+			'agent': 'agent',
+			'action': 'tool'  # action 映射为 tool
+		}
+		
+		# 优先使用 data.nodeType
+		data_node_type = node_data.get('nodeType')
+		if data_node_type:
+			# 将前端的 nodeType 映射到后端的 implementation
+			implementation = node_type_mapping.get(data_node_type, data_node_type)
+			# 根据 implementation 推断 category
+			category = cls._infer_category_from_type(implementation)
 		else:
-			# 兼容旧格式：如果只有 type，则作为 category 和 implementation
-			node_type_str = node_config.get('type')
-			if node_type_str:
-				# 旧格式：type 直接作为 implementation
-				implementation = node_config.get('implementation', node_type_str)
-				# 根据 type 推断 category
-				category = cls._infer_category_from_type(node_type_str)
+			# 如果没有 data.nodeType，使用新格式（category 和 implementation）
+			# 如果配置中有 category，优先使用它
+			category_str = node_config.get('category')
+			if category_str:
+				try:
+					category = NodeCategory(category_str)
+				except ValueError:
+					raise ValueError(f"未知的节点类别: {category_str}")
+				# implementation 从配置中获取，如果没有则使用 category
+				implementation = node_config.get('implementation', category_str)
 			else:
-				# 如果都没有，默认使用 PROCESSOR
-				category = NodeCategory.PROCESSOR
-				implementation = node_config.get('implementation', 'llm')
+				# 兼容旧格式：如果只有 type，则作为 category 和 implementation
+				node_type_str = node_config.get('type')
+				if node_type_str:
+					# 旧格式：type 直接作为 implementation
+					implementation = node_config.get('implementation', node_type_str)
+					# 根据 type 推断 category
+					category = cls._infer_category_from_type(node_type_str)
+				else:
+					# 如果都没有，默认使用 PROCESSOR
+					category = NodeCategory.PROCESSOR
+					implementation = node_config.get('implementation', 'llm')
 		
 		# 确保 label 被保存到 config 中
 		if node_name:
 			node_config_dict['label'] = node_name
+		
+		# 确保 nodeType 被保存到 config 中（如果存在），用于后续识别节点类型
+		if data_node_type:
+			node_config_dict['nodeType'] = data_node_type
 		
 		# 使用注册表创建节点
 		return NodeRegistry.create_node(

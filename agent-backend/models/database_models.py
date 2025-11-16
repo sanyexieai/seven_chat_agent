@@ -205,6 +205,8 @@ class MCPTool(Base):
     output_schema = Column(JSON, nullable=True)  # 输出schema
     examples = Column(JSON, nullable=True)  # 示例
     tool_schema = Column(JSON, nullable=True)  # 工具schema（兼容性）
+    container_type = Column(String(50), nullable=True, default="none")  # 容器类型：browser, file, none
+    container_config = Column(JSON, nullable=True)  # 容器配置
     is_active = Column(Boolean, default=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -212,6 +214,39 @@ class MCPTool(Base):
     
     # 关联关系
     server = relationship("MCPServer", back_populates="tools")
+
+class TemporaryTool(Base):
+    """临时工具表（通过代码编辑器生成）"""
+    __tablename__ = "temporary_tools"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    display_name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    code = Column(Text, nullable=False)  # 工具代码
+    input_schema = Column(JSON, nullable=True)  # 输入schema
+    output_schema = Column(JSON, nullable=True)  # 输出schema
+    examples = Column(JSON, nullable=True)  # 示例
+    container_type = Column(String(50), nullable=True, default="none")  # 容器类型：browser, file, none
+    container_config = Column(JSON, nullable=True)  # 容器配置
+    is_active = Column(Boolean, default=True)
+    is_temporary = Column(Boolean, default=True)  # 是否为临时工具
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ToolConfig(Base):
+    """工具配置表（用于存储所有工具的容器配置，包括内置工具）"""
+    __tablename__ = "tool_configs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    tool_name = Column(String(100), unique=True, nullable=False, index=True)  # 工具名称（唯一标识）
+    tool_type = Column(String(50), nullable=False)  # 工具类型：builtin, mcp, temporary
+    container_type = Column(String(50), nullable=True, default="none")  # 容器类型：browser, file, none
+    container_config = Column(JSON, nullable=True)  # 容器配置
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 # Pydantic响应模型
 class AgentResponse(BaseModel):
@@ -332,6 +367,8 @@ class MCPToolResponse(BaseModel):
     output_schema: Optional[Dict[str, Any]] = None
     examples: Optional[List[Dict[str, Any]]] = None
     tool_schema: Optional[Dict[str, Any]] = None
+    container_type: Optional[str] = "none"
+    container_config: Optional[Dict[str, Any]] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -358,6 +395,49 @@ class MCPToolUpdate(BaseModel):
     output_schema: Optional[Dict[str, Any]] = None
     examples: Optional[List[Dict[str, Any]]] = None
     tool_schema: Optional[Dict[str, Any]] = None
+    container_type: Optional[str] = None
+    container_config: Optional[Dict[str, Any]] = None
+
+class TemporaryToolResponse(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    code: str
+    input_schema: Optional[Dict[str, Any]] = None
+    output_schema: Optional[Dict[str, Any]] = None
+    examples: Optional[List[Dict[str, Any]]] = None
+    container_type: Optional[str] = "none"
+    container_config: Optional[Dict[str, Any]] = None
+    is_active: bool
+    is_temporary: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class TemporaryToolCreate(BaseModel):
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    code: str
+    input_schema: Optional[Dict[str, Any]] = None
+    output_schema: Optional[Dict[str, Any]] = None
+    examples: Optional[List[Dict[str, Any]]] = None
+    container_type: Optional[str] = "none"
+    container_config: Optional[Dict[str, Any]] = None
+
+class TemporaryToolUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    code: Optional[str] = None
+    input_schema: Optional[Dict[str, Any]] = None
+    output_schema: Optional[Dict[str, Any]] = None
+    examples: Optional[List[Dict[str, Any]]] = None
+    container_type: Optional[str] = None
+    container_config: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
 
 class UserSessionResponse(BaseModel):
     id: int
@@ -739,4 +819,27 @@ class KnowledgeTripleResponse(BaseModel):
     created_at: datetime
     
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+# 工具配置Pydantic模型
+class ToolConfigResponse(BaseModel):
+    id: int
+    tool_name: str
+    tool_type: str
+    container_type: Optional[str] = "none"
+    container_config: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ToolConfigCreate(BaseModel):
+    tool_name: str
+    tool_type: str
+    container_type: Optional[str] = "none"
+    container_config: Optional[Dict[str, Any]] = None
+
+class ToolConfigUpdate(BaseModel):
+    container_type: Optional[str] = None
+    container_config: Optional[Dict[str, Any]] = None 

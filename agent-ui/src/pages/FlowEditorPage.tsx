@@ -527,6 +527,8 @@ const FlowEditorPage: React.FC = () => {
   const [currentAgentId, setCurrentAgentId] = useState<number | null>(null);
   const [nodeLlmConfigs, setNodeLlmConfigs] = useState<any[]>([]);
   const [nodeLlmConfigsLoading, setNodeLlmConfigsLoading] = useState(false);
+  const [availableTools, setAvailableTools] = useState<any[]>([]);
+  const [toolsLoading, setToolsLoading] = useState(false);
   
   // 设置侧边栏相关状态（参考通用智能体，除提示词外）
   const [settingsCollapsed, setSettingsCollapsed] = useState(true);
@@ -649,6 +651,7 @@ const FlowEditorPage: React.FC = () => {
           position: node.position,
           data: {
             label: node.data.label || node.id,
+            nodeType: nodeType, // 保存原始节点类型，用于加载时正确识别
             config: node.data.config || {},
             isStartNode: node.data.nodeType === 'start',
             isEndNode: node.data.nodeType === 'end'
@@ -892,17 +895,35 @@ const FlowEditorPage: React.FC = () => {
       if (nodes && Array.isArray(nodes)) {
         console.log('加载节点:', nodes);
         const nodesWithDelete = nodes.map((node: any) => {
-          // 从implementation或type获取节点类型
-          const nodeType = node.implementation || node.type || node.data?.nodeType || 'llm';
+          // 优先使用 data.nodeType（前端保存的原始类型），如果没有则从implementation或type获取
+          // 需要将后端的implementation映射回前端的nodeType
+          const reverseMapping: Record<string, string> = {
+            'llm': 'llm',
+            'tool': 'tool',
+            'router': 'router',
+            'start': 'start',
+            'end': 'end',
+            'knowledge_base': 'knowledgeBase',
+            'agent': 'agent',
+            'action': 'tool' // action 映射为 tool
+          };
+          
+          let nodeType = node.data?.nodeType; // 优先使用保存的nodeType
+          if (!nodeType) {
+            // 如果没有nodeType，从implementation或type获取并映射
+            const implementation = node.implementation || node.type || 'llm';
+            nodeType = reverseMapping[implementation] || implementation;
+          }
+          
           const isStart = nodeType === 'start' || node.id === 'start_node';
           const isEnd = nodeType === 'end' || node.id === 'end_node';
           return {
             ...node,
-            type: nodeType, // ReactFlow渲染类型
+            type: nodeType, // ReactFlow渲染类型，使用前端nodeType
             data: {
               ...node.data,
               label: node.data?.label || node.id,
-              nodeType: nodeType, // 后端节点类型
+              nodeType: nodeType, // 后端节点类型，确保保存
               isStartNode: isStart,
               isEndNode: isEnd,
               isFixed: isStart || isEnd,
@@ -1214,6 +1235,23 @@ const FlowEditorPage: React.FC = () => {
       }
     }
     
+    // 如果是工具节点，加载工具列表
+    if (node.data.nodeType === 'tool') {
+      try {
+        setToolsLoading(true);
+        const response = await fetch(API_PATHS.TOOLS);
+        if (response.ok) {
+          const data = await response.json();
+          setAvailableTools(data.tools || []);
+        }
+      } catch (e) {
+        console.error('加载工具列表失败:', e);
+        message.error('加载工具列表失败');
+      } finally {
+        setToolsLoading(false);
+      }
+    }
+    
     configForm.setFieldsValue({
       label: node.data.label,
       agent_name: node.data.config?.agent_name || '',
@@ -1223,6 +1261,11 @@ const FlowEditorPage: React.FC = () => {
       system_prompt: node.data.nodeType === 'llm' ? (node.data.config?.system_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
       user_prompt: node.data.nodeType === 'llm' ? (node.data.config?.user_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
       save_as: node.data.nodeType === 'llm' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'tool' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'judge' ? (node.data.config?.save_as || 'judge_result') : undefined)),
+      tool_name: node.data.nodeType === 'tool' ? (node.data.config?.tool_name || 
+        (node.data.config?.server && node.data.config?.tool 
+          ? `${node.data.config.type === 'mcp' ? 'mcp_' : ''}${node.data.config.server}_${node.data.config.tool}`
+          : node.data.config?.tool || '')
+      ) : undefined,
       server: node.data.nodeType === 'tool' ? (node.data.config?.server || '') : undefined,
       tool: node.data.nodeType === 'tool' ? (node.data.config?.tool || '') : undefined,
       params: node.data.nodeType === 'tool' ? (typeof node.data.config?.params === 'object' ? JSON.stringify(node.data.config?.params, null, 2) : (node.data.config?.params || '')) : undefined,
@@ -1284,6 +1327,27 @@ const FlowEditorPage: React.FC = () => {
         if (values.save_as !== undefined) config.save_as = values.save_as;
       } else if (selectedNode.data.nodeType === 'tool') {
         // 工具 节点配置 - 只更新提供的字段
+        if (values.tool_name !== undefined) {
+          // 保存工具名称，用于后续识别
+          config.tool_name = values.tool_name;
+          // 解析工具名称，提取server和tool
+          const selectedTool = availableTools.find((t: any) => t.name === values.tool_name);
+          if (selectedTool) {
+            if (selectedTool.type === 'mcp' && values.tool_name.startsWith('mcp_')) {
+              const parts = values.tool_name.split('_');
+              if (parts.length >= 3) {
+                config.server = parts[1];
+                config.tool = parts.slice(2).join('_');
+              }
+            } else if (selectedTool.type === 'temporary' && values.tool_name.startsWith('temp_')) {
+              config.tool = values.tool_name.replace('temp_', '');
+            } else {
+              // 内置工具
+              config.tool = values.tool || selectedTool.name;
+            }
+            config.tool_type = selectedTool.type;
+          }
+        }
         if (values.server !== undefined) config.server = values.server;
         if (values.tool !== undefined) config.tool = values.tool;
         if (typeof values.append_to_output !== 'undefined') config.append_to_output = !!values.append_to_output;
@@ -1680,19 +1744,36 @@ const FlowEditorPage: React.FC = () => {
         
         // 加载节点 - 使用正确的类型
         const loadedNodes = flowConfig.nodes.map((node: any) => {
-          // 从implementation或type获取节点类型
-          const nodeType = node.implementation || node.type || 'llm';
+          // 优先使用 data.nodeType（前端保存的原始类型），如果没有则从implementation或type获取并映射
+          const reverseMapping: Record<string, string> = {
+            'llm': 'llm',
+            'tool': 'tool',
+            'router': 'router',
+            'start': 'start',
+            'end': 'end',
+            'knowledge_base': 'knowledgeBase',
+            'agent': 'agent',
+            'action': 'tool' // action 映射为 tool
+          };
+          
+          let nodeType = node.data?.nodeType; // 优先使用保存的nodeType
+          if (!nodeType) {
+            // 如果没有nodeType，从implementation或type获取并映射
+            const implementation = node.implementation || node.type || 'llm';
+            nodeType = reverseMapping[implementation] || implementation;
+          }
+          
           const isStart = nodeType === 'start' || node.id === 'start_node';
           const isEnd = nodeType === 'end' || node.id === 'end_node';
           
           return {
             id: node.id,
-            type: nodeType, // ReactFlow渲染类型，使用实际节点类型
+            type: nodeType, // ReactFlow渲染类型，使用前端nodeType
             position: node.position || { x: 0, y: 0 },
             data: {
               ...node.data,
               label: node.data?.label || node.id,
-              nodeType: nodeType, // 后端节点类型
+              nodeType: nodeType, // 后端节点类型，确保保存
               isStartNode: isStart,
               isEndNode: isEnd,
               isFixed: isStart || isEnd, // 开始和结束节点固定
@@ -2357,15 +2438,68 @@ const FlowEditorPage: React.FC = () => {
 
           {selectedNode?.data.nodeType === 'tool' && (
             <>
-              <Form.Item name="server" label="服务名">
-                <Input placeholder="例如：ddg（可选，若工具名为 server_tool 可省略）" />
-              </Form.Item>
-              <Form.Item name="tool" label="工具名" rules={[{ required: true, message: '请输入工具名' }]}
+              <Form.Item 
+                name="tool_name" 
+                label="选择工具" 
+                rules={[{ required: true, message: '请选择工具' }]}
+                extra="从工具列表中选择要使用的工具"
               >
-                <Input placeholder="例如：search 或 ddg_search" />
+                <Select 
+                  placeholder="请选择工具" 
+                  loading={toolsLoading}
+                  showSearch
+                  filterOption={(input, option) =>
+                    (option?.children as unknown as string)?.toLowerCase().includes(input.toLowerCase())
+                  }
+                  onChange={(value) => {
+                    // 根据选择的工具自动填充工具名和参数
+                    const selectedTool = availableTools.find((t: any) => t.name === value);
+                    if (selectedTool) {
+                      // 解析工具名：如果是MCP工具，格式为 mcp_serverId_toolName
+                      let toolName = selectedTool.name;
+                      let serverName = '';
+                      
+                      if (selectedTool.type === 'mcp' && toolName.startsWith('mcp_')) {
+                        // 解析 mcp_serverId_toolName 格式
+                        const parts = toolName.split('_');
+                        if (parts.length >= 3) {
+                          serverName = parts[1]; // serverId
+                          toolName = parts.slice(2).join('_'); // toolName
+                        }
+                      } else if (selectedTool.type === 'temporary' && toolName.startsWith('temp_')) {
+                        // 临时工具格式为 temp_toolName
+                        toolName = toolName.replace('temp_', '');
+                      }
+                      
+                      configForm.setFieldsValue({
+                        tool: toolName,
+                        server: serverName || undefined,
+                        params: selectedTool.parameters ? JSON.stringify(selectedTool.parameters, null, 2) : ''
+                      });
+                    }
+                  }}
+                >
+                  {availableTools.map((tool: any) => (
+                    <Select.Option key={tool.name} value={tool.name}>
+                      <Space>
+                        <span>{tool.display_name || tool.name}</span>
+                        {tool.type === 'builtin' && <Tag color="blue">内置</Tag>}
+                        {tool.type === 'mcp' && <Tag color="green">MCP</Tag>}
+                        {tool.type === 'temporary' && <Tag color="orange">临时</Tag>}
+                        {tool.category && <Tag color="purple">{tool.category}</Tag>}
+                      </Space>
+                    </Select.Option>
+                  ))}
+                </Select>
               </Form.Item>
-              <Form.Item name="params" label="参数（JSON或字符串）">
-                <Input.TextArea rows={3} placeholder='例如：{"query": "{{message}}"}' />
+              <Form.Item name="server" label="服务名（自动填充）">
+                <Input placeholder="MCP工具的服务名（自动填充）" disabled />
+              </Form.Item>
+              <Form.Item name="tool" label="工具名（自动填充）">
+                <Input placeholder="工具名（自动填充）" disabled />
+              </Form.Item>
+              <Form.Item name="params" label="参数（JSON格式）" extra="可根据工具的参数schema填写">
+                <Input.TextArea rows={5} placeholder='例如：{"query": "{{message}}"}' />
               </Form.Item>
               <Form.Item name="append_to_output" label="附加到输出" valuePropName="checked">
                 <Checkbox defaultChecked>将结果附加到 last_output</Checkbox>
@@ -2525,13 +2659,30 @@ const FlowEditorPage: React.FC = () => {
             
             // 先处理所有导入的节点
             const processedNodes = flowConfig.nodes.map((node: any) => {
-              // 从implementation、type或data.nodeType获取节点类型
-              const nodeType = node.implementation || node.type || node.data?.nodeType || 'llm';
+              // 优先使用 data.nodeType（前端保存的原始类型），如果没有则从implementation或type获取并映射
+              const reverseMapping: Record<string, string> = {
+                'llm': 'llm',
+                'tool': 'tool',
+                'router': 'router',
+                'start': 'start',
+                'end': 'end',
+                'knowledge_base': 'knowledgeBase',
+                'agent': 'agent',
+                'action': 'tool' // action 映射为 tool
+              };
+              
+              let nodeType = node.data?.nodeType; // 优先使用保存的nodeType
+              if (!nodeType) {
+                // 如果没有nodeType，从implementation或type获取并映射
+                const implementation = node.implementation || node.type || 'llm';
+                nodeType = reverseMapping[implementation] || implementation;
+              }
+              
               const isStart = nodeType === 'start' || node.id === 'start_node';
               const isEnd = nodeType === 'end' || node.id === 'end_node';
               return {
                 ...node,
-                type: nodeType, // ReactFlow渲染类型
+                type: nodeType, // ReactFlow渲染类型，使用前端nodeType
                 data: {
                   ...node.data,
                   label: node.data?.label || node.id,

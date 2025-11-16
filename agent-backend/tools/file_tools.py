@@ -11,7 +11,12 @@ class FileReaderTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="file_reader",
-            description="读取文件内容"
+            description="读取文件内容",
+            container_type=BaseTool.CONTAINER_TYPE_FILE,  # 绑定文件容器
+            container_config={
+                "workspace_dir": "files",
+                "read_only": True
+            }
         )
         self.supported_extensions = ['.txt', '.md', '.json', '.csv', '.py', '.js', '.html', '.css']
     
@@ -80,7 +85,12 @@ class FileWriterTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="file_writer",
-            description="写入文件内容"
+            description="写入文件内容",
+            container_type=BaseTool.CONTAINER_TYPE_FILE,  # 绑定文件容器
+            container_config={
+                "workspace_dir": "files",
+                "read_only": False
+            }
         )
         self.supported_extensions = ['.txt', '.md', '.json', '.csv', '.py', '.js', '.html', '.css']
     

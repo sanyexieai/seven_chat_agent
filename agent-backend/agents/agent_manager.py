@@ -24,6 +24,7 @@ class AgentManager:
         self.session_contexts: Dict[str, AgentContext] = {}  # session_id -> context
         self.mcp_configs: Dict[str, Dict] = {}  # MCP配置缓存
         self.mcp_helper = None  # MCP助手实例
+        self.tool_manager = None  # 工具管理器实例
         
     async def initialize(self):
         """初始化智能体管理器"""
@@ -45,9 +46,23 @@ class AgentManager:
         # 创建默认智能体
         await self._create_default_agents()
         
+        # 初始化工具管理器
+        await self._initialize_tool_manager()
+        
         logger.info(f"智能体管理器初始化完成，共 {len(self.agents)} 个智能体，{len(self.mcp_configs)} 个MCP配置")
         logger.info(f"初始化完成后的MCP配置: {list(self.mcp_configs.keys())}")
         logger.info(f"初始化完成后的MCP配置详情: {self.mcp_configs}")
+    
+    async def _initialize_tool_manager(self):
+        """初始化工具管理器"""
+        try:
+            from tools.tool_manager import ToolManager
+            self.tool_manager = ToolManager()
+            self.tool_manager.set_agent_manager(self)
+            await self.tool_manager.initialize()
+            logger.info("工具管理器初始化完成")
+        except Exception as e:
+            logger.error(f"工具管理器初始化失败: {e}")
     
     async def _load_mcp_configs(self):
         """从数据库加载MCP配置"""

@@ -50,6 +50,18 @@ export const API_PATHS = {
   KNOWLEDGE_BASE_UPLOAD: (id: number | string) => `/api/knowledge-base/${id}/documents/upload`,
   KNOWLEDGE_BASE_DOCUMENT: (id: number | string) => `/api/knowledge-base/documents/${id}`,
   
+  // 工具相关
+  TOOLS: '/api/tools',
+  TOOLS_BY_TYPE: (type: string) => `/api/tools/types/${type}`,
+  TOOLS_BY_CATEGORY: (category: string) => `/api/tools/categories/${category}`,
+  TOOLS_SEARCH: (query: string) => `/api/tools/search?q=${encodeURIComponent(query)}`,
+  TOOLS_STATISTICS: '/api/tools/statistics',
+  TOOLS_EXECUTE: '/api/tools/execute',
+  TOOLS_RELOAD: (type?: string) => type ? `/api/tools/reload?tool_type=${type}` : '/api/tools/reload',
+        TOOLS_TEMPORARY: '/api/tools/temporary',
+        TOOLS_TEMPORARY_BY_ID: (id: number | string) => `/api/tools/temporary/${id}`,
+        TOOLS_CONTAINER: (toolName: string) => `/api/tools/${encodeURIComponent(toolName)}/container`,
+  
   // 健康检查
   HEALTH: '/api/health',
   HEALTH_ROOT: '/health',

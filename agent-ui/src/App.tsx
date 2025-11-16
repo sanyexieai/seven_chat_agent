@@ -13,6 +13,7 @@ import ChatPage from './pages/ChatPage';
 import LLMConfigPage from './pages/LLMConfigPage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
 import KnowledgeQueryPage from './pages/KnowledgeQueryPage';
+import ToolsPage from './pages/ToolsPage';
 
 import SettingsPage from './pages/SettingsPage';
 
@@ -35,6 +36,7 @@ const App: React.FC = () => {
             <Route path="/llm-config" element={<LLMConfigPage />} />
             <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
             <Route path="/knowledge-query" element={<KnowledgeQueryPage />} />
+            <Route path="/tools" element={<ToolsPage />} />
 
             <Route path="/settings" element={<SettingsPage />} />
 

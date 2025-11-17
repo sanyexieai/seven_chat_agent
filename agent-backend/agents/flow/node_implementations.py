@@ -197,8 +197,8 @@ class ToolNode(BaseFlowNode):
 							if param_name not in params:
 								# 尝试从上下文中获取默认值
 								# 优先使用 message，其次是 last_output
-								if param_name == "query":
-									# query 参数通常从 message 或 last_output 获取
+								if param_name in ["query", "task"]:
+									# query 和 task 参数通常从 message 或 last_output 获取
 									if message:
 										params[param_name] = message
 									else:
@@ -216,6 +216,17 @@ class ToolNode(BaseFlowNode):
 									if param_name in flow_state:
 										params[param_name] = flow_state[param_name]
 										logger.info(f"工具节点 {self.id} 从 flow_state 获取参数 {param_name}")
+									else:
+										# 如果 flow_state 中也没有，尝试使用 message 或 last_output 作为默认值
+										if message:
+											params[param_name] = message
+											logger.info(f"工具节点 {self.id} 使用 message 作为参数 {param_name} 的默认值")
+										else:
+											flow_state = context.get('flow_state', {})
+											last_output = flow_state.get('last_output', '')
+											if last_output:
+												params[param_name] = last_output
+												logger.info(f"工具节点 {self.id} 使用 last_output 作为参数 {param_name} 的默认值")
 					
 					# 执行工具
 					result = await tool_manager.execute_tool(tool_name, params)
@@ -345,8 +356,8 @@ class ToolNode(BaseFlowNode):
 							if param_name not in params:
 								# 尝试从上下文中获取默认值
 								# 优先使用 message，其次是 last_output
-								if param_name == "query":
-									# query 参数通常从 message 或 last_output 获取
+								if param_name in ["query", "task"]:
+									# query 和 task 参数通常从 message 或 last_output 获取
 									if message:
 										params[param_name] = message
 									else:
@@ -364,6 +375,17 @@ class ToolNode(BaseFlowNode):
 									if param_name in flow_state:
 										params[param_name] = flow_state[param_name]
 										logger.info(f"工具节点 {self.id} 从 flow_state 获取参数 {param_name}")
+									else:
+										# 如果 flow_state 中也没有，尝试使用 message 或 last_output 作为默认值
+										if message:
+											params[param_name] = message
+											logger.info(f"工具节点 {self.id} 使用 message 作为参数 {param_name} 的默认值")
+										else:
+											flow_state = context.get('flow_state', {})
+											last_output = flow_state.get('last_output', '')
+											if last_output:
+												params[param_name] = last_output
+												logger.info(f"工具节点 {self.id} 使用 last_output 作为参数 {param_name} 的默认值")
 					
 					# 执行工具
 					result = await tool_manager.execute_tool(tool_name, params)
@@ -726,13 +748,13 @@ class EndNode(BaseFlowNode):
 		final_content = flow_state.get('last_output', '')
 		
 		# 如果 last_output 为空，尝试从所有节点的输出中收集内容
-		if not final_content:
+		if not final_content or final_content == end_content:
 			# 从 nodes 容器中收集所有非结束节点的输出
 			nodes = flow_state.get('nodes', {})
 			all_outputs = []
 			for node_id, node_data in nodes.items():
-				# 跳过结束节点本身
-				if node_id == self.id:
+				# 跳过结束节点本身和开始节点
+				if node_id == self.id or node_id == 'start_node':
 					continue
 				outputs = node_data.get('outputs', [])
 				if outputs:
@@ -744,9 +766,21 @@ class EndNode(BaseFlowNode):
 			# 如果有收集到输出，合并它们
 			if all_outputs:
 				final_content = "\n\n".join(all_outputs)
+				logger.info(f"结束节点 {self.id} 从 {len(all_outputs)} 个节点收集到输出，总长度={len(final_content)}")
 			else:
-				# 如果还是没有内容，使用"结束"作为最终内容
-				final_content = end_content
+				# 如果还是没有内容，尝试从 flow_state 中获取其他节点的输出
+				# 检查是否有其他方式存储的节点输出
+				for key, value in flow_state.items():
+					if key != 'last_output' and key != 'nodes' and isinstance(value, str) and value.strip():
+						all_outputs.append(value)
+				
+				if all_outputs:
+					final_content = "\n\n".join(all_outputs)
+					logger.info(f"结束节点 {self.id} 从 flow_state 收集到输出，总长度={len(final_content)}")
+				else:
+					# 如果还是没有内容，使用"结束"作为最终内容
+					logger.warning(f"结束节点 {self.id} 没有收集到任何节点输出，使用默认内容")
+					final_content = end_content
 		
 		yield self._create_stream_chunk(
 			chunk_type="final",

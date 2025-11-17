@@ -58,6 +58,10 @@ class FlowEngine:
 		nodes_cfg: List[Dict[str, Any]] = graph_config.get('nodes', [])
 		edges_cfg: List[Dict[str, Any]] = graph_config.get('edges', [])
 		
+		logger.info(f"📋 加载流程配置：nodes={len(nodes_cfg)}, edges={len(edges_cfg)}")
+		if edges_cfg:
+			logger.info(f"📋 边配置详情：{edges_cfg}")
+		
 		self._node_map.clear()
 		self._adj.clear()
 		self._in_degree.clear()
@@ -164,6 +168,12 @@ class FlowEngine:
 		# 将 connections 写回节点，保持一致
 		for node_id, outs in self._adj.items():
 			self._node_map[node_id].set_connections(outs)
+		
+		# 打印调试信息：显示所有节点及其连接关系
+		logger.info(f"📊 流程构建完成，共 {len(self._node_map)} 个节点")
+		for node_id, node in self._node_map.items():
+			connections = self._adj.get(node_id, [])
+			logger.info(f"  - 节点 {node_id} ({node.name}, {node.category.value if hasattr(node.category, 'value') else node.category}, {node.implementation}): 连接 -> {connections}")
 		
 		return self
 	
@@ -483,6 +493,7 @@ class FlowEngine:
 			if node.category == NodeCategory.END:
 				next_id = None
 			
+			logger.info(f"🔄 节点 {node.id} ({node.name}) 执行完成，下一个节点: {next_id}, 当前连接列表: {node.connections}")
 			current_id = next_id
 		
 		# while循环结束后，处理最终块和钩子

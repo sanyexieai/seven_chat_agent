@@ -409,6 +409,17 @@ class ToolNode(BaseFlowNode):
 					self.append_node_output(context, result_text, node_id=self.id, also_save_as_last_output=False)
 					
 					# 输出工具结果（tool_result 类型用于特殊处理）
+					# 对于报告工具，提取下载信息到metadata中
+					download_info = None
+					if tool_name == "report":
+						import re
+						match = re.search(r'<!-- REPORT_DOWNLOAD_INFO: ({.*?}) -->', result_text, re.DOTALL)
+						if match:
+							try:
+								download_info = json.loads(match.group(1))
+							except:
+								pass
+					
 					yield self._create_stream_chunk(
 						chunk_type="tool_result",
 						content=result_text,
@@ -416,17 +427,26 @@ class ToolNode(BaseFlowNode):
 						metadata={
 							'tool_name': tool_name,
 							'tool_type': tool_type,
-							'tool_result': result
+							'tool_result': result,
+							'download_info': download_info  # 添加下载信息
 						}
 					)
 					# 输出完整的工具执行结果作为 content
+					# 对于报告工具，确保显示完整内容（不截断）
+					display_content = result_text
+					if tool_name == "report" and download_info:
+						# 如果有完整内容，使用完整内容显示
+						if 'full_content' in download_info:
+							display_content = download_info['full_content']
+					
 					yield self._create_stream_chunk(
 						chunk_type="content",
-						content=result_text,
+						content=display_content,
 						agent_name=agent_name,
 						metadata={
 							'tool_name': tool_name,
-							'tool_type': tool_type
+							'tool_type': tool_type,
+							'download_info': download_info  # 添加下载信息
 						}
 					)
 					
@@ -434,14 +454,15 @@ class ToolNode(BaseFlowNode):
 					logger.info(f"工具节点 {self.id} 流式执行完成，发送 final chunk，工具名称={tool_name}, 结果长度={len(result_text)}")
 					final_chunk = self._create_stream_chunk(
 						chunk_type="final",
-						content=result_text,
+						content=display_content if tool_name == "report" and download_info else result_text,
 						agent_name=agent_name,
 						is_end=True,
 						metadata={
 							'is_final': True,
 							'tool_name': tool_name,
 							'tool_type': tool_type,
-							'tool_result': result
+							'tool_result': result,
+							'download_info': download_info  # 添加下载信息
 						}
 					)
 					yield final_chunk
@@ -747,40 +768,31 @@ class EndNode(BaseFlowNode):
 		flow_state = self._get_flow_state(context)
 		final_content = flow_state.get('last_output', '')
 		
-		# 如果 last_output 为空，尝试从所有节点的输出中收集内容
+		# 结束节点不应该重复显示前面节点的内容
+		# 如果 last_output 不为空且不是"结束"，说明已经有最终内容，直接使用
+		# 否则，只显示一个简单的完成提示，不重复收集所有节点的输出
 		if not final_content or final_content == end_content:
-			# 从 nodes 容器中收集所有非结束节点的输出
+			# 检查是否有实际的输出内容（不是"开始"或"结束"）
 			nodes = flow_state.get('nodes', {})
-			all_outputs = []
+			has_real_output = False
 			for node_id, node_data in nodes.items():
-				# 跳过结束节点本身和开始节点
 				if node_id == self.id or node_id == 'start_node':
 					continue
 				outputs = node_data.get('outputs', [])
 				if outputs:
-					# 获取最后一个输出
 					last_output = outputs[-1] if isinstance(outputs, list) else outputs
-					if last_output and isinstance(last_output, str) and last_output.strip():
-						all_outputs.append(last_output)
+					if last_output and isinstance(last_output, str) and last_output.strip() and last_output not in ["开始", "结束"]:
+						has_real_output = True
+						break
 			
-			# 如果有收集到输出，合并它们
-			if all_outputs:
-				final_content = "\n\n".join(all_outputs)
-				logger.info(f"结束节点 {self.id} 从 {len(all_outputs)} 个节点收集到输出，总长度={len(final_content)}")
+			if has_real_output:
+				# 有实际输出，显示完成提示
+				final_content = "✅ 流程执行完成"
+				logger.info(f"结束节点 {self.id} 检测到有实际输出，显示完成提示")
 			else:
-				# 如果还是没有内容，尝试从 flow_state 中获取其他节点的输出
-				# 检查是否有其他方式存储的节点输出
-				for key, value in flow_state.items():
-					if key != 'last_output' and key != 'nodes' and isinstance(value, str) and value.strip():
-						all_outputs.append(value)
-				
-				if all_outputs:
-					final_content = "\n\n".join(all_outputs)
-					logger.info(f"结束节点 {self.id} 从 flow_state 收集到输出，总长度={len(final_content)}")
-				else:
-					# 如果还是没有内容，使用"结束"作为最终内容
-					logger.warning(f"结束节点 {self.id} 没有收集到任何节点输出，使用默认内容")
-					final_content = end_content
+				# 没有实际输出，使用默认内容
+				final_content = end_content
+				logger.info(f"结束节点 {self.id} 没有检测到实际输出，使用默认内容")
 		
 		yield self._create_stream_chunk(
 			chunk_type="final",

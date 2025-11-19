@@ -44,14 +44,18 @@ class LLMHelper:
             llm_config: 可选的LLM配置字典，包含provider, model_name, api_key, api_base等
             **kwargs: 其他配置参数
         """
+        config_payload: Dict[str, Any] = {}
         if llm_config:
+            config_payload = llm_config.get('config', {}) or {}
             # 使用传入的LLM配置
             self._config = {
                 'model': llm_config.get('model_name', ''),
                 'model_provider': llm_config.get('provider', ''),
-                'temperature': llm_config.get('config', {}).get('temperature', 0.7),
+                'temperature': config_payload.get('temperature', 0.7),
+                'max_tokens': config_payload.get('max_tokens', 2048),
                 'base_url': llm_config.get('api_base', ''),
-                'api_key': llm_config.get('api_key', '')
+                'api_key': llm_config.get('api_key', ''),
+                'config_overrides': config_payload
             }
             logger.info(f"使用传入的LLM配置: {llm_config.get('provider')} - {llm_config.get('model_name')}")
         else:
@@ -60,31 +64,167 @@ class LLMHelper:
             
             if db_config:
                 # 使用数据库配置
+                config_payload = db_config.config or {}
                 self._config = {
                     'model': db_config.model_name,
                     'model_provider': db_config.provider,
-                    'temperature': db_config.config.get('temperature', 0.7) if db_config.config else 0.7,
+                    'temperature': config_payload.get('temperature', 0.7),
+                    'max_tokens': config_payload.get('max_tokens', 2048),
                     'base_url': db_config.api_base,
-                    'api_key': db_config.api_key
+                    'api_key': db_config.api_key,
+                    'config_overrides': config_payload
                 }
                 logger.info(f"使用数据库LLM配置: {db_config.display_name}")
             else:
                 # 使用环境变量配置作为fallback
+                config_payload = {
+                    'temperature': TEMPERATURE,
+                    'max_tokens': 2048
+                }
                 self._config = dict(
                     model=MODEL, 
                     model_provider=MODEL_PROVIDER, 
-                    temperature=TEMPERATURE, 
+                    temperature=config_payload['temperature'],
+                    max_tokens=config_payload['max_tokens'],
                     base_url=BASE_URL, 
-                    api_key=API_KEY
+                    api_key=API_KEY,
+                    config_overrides=config_payload
                 )
                 logger.info("使用环境变量LLM配置")
         
+        self._apply_provider_overrides(config_payload)
         self._config.update(kwargs)
         
         # 初始化客户端
         self._init_clients()
         
         return self
+
+    @staticmethod
+    def _coerce_dict(value: Any) -> Dict[str, Any]:
+        return value.copy() if isinstance(value, dict) else {}
+
+    def _apply_provider_overrides(self, config_payload: Dict[str, Any]):
+        """根据配置注入提供商特定的额外参数"""
+        provider = self._config.get('model_provider')
+        overrides = config_payload or {}
+
+        provider_params_map = overrides.get('provider_params')
+        provider_params = self._coerce_dict(overrides.get(f"{provider}_params"))
+        if isinstance(provider_params_map, dict):
+            provider_params.update(self._coerce_dict(provider_params_map.get(provider)))
+        if provider_params:
+            self._config[f"{provider}_params"] = provider_params
+
+        if provider == 'ollama':
+            base_options = self._coerce_dict(overrides.get('ollama_options'))
+            request_overrides = self._coerce_dict(overrides.get('ollama_request'))
+            if provider_params:
+                base_options.update(self._coerce_dict(provider_params.get('options')))
+                request_overrides.update(self._coerce_dict(provider_params.get('request')))
+            self._config['ollama_options'] = base_options
+            self._config['ollama_request'] = request_overrides
+
+    def _get_provider_params(self, provider: str) -> Dict[str, Any]:
+        """获取提供商特定参数（包含 config_overrides 中的 provider_params）"""
+        params = self._coerce_dict(self._config.get(f"{provider}_params"))
+        overrides = self._config.get('config_overrides') or {}
+        provider_params_map = overrides.get('provider_params')
+        if isinstance(provider_params_map, dict):
+            params.update(self._coerce_dict(provider_params_map.get(provider)))
+        return params
+
+    def _build_ollama_payload(
+        self,
+        messages: List[Dict[str, Any]],
+        stream: bool,
+        extra_options: Optional[Dict[str, Any]] = None,
+        request_overrides: Optional[Dict[str, Any]] = None,
+        max_tokens_override: Any = None
+    ) -> Dict[str, Any]:
+        """根据配置构建 Ollama 请求载荷"""
+        configured_max_tokens = self._config.get('max_tokens', 512)
+        max_tokens = max_tokens_override if max_tokens_override is not None else configured_max_tokens
+        max_tokens = self._safe_positive_int(max_tokens, configured_max_tokens or 512)
+
+        provider_params = self._get_provider_params('ollama')
+        request_config = self._coerce_dict(self._config.get('ollama_request'))
+        request_config.update(self._coerce_dict(provider_params.get('request')))
+        if request_overrides:
+            request_config.update(self._coerce_dict(request_overrides))
+
+        keep_alive = request_config.pop('keep_alive', request_config.pop('keepAlive', '5m'))
+
+        payload = {
+            "model": self._config.get('model', 'qwen3:8b'),
+            "messages": messages,
+            "stream": stream,
+            "keep_alive": keep_alive
+        }
+
+        for reserved in ('messages', 'model', 'stream', 'options', 'keep_alive'):
+            request_config.pop(reserved, None)
+        payload.update(request_config)
+
+        options = self._coerce_dict(self._config.get('ollama_options'))
+        options.update(self._coerce_dict(provider_params.get('options')))
+        if extra_options:
+            options.update(self._coerce_dict(extra_options))
+
+        if options.get('temperature') is None:
+            options['temperature'] = self._config.get('temperature', 0.7)
+        if options.get('num_predict') is None:
+            options['num_predict'] = max_tokens
+        else:
+            options['num_predict'] = self._safe_positive_int(options['num_predict'], max_tokens)
+
+        payload["options"] = options
+        return payload
+
+    @staticmethod
+    def _safe_positive_int(value: Any, default: int) -> int:
+        try:
+            intval = int(value)
+            return intval if intval > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _extract_ollama_content(payload: Dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+
+        message = payload.get('message')
+        if isinstance(message, dict):
+            content = LLMHelper._normalize_ollama_content(message.get('content'))
+            if content:
+                return content
+
+        response = payload.get('response')
+        if isinstance(response, str) and response:
+            return response
+
+        content = payload.get('content')
+        if isinstance(content, str) and content:
+            return content
+
+        return ""
+
+    @staticmethod
+    def _normalize_ollama_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get('text') or item.get('content')
+                    if text:
+                        parts.append(str(text))
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "".join(parts)
+        return ""
 
     def _init_clients(self):
         """初始化LLM客户端"""
@@ -173,7 +313,7 @@ class LLMHelper:
                 raise Exception("OpenAI客户端未初始化")
             
             # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
-            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            db_max_tokens = self._config.get('max_tokens')
             max_tokens = kwargs.get('max_tokens') or db_max_tokens or 1000
             
             # 合并配置参数
@@ -184,6 +324,10 @@ class LLMHelper:
                 "max_tokens": max_tokens,
                 **kwargs
             }
+
+            provider_params = self._get_provider_params('openai')
+            if provider_params:
+                params.update({k: v for k, v in provider_params.items() if k not in ('options', 'request')})
             
             response = await self._openai_client.chat.completions.create(**params)
             return response.choices[0].message.content
@@ -215,7 +359,7 @@ class LLMHelper:
             user_content = "\n".join(user_messages)
             
             # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
-            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            db_max_tokens = self._config.get('max_tokens')
             max_tokens = kwargs.get('max_tokens') or db_max_tokens or 1000
             
             # 调用API
@@ -225,6 +369,10 @@ class LLMHelper:
                 "temperature": self._config.get('temperature', 0.7),
                 **kwargs
             }
+
+            provider_params = self._get_provider_params('anthropic')
+            if provider_params:
+                params.update({k: v for k, v in provider_params.items() if k not in ('options', 'request')})
             
             if system_message:
                 params["system"] = system_message
@@ -246,21 +394,16 @@ class LLMHelper:
             if not self._ollama_base_url:
                 raise Exception("Ollama客户端未初始化")
             
-            # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
-            db_max_tokens = self._config.get('config', {}).get('max_tokens')
-            max_tokens = kwargs.get('max_tokens') or db_max_tokens or 512
-            max_tokens = max(64, min(int(max_tokens), 512))
-            data = {
-                "model": self._config.get('model', 'qwen3:8b'),
-                "messages": messages,
-                "stream": False,
-                "keep_alive": "5m",
-                "options": {
-                    "temperature": self._config.get('temperature', 0.7),
-                    "num_predict": max_tokens,
-                    **kwargs.get('options', {})
-                }
-            }
+            extra_options = self._coerce_dict(kwargs.get('options'))
+            if 'num_predict' not in extra_options and kwargs.get('num_predict') is not None:
+                extra_options['num_predict'] = kwargs['num_predict']
+            data = self._build_ollama_payload(
+                messages=messages,
+                stream=False,
+                extra_options=extra_options,
+                request_overrides=self._coerce_dict(kwargs.get('request')),
+                max_tokens_override=kwargs.get('max_tokens')
+            )
             
             logger.info(f"Ollama请求URL: {self._ollama_base_url}/api/chat")
             safe_preview = json.dumps({**data, 'messages': '[omitted for brevity]'}, ensure_ascii=False)
@@ -305,7 +448,7 @@ class LLMHelper:
                 result = response.json()
                 logger.info(f"Ollama响应内容: {json.dumps(result, ensure_ascii=False, indent=2)}")
                 
-                content = result.get('message', {}).get('content', '')
+                content = self._extract_ollama_content(result)
                 logger.info(f"提取的内容: {content}")
                 return content
                 
@@ -402,7 +545,7 @@ class LLMHelper:
                 raise Exception("OpenAI客户端未初始化")
             
             # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
-            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            db_max_tokens = self._config.get('max_tokens')
             max_tokens = kwargs.get('max_tokens') or db_max_tokens or 1000
             
             params = {
@@ -445,7 +588,7 @@ class LLMHelper:
             user_content = "\n".join(user_messages)
             
             # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
-            db_max_tokens = self._config.get('config', {}).get('max_tokens')
+            db_max_tokens = self._config.get('max_tokens')
             max_tokens = kwargs.get('max_tokens') or db_max_tokens or 1000
             
             params = {
@@ -478,21 +621,16 @@ class LLMHelper:
             if not self._ollama_base_url:
                 raise Exception("Ollama客户端未初始化")
             
-            # 优先从数据库配置获取token值，然后是kwargs参数，最后是默认值
-            db_max_tokens = self._config.get('config', {}).get('max_tokens')
-            max_tokens = kwargs.get('max_tokens') or db_max_tokens or 512
-            max_tokens = max(64, min(int(max_tokens), 512))
-            data = {
-                "model": self._config.get('model', 'qwen3:8b'),
-                "messages": messages,
-                "stream": True,
-                "keep_alive": "5m",
-                "options": {
-                    "temperature": self._config.get('temperature', 0.7),
-                    "num_predict": max_tokens,
-                    **kwargs.get('options', {})
-                }
-            }
+            extra_options = self._coerce_dict(kwargs.get('options'))
+            if 'num_predict' not in extra_options and kwargs.get('num_predict') is not None:
+                extra_options['num_predict'] = kwargs['num_predict']
+            data = self._build_ollama_payload(
+                messages=messages,
+                stream=True,
+                extra_options=extra_options,
+                request_overrides=self._coerce_dict(kwargs.get('request')),
+                max_tokens_override=kwargs.get('max_tokens')
+            )
             
             logger.info(f"Ollama流式请求URL: {self._ollama_base_url}/api/chat")
             safe_preview = json.dumps({**data, 'messages': '[omitted for brevity]'}, ensure_ascii=False)
@@ -553,11 +691,10 @@ class LLMHelper:
                                     break
                                 
                                 # 检查是否有消息内容
-                                if 'message' in chunk_data and 'content' in chunk_data['message']:
-                                    content = chunk_data['message']['content']
-                                    if content:  # 只yield非空内容
-                                        logger.debug(f"流式内容片段 #{chunk_count}: {content}")
-                                        yield content
+                                content = self._extract_ollama_content(chunk_data)
+                                if content:  # 只yield非空内容
+                                    logger.debug(f"流式内容片段 #{chunk_count}: {content}")
+                                    yield content
                                         
                         except json.JSONDecodeError as e:
                             logger.warning(f"流式数据JSON解析失败: {str(e)}, 数据行: {line_text}")
@@ -613,6 +750,10 @@ class LLMHelper:
                 "max_tokens": kwargs.get('max_tokens', 1000),
                 **kwargs
             }
+
+            provider_params = self._get_provider_params('deepseek')
+            if provider_params:
+                data.update({k: v for k, v in provider_params.items() if k not in ('options', 'request')})
             
             # 发送请求
             async with httpx.AsyncClient() as client:
@@ -649,6 +790,10 @@ class LLMHelper:
                 "stream": True,
                 **kwargs
             }
+
+            provider_params = self._get_provider_params('deepseek')
+            if provider_params:
+                data.update({k: v for k, v in provider_params.items() if k not in ('options', 'request')})
             
             # 发送流式请求
             async with httpx.AsyncClient() as client:

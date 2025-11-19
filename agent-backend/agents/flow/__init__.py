@@ -16,7 +16,7 @@ from .base_node import (
 )
 
 # 导入节点实现并注册
-from .node_implementations import (
+from .nodes import (
 	LLMNode,
 	ToolNode,
 	StartNode,

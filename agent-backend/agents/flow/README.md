@@ -33,6 +33,16 @@
 - 节点配置中通过 `implementation` 字段指定具体实现
 - 支持自定义实现（`custom`）
 
+## 默认节点实现
+
+所有内置节点都位于 `agents/flow/nodes/` 目录下，每个节点类型拥有独立文件，方便维护与扩展：
+
+- `llm_node.py`：LLM 调用节点
+- `tool_node.py`：工具调用节点
+- `start_node.py`：流程入口节点
+- `router_node.py`：条件路由节点
+- `end_node.py`：流程出口节点
+
 ## 使用示例
 
 ### 1. 注册节点实现

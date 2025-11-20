@@ -39,7 +39,7 @@ logger.info("数据库迁移完成")
 
 # 全局变量
 agent_manager = None
-active_connections: Dict[str, WebSocket] = {}
+active_connections: Dict[str, WebSocket] = {} 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

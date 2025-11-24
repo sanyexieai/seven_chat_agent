@@ -133,3 +133,4 @@ temp/
 # uv
 .uv/ 
 reports/*
+search_results/*

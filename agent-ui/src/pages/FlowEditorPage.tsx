@@ -57,6 +57,24 @@ const { Option } = Select;
 const { TabPane } = Tabs;
 const { Sider } = Layout;
 
+const AUTO_INFER_DEFAULT_SYSTEM_PROMPT =
+  '你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。必须输出 JSON，对每个必填字段给出合理值。';
+const AUTO_INFER_DEFAULT_USER_PROMPT = [
+  '工具名称：{tool_name}',
+  '工具类型：{tool_type}',
+  '服务器：{server}',
+  '参数 Schema：',
+  '{schema_json}',
+  '',
+  '用户输入：{message}',
+  '如果需要上下文，可参考上一节点输出：{previous_output}',
+  '',
+  '请输出 JSON，严格遵守 schema 格式。'
+].join('\n');
+
+const normalizeAutoInferPrompt = (value: string | undefined, fallback: string) =>
+  typeof value === 'string' && value.trim().length > 0 ? value : fallback;
+
 interface FlowNode {
   id: string;
   type: string;
@@ -1254,8 +1272,8 @@ const FlowEditorPage: React.FC = () => {
         {
           target_tool_node_id: nodeId,
           auto_param_key: autoParamKey,
-          system_prompt: '',
-          user_prompt: ''
+          system_prompt: AUTO_INFER_DEFAULT_SYSTEM_PROMPT,
+          user_prompt: AUTO_INFER_DEFAULT_USER_PROMPT
         },
         { x: position.x, y: position.y }
       );
@@ -1341,12 +1359,12 @@ const FlowEditorPage: React.FC = () => {
       system_prompt: node.data.nodeType === 'llm'
         ? (node.data.config?.system_prompt || '')
         : node.data.nodeType === 'auto_infer'
-          ? (node.data.config?.system_prompt || '')
+          ? normalizeAutoInferPrompt(node.data.config?.system_prompt, AUTO_INFER_DEFAULT_SYSTEM_PROMPT)
           : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
       user_prompt: node.data.nodeType === 'llm'
         ? (node.data.config?.user_prompt || '')
         : node.data.nodeType === 'auto_infer'
-          ? (node.data.config?.user_prompt || '')
+          ? normalizeAutoInferPrompt(node.data.config?.user_prompt, AUTO_INFER_DEFAULT_USER_PROMPT)
           : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
       save_as: node.data.nodeType === 'llm' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'tool' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'judge' ? (node.data.config?.save_as || 'judge_result') : undefined)),
       tool_name: node.data.nodeType === 'tool' ? (node.data.config?.tool_name || 

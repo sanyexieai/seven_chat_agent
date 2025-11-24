@@ -223,9 +223,82 @@ class DeepSearchTool(BaseTool):
             except Exception:
                 pass
         
+        # 保存搜索结果到文件（如果启用了保存）
+        save_to_file = parameters.get("save_to_file", True)  # 默认保存
+        saved_file_path = None
+        
+        if save_to_file and (all_docs or final_answer):
+            try:
+                import os
+                from datetime import datetime
+                
+                # 创建搜索结果目录
+                search_results_dir = "search_results"
+                os.makedirs(search_results_dir, exist_ok=True)
+                
+                # 生成文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # 从查询中提取关键词作为文件名（取前20个字符）
+                query_slug = "".join(c for c in query[:20] if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
+                if not query_slug:
+                    query_slug = "search"
+                
+                file_path = os.path.join(search_results_dir, f"{query_slug}_{timestamp}_search_result.txt")
+                
+                # 准备文件内容
+                file_content_parts = []
+                file_content_parts.append(f"搜索查询: {query}\n")
+                file_content_parts.append(f"搜索时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                file_content_parts.append(f"=" * 80 + "\n\n")
+                
+                if final_answer:
+                    file_content_parts.append("【最终答案】\n")
+                    file_content_parts.append(final_answer)
+                    file_content_parts.append("\n\n")
+                
+                if all_docs:
+                    file_content_parts.append(f"【搜索结果】共找到 {len(all_docs)} 个相关结果\n\n")
+                    for i, doc in enumerate(all_docs, 1):
+                        if isinstance(doc, dict):
+                            title = doc.get("title", "无标题") or "无标题"
+                            content = doc.get("content", "") or ""
+                            link = doc.get("link", "") or ""
+                        else:
+                            title = getattr(doc, 'title', '无标题') or '无标题'
+                            content = getattr(doc, 'content', '') or ''
+                            link = getattr(doc, 'link', '') or ''
+                        
+                        file_content_parts.append(f"结果 {i}: {title}\n")
+                        if link:
+                            file_content_parts.append(f"链接: {link}\n")
+                        if content:
+                            file_content_parts.append(f"内容:\n{content}\n")
+                        file_content_parts.append("-" * 80 + "\n\n")
+                
+                # 写入文件
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write("".join(file_content_parts))
+                
+                # 计算相对路径（相对于项目根目录）
+                project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+                try:
+                    rel_path = os.path.relpath(file_path, project_root)
+                    rel_path = rel_path.replace("\\", "/")
+                except ValueError:
+                    rel_path = file_path.replace("\\", "/")
+                
+                saved_file_path = rel_path
+                logger.info(f"搜索结果已保存到: {saved_file_path}")
+                
+            except Exception as e:
+                logger.warning(f"保存搜索结果到文件失败: {str(e)}")
+        
         # 如果有最终答案，返回答案；否则返回格式化的搜索结果
         if final_answer:
-            return final_answer
+            result_text = final_answer
+            if saved_file_path:
+                result_text += f"\n\n[搜索结果已保存到文件: {saved_file_path}]"
+            return result_text
         elif all_docs:
             # 格式化搜索结果
             formatted_results = [f"关于 '{query}' 的搜索结果：\n"]
@@ -248,7 +321,22 @@ class DeepSearchTool(BaseTool):
                 formatted_results.append("")
             
             formatted_results.append(f"共找到 {len(all_docs)} 个相关结果")
-            return "\n".join(formatted_results)
+            if saved_file_path:
+                formatted_results.append(f"\n[搜索结果已保存到文件: {saved_file_path}]")
+            
+            # 返回结果和文件路径信息（JSON格式，方便后续节点使用）
+            result_text = "\n".join(formatted_results)
+            
+            # 如果保存了文件，返回包含文件路径的结构化结果
+            if saved_file_path:
+                return {
+                    "result": result_text,
+                    "file_path": saved_file_path,
+                    "file_name": saved_file_path,  # 兼容性：也提供 file_name
+                    "doc_count": len(all_docs)
+                }
+            
+            return result_text
         else:
             # 如果没有结果，返回原始 JSON（用于调试）
             if stream:
@@ -279,6 +367,11 @@ class DeepSearchTool(BaseTool):
                     "type": "boolean",
                     "description": "是否流式返回",
                     "default": False
+                },
+                "save_to_file": {
+                    "type": "boolean",
+                    "description": "是否保存搜索结果到文件（默认true，保存后可在后续节点中使用）",
+                    "default": True
                 }
             },
             "required": ["query"]

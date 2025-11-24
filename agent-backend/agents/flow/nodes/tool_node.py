@@ -209,8 +209,109 @@ class ToolNode(BaseFlowNode):
 						self._fill_required_params(tool_obj, params, message, context)
 						logger.info(f"工具节点 {self.id} 填充必需参数后的参数: {params}")
 					
+					# 特殊处理：如果是报告工具且 file_names 为空或包含特殊标记，从 flow_state 获取
+					if tool_name == "report" and isinstance(params, dict):
+						file_names = params.get("file_names", [])
+						flow_state = self._get_flow_state(context)
+						
+						# 如果 file_names 为空、None 或包含特殊标记，从 flow_state 获取
+						if not file_names or file_names == [] or (isinstance(file_names, str) and "{{saved_files}}" in file_names):
+							saved_files = flow_state.get("saved_files", [])
+							if saved_files:
+								params["file_names"] = saved_files
+								logger.info(f"工具节点 {self.id} 从 flow_state 获取文件列表: {saved_files}")
+							elif isinstance(file_names, str) and "{{saved_files}}" in file_names:
+								# 如果使用了模板但 saved_files 为空，使用空列表
+								params["file_names"] = []
+					
 					result = await tool_manager.execute_tool(tool_name, params)
 					result_text = self._format_tool_result(result)
+					
+					# 处理结果并保存文件路径到 flow_state
+					flow_state = self._get_flow_state(context)
+					saved_file_path = None
+					
+					# 情况1：结果是字典且包含文件路径
+					if isinstance(result, dict):
+						if "file_path" in result or "file_name" in result:
+							file_path = result.get("file_path") or result.get("file_name")
+							if file_path:
+								saved_file_path = file_path
+					
+					# 情况2：如果是搜索工具（builtin 或 MCP），且结果是字符串，自动保存到文件
+					if not saved_file_path and isinstance(result_text, str) and result_text:
+						# 检测是否是搜索工具
+						is_search_tool = (
+							tool_name in ["deepsearch", "mcp_1_search", "mcp_ddg_search"] or
+							"search" in tool_name.lower() or
+							(tool_type == "mcp" and tool and "search" in tool.lower())
+						)
+						
+						# 检测结果是否包含搜索结果（通常包含 URL、标题等特征）
+						has_search_results = (
+							"Found" in result_text and "search results" in result_text.lower() or
+							"URL:" in result_text or
+							"http" in result_text or
+							len(result_text) > 500  # 搜索结果通常比较长
+						)
+						
+						if is_search_tool and has_search_results:
+							try:
+								import os
+								from datetime import datetime
+								
+								# 创建搜索结果目录
+								search_results_dir = "search_results"
+								os.makedirs(search_results_dir, exist_ok=True)
+								
+								# 生成文件名
+								timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+								# 从查询中提取关键词
+								query = params.get("query", "") if isinstance(params, dict) else str(params)
+								query_slug = "".join(c for c in query[:30] if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
+								if not query_slug:
+									query_slug = "search"
+								
+								file_path = os.path.join(search_results_dir, f"{query_slug}_{timestamp}_search_result.txt")
+								
+								# 准备文件内容
+								file_content_parts = []
+								file_content_parts.append(f"搜索工具: {tool_name}\n")
+								if isinstance(params, dict) and params.get("query"):
+									file_content_parts.append(f"搜索查询: {params['query']}\n")
+								file_content_parts.append(f"搜索时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+								file_content_parts.append(f"=" * 80 + "\n\n")
+								file_content_parts.append(result_text)
+								
+								# 写入文件
+								with open(file_path, 'w', encoding='utf-8') as f:
+									f.write("".join(file_content_parts))
+								
+								# 计算相对路径
+								project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+								try:
+									rel_path = os.path.relpath(file_path, project_root)
+									rel_path = rel_path.replace("\\", "/")
+								except ValueError:
+									rel_path = file_path.replace("\\", "/")
+								
+								saved_file_path = rel_path
+								logger.info(f"工具节点 {self.id} 自动保存搜索结果到文件: {saved_file_path}")
+								
+							except Exception as e:
+								logger.warning(f"工具节点 {self.id} 自动保存搜索结果失败: {str(e)}")
+					
+					# 保存文件路径到 flow_state
+					if saved_file_path:
+						if "saved_files" not in flow_state:
+							flow_state["saved_files"] = []
+						if saved_file_path not in flow_state["saved_files"]:
+							flow_state["saved_files"].append(saved_file_path)
+							logger.info(f"工具节点 {self.id} 保存文件路径到 flow_state: {saved_file_path}")
+						
+						# 也保存为节点特定的键
+						node_file_key = f"{self.id}_file_path"
+						flow_state[node_file_key] = saved_file_path
 					
 					self.save_output(context, result_text)
 					self.append_node_output(context, result_text, node_id=self.id, also_save_as_last_output=False)
@@ -272,6 +373,75 @@ class ToolNode(BaseFlowNode):
 			)
 			
 			result_text = self._format_tool_result(result)
+			
+			# 处理 MCP 工具结果并保存文件路径到 flow_state
+			flow_state = self._get_flow_state(context)
+			saved_file_path = None
+			
+			# 如果是搜索工具且结果是字符串，自动保存到文件
+			if isinstance(result_text, str) and result_text:
+				is_search_tool = (
+					"search" in actual_tool.lower() or
+					"search" in tool_name.lower()
+				)
+				
+				has_search_results = (
+					"Found" in result_text and "search results" in result_text.lower() or
+					"URL:" in result_text or
+					"http" in result_text or
+					len(result_text) > 500
+				)
+				
+				if is_search_tool and has_search_results:
+					try:
+						import os
+						from datetime import datetime
+						
+						search_results_dir = "search_results"
+						os.makedirs(search_results_dir, exist_ok=True)
+						
+						timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+						query = params.get("query", "") if isinstance(params, dict) else str(params)
+						query_slug = "".join(c for c in query[:30] if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
+						if not query_slug:
+							query_slug = "search"
+						
+						file_path = os.path.join(search_results_dir, f"{query_slug}_{timestamp}_search_result.txt")
+						
+						file_content_parts = []
+						file_content_parts.append(f"搜索工具: {actual_server}.{actual_tool}\n")
+						if isinstance(params, dict) and params.get("query"):
+							file_content_parts.append(f"搜索查询: {params['query']}\n")
+						file_content_parts.append(f"搜索时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+						file_content_parts.append(f"=" * 80 + "\n\n")
+						file_content_parts.append(result_text)
+						
+						with open(file_path, 'w', encoding='utf-8') as f:
+							f.write("".join(file_content_parts))
+						
+						project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+						try:
+							rel_path = os.path.relpath(file_path, project_root)
+							rel_path = rel_path.replace("\\", "/")
+						except ValueError:
+							rel_path = file_path.replace("\\", "/")
+						
+						saved_file_path = rel_path
+						logger.info(f"工具节点 {self.id} (MCP) 自动保存搜索结果到文件: {saved_file_path}")
+						
+					except Exception as e:
+						logger.warning(f"工具节点 {self.id} (MCP) 自动保存搜索结果失败: {str(e)}")
+			
+			# 保存文件路径到 flow_state
+			if saved_file_path:
+				if "saved_files" not in flow_state:
+					flow_state["saved_files"] = []
+				if saved_file_path not in flow_state["saved_files"]:
+					flow_state["saved_files"].append(saved_file_path)
+					logger.info(f"工具节点 {self.id} (MCP) 保存文件路径到 flow_state: {saved_file_path}")
+				
+				node_file_key = f"{self.id}_file_path"
+				flow_state[node_file_key] = saved_file_path
 			
 			self.save_output(context, result_text)
 			self.append_node_output(context, result_text, node_id=self.id, also_save_as_last_output=False)

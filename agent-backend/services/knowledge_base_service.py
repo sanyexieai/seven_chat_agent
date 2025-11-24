@@ -1157,6 +1157,16 @@ class KnowledgeBaseService:
             llm_helper = get_llm_helper()
             
             # 构建提示词
+            # 先构建关系图谱部分（避免在 f-string 表达式中使用反斜杠）
+            graph_section = ""
+            if graph_context:
+                graph_section = f"关系图谱信息：\n{graph_context}\n"
+            
+            # 构建第6条要求（如果需要）
+            requirement_6 = ""
+            if graph_context:
+                requirement_6 = "\n6. 可以利用关系图谱信息进行推理和关联分析"
+            
             prompt = f"""基于以下知识库内容回答用户问题：
 
 用户问题：{query}
@@ -1164,17 +1174,14 @@ class KnowledgeBaseService:
 知识库内容：
 {context}
 
-{f"关系图谱信息：\n{graph_context}" if graph_context else ""}
-
-请基于知识库内容提供准确、详细的回答。如果知识库内容不足以回答问题，请说明并建议用户提供更多信息。
+{graph_section}请基于知识库内容提供准确、详细的回答。如果知识库内容不足以回答问题，请说明并建议用户提供更多信息。
 
 回答要求：
 1. 基于知识库内容，不要编造信息
 2. 回答要准确、详细、有条理
 3. 如果涉及多个要点，请分点说明
 4. 如果知识库内容不足，请诚实说明
-5. 使用中文回答
-{f"6. 可以利用关系图谱信息进行推理和关联分析" if graph_context else ""}
+5. 使用中文回答{requirement_6}
 
 回答："""
             

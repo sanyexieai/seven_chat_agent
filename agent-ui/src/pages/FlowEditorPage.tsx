@@ -31,7 +31,8 @@ import {
   ImportOutlined,
   ExportOutlined,
   MenuFoldOutlined,
-  MenuUnfoldOutlined
+  MenuUnfoldOutlined,
+  BulbOutlined
 } from '@ant-design/icons';
 import ReactFlow, {
   addEdge,
@@ -317,6 +318,42 @@ const KnowledgeBaseNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
+const AutoInferNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#e6fffb', position: 'relative' }}>
+    <Handle type="target" position={Position.Top} />
+    <div style={{ textAlign: 'center' }}>
+      <BulbOutlined style={{ fontSize: '20px', color: '#13c2c2' }} />
+      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>{data.nodeType}</div>
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
+  </div>
+);
+
 const InputNode = ({ data, id }: { data: any; id: string }) => (
   <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#e6f7ff', position: 'relative' }}>
     <div style={{ textAlign: 'center' }}>
@@ -471,7 +508,8 @@ const nodeTypes: NodeTypes = {
   // 兼容旧类型
   agent: AgentNode,
   action: ActionNode,
-  knowledgeBase: KnowledgeBaseNode
+  knowledgeBase: KnowledgeBaseNode,
+  auto_infer: AutoInferNode
 };
 
 const FlowEditorPage: React.FC = () => {
@@ -905,7 +943,8 @@ const FlowEditorPage: React.FC = () => {
             'end': 'end',
             'knowledge_base': 'knowledgeBase',
             'agent': 'agent',
-            'action': 'tool' // action 映射为 tool
+            'action': 'tool', // action 映射为 tool
+            'auto_param': 'auto_infer'
           };
           
           let nodeType = node.data?.nodeType; // 优先使用保存的nodeType
@@ -1188,22 +1227,62 @@ const FlowEditorPage: React.FC = () => {
                    nodeType === 'end' ? 'end_node' : 
                    `node_${Date.now()}`;
     
-    const newNode: Node = {
-      id: nodeId,
-      type: nodeType, // ReactFlow渲染类型
-      position,
+    const createBaseNode = (id: string, type: string, label: string, config: any = {}, nodePosition = position): Node => ({
+      id,
+      type,
+      position: nodePosition,
       data: {
-        label: defaultLabel,
-        nodeType: nodeType, // 后端节点类型
-        config: {},
-        isStartNode: nodeType === 'start',
-        isEndNode: nodeType === 'end',
-        isFixed: nodeType === 'start' || nodeType === 'end', // 开始和结束节点固定
-        onDelete: (nodeType === 'start' || nodeType === 'end') 
-          ? () => message.warning('开始节点和结束节点不能删除') 
+        label,
+        nodeType: type,
+        config,
+        isStartNode: type === 'start',
+        isEndNode: type === 'end',
+        isFixed: type === 'start' || type === 'end',
+        onDelete: (type === 'start' || type === 'end')
+          ? () => message.warning('开始节点和结束节点不能删除')
           : deleteNode
       }
-    };
+    });
+    
+    if (nodeType === 'tool') {
+      const autoNodeId = `auto_${Date.now()}`;
+      const autoParamKey = `auto_params_${nodeId}`;
+      const autoNode = createBaseNode(
+        autoNodeId,
+        'auto_infer',
+        '自动推理',
+        {
+          target_tool_node_id: nodeId,
+          auto_param_key: autoParamKey,
+          system_prompt: '',
+          user_prompt: ''
+        },
+        { x: position.x, y: position.y }
+      );
+      const toolNode = createBaseNode(
+        nodeId,
+        'tool',
+        defaultLabel,
+        {
+          auto_infer_node_id: autoNodeId,
+          auto_param_key: autoParamKey
+        },
+        { x: position.x, y: position.y + 120 }
+      );
+      setNodes((nds) => [...nds, autoNode, toolNode]);
+      setEdges((eds) => [
+        ...eds,
+        {
+          id: `edge_${autoNodeId}_${nodeId}_${Date.now()}`,
+          source: autoNodeId,
+          target: nodeId,
+          type: 'default'
+        }
+      ]);
+      return;
+    }
+    
+    const newNode = createBaseNode(nodeId, nodeType, defaultLabel);
     setNodes((nds) => [...nds, newNode]);
   };
 
@@ -1215,6 +1294,7 @@ const FlowEditorPage: React.FC = () => {
       case 'tool': return '工具节点';
       case 'router': return '路由节点';
       case 'composite': return '复合节点';
+      case 'auto_infer': return '自动推理';
       default: return '节点';
     }
   };
@@ -1222,8 +1302,8 @@ const FlowEditorPage: React.FC = () => {
   const onNodeClick = async (event: React.MouseEvent, node: Node) => {
     setSelectedNode(node);
     
-    // 如果是LLM节点，加载LLM配置列表
-    if (node.data.nodeType === 'llm') {
+    // 如果是LLM或自动推理节点，加载LLM配置列表
+    if (node.data.nodeType === 'llm' || node.data.nodeType === 'auto_infer') {
       try {
         setNodeLlmConfigsLoading(true);
         const configs = await fetchLlmConfigs();
@@ -1257,9 +1337,17 @@ const FlowEditorPage: React.FC = () => {
       agent_name: node.data.config?.agent_name || '',
       
       action: node.data.config?.action || '',
-      llm_config_id: node.data.nodeType === 'llm' ? (node.data.config?.llm_config_id || undefined) : undefined,
-      system_prompt: node.data.nodeType === 'llm' ? (node.data.config?.system_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
-      user_prompt: node.data.nodeType === 'llm' ? (node.data.config?.user_prompt || '') : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
+      llm_config_id: (node.data.nodeType === 'llm' || node.data.nodeType === 'auto_infer') ? (node.data.config?.llm_config_id || undefined) : undefined,
+      system_prompt: node.data.nodeType === 'llm'
+        ? (node.data.config?.system_prompt || '')
+        : node.data.nodeType === 'auto_infer'
+          ? (node.data.config?.system_prompt || '')
+          : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
+      user_prompt: node.data.nodeType === 'llm'
+        ? (node.data.config?.user_prompt || '')
+        : node.data.nodeType === 'auto_infer'
+          ? (node.data.config?.user_prompt || '')
+          : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
       save_as: node.data.nodeType === 'llm' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'tool' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'judge' ? (node.data.config?.save_as || 'judge_result') : undefined)),
       tool_name: node.data.nodeType === 'tool' ? (node.data.config?.tool_name || 
         (node.data.config?.server && node.data.config?.tool 
@@ -1284,6 +1372,8 @@ const FlowEditorPage: React.FC = () => {
       query_type: node.data.nodeType === 'knowledgeBase' ? (node.data.config?.knowledge_base_config?.query_type || 'semantic') : undefined,
       max_results: node.data.nodeType === 'knowledgeBase' ? (node.data.config?.knowledge_base_config?.max_results || 5) : undefined,
       query_template: node.data.nodeType === 'knowledgeBase' ? (node.data.config?.knowledge_base_config?.query_template || '{{message}}') : undefined,
+      auto_param_key: node.data.config?.auto_param_key,
+      target_tool_node_id: node.data.nodeType === 'auto_infer' ? (node.data.config?.target_tool_node_id || '') : undefined,
       
       config: JSON.stringify(node.data.config || {}, null, 2)
     });
@@ -1304,6 +1394,12 @@ const FlowEditorPage: React.FC = () => {
     if (!selectedNode) return;
     
     try {
+      const autoInferNodeIdForTool = selectedNode.data.nodeType === 'tool'
+        ? (selectedNode.data.config?.auto_infer_node_id || undefined)
+        : undefined;
+      const targetToolIdForAuto = selectedNode.data.nodeType === 'auto_infer'
+        ? (selectedNode.data.config?.target_tool_node_id || undefined)
+        : undefined;
       // 从原有配置开始，只更新相关字段，避免覆盖其他配置
       const config = { ...selectedNode.data.config };
       
@@ -1359,6 +1455,9 @@ const FlowEditorPage: React.FC = () => {
           } catch (e) {
             config.params = values.params; // 允许简单字符串
           }
+        }
+        if (!config.auto_param_key && selectedNode.data.config?.auto_param_key) {
+          config.auto_param_key = selectedNode.data.config?.auto_param_key;
         }
       
       } else if (selectedNode.data.nodeType === 'router') {
@@ -1416,6 +1515,11 @@ const FlowEditorPage: React.FC = () => {
         if (values.max_results !== undefined) config.knowledge_base_config.max_results = values.max_results || 5;
         if (values.query_template !== undefined) config.knowledge_base_config.query_template = values.query_template || '{{message}}';
         if (values.save_as !== undefined) config.knowledge_base_config.save_as = values.save_as || 'knowledge_result';
+      } else if (selectedNode.data.nodeType === 'auto_infer') {
+        if (typeof values.system_prompt !== 'undefined') config.system_prompt = values.system_prompt || '';
+        if (typeof values.user_prompt !== 'undefined') config.user_prompt = values.user_prompt || '';
+        if (typeof values.auto_param_key !== 'undefined') config.auto_param_key = values.auto_param_key || config.auto_param_key;
+        if (typeof values.llm_config_id !== 'undefined') config.llm_config_id = values.llm_config_id || null;
       }
       
       setNodes((nds) =>
@@ -1431,7 +1535,32 @@ const FlowEditorPage: React.FC = () => {
                   config: config
                 }
               }
-            : node
+            : (selectedNode.data.nodeType === 'tool' && autoInferNodeIdForTool && node.id === autoInferNodeIdForTool)
+              ? {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    config: {
+                      ...node.data.config,
+                      tool_name: config.tool_name || node.data.config?.tool_name,
+                      tool_type: config.tool_type || node.data.config?.tool_type,
+                      server: config.server || node.data.config?.server,
+                      auto_param_key: config.auto_param_key || node.data.config?.auto_param_key
+                    }
+                  }
+                }
+              : (selectedNode.data.nodeType === 'auto_infer' && targetToolIdForAuto && node.id === targetToolIdForAuto)
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      config: {
+                        ...node.data.config,
+                        auto_param_key: config.auto_param_key || node.data.config?.auto_param_key
+                      }
+                    }
+                  }
+                : node
         )
       );
       
@@ -1473,9 +1602,42 @@ const FlowEditorPage: React.FC = () => {
       message.warning('开始节点和结束节点不能删除');
       return;
     }
-    setNodes((nds: Node[]) => nds.filter((node: Node) => node.id !== nodeId));
-    setEdges((eds: Edge[]) => eds.filter((edge: Edge) => edge.source !== nodeId && edge.target !== nodeId));
-    message.success('节点已删除');
+    
+    const idsToRemove = [nodeId];
+    let linkedToolId: string | undefined;
+    let removedPair = false;
+    
+    if (target?.data?.nodeType === 'tool' && target.data?.config?.auto_infer_node_id) {
+      idsToRemove.push(target.data.config.auto_infer_node_id);
+      removedPair = true;
+    }
+    
+    if (target?.data?.nodeType === 'auto_infer') {
+      const linkedTool = nodes.find((n: any) => n.data?.nodeType === 'tool' && n.data?.config?.auto_infer_node_id === nodeId);
+      linkedToolId = linkedTool?.id;
+    }
+    
+    setNodes((nds: Node[]) =>
+      nds
+        .filter((node: Node) => !idsToRemove.includes(node.id))
+        .map((node: Node) => {
+          if (linkedToolId && node.id === linkedToolId) {
+            const updatedConfig = { ...node.data.config };
+            delete updatedConfig.auto_infer_node_id;
+            delete updatedConfig.auto_param_key;
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                config: updatedConfig
+              }
+            };
+          }
+          return node;
+        })
+    );
+    setEdges((eds: Edge[]) => eds.filter((edge: Edge) => !idsToRemove.includes(edge.source) && !idsToRemove.includes(edge.target)));
+    message.success(removedPair ? '工具节点及其自动推理节点已删除' : '节点已删除');
   };
 
   const deleteEdge = (edgeId: string) => {
@@ -2432,6 +2594,50 @@ const FlowEditorPage: React.FC = () => {
               </Form.Item>
               <Form.Item name="save_as" label="保存变量名">
                 <Input placeholder="默认 last_output" />
+              </Form.Item>
+            </>
+          )}
+          
+          {selectedNode?.data.nodeType === 'auto_infer' && (
+            <>
+              <Form.Item 
+                name="llm_config_id" 
+                label="LLM配置" 
+                extra="选择此节点使用的LLM配置（可选，不选择则使用全局配置）"
+              >
+                <Select 
+                  placeholder="选择LLM配置（可选，默认使用全局配置）" 
+                  allowClear 
+                  loading={nodeLlmConfigsLoading}
+                  showSearch
+                  optionFilterProp="children"
+                  filterOption={(input, option) =>
+                    (option?.children as unknown as string)?.toLowerCase().includes(input.toLowerCase())
+                  }
+                >
+                  {nodeLlmConfigs.map((cfg: any) => (
+                    <Select.Option key={cfg.id} value={cfg.id}>
+                      <Space>
+                        {cfg.display_name || cfg.name}
+                        {cfg.provider && <Tag color="blue">{cfg.provider}</Tag>}
+                        {cfg.model_name && <Tag color="green">{cfg.model_name}</Tag>}
+                        {cfg.is_default && <Tag color="orange">默认</Tag>}
+                      </Space>
+                    </Select.Option>
+                  ))}
+                </Select>
+              </Form.Item>
+              <Form.Item name="system_prompt" label="系统提示词">
+                <Input.TextArea rows={3} placeholder="可选：系统提示词" />
+              </Form.Item>
+              <Form.Item name="user_prompt" label="用户提示词">
+                <Input.TextArea rows={3} placeholder="可选：用户提示词，默认根据模板生成" />
+              </Form.Item>
+              <Form.Item name="auto_param_key" label="参数存储键">
+                <Input placeholder="默认自动生成的键，用于与工具节点共享" />
+              </Form.Item>
+              <Form.Item name="target_tool_node_id" label="目标工具节点">
+                <Input disabled />
               </Form.Item>
             </>
           )}

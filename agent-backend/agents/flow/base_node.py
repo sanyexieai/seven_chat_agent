@@ -592,7 +592,8 @@ class BaseFlowNode(ABC):
 			'knowledgeBase': 'knowledge_base',
 			'knowledge_base': 'knowledge_base',
 			'agent': 'agent',
-			'action': 'tool'  # action 映射为 tool
+			'action': 'tool',  # action 映射为 tool
+			'auto_infer': 'auto_param'
 		}
 		
 		# 优先使用 data.nodeType

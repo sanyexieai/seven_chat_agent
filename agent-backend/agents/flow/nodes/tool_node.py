@@ -1,5 +1,5 @@
 """工具节点实现"""
-from typing import Dict, Any, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator, Optional
 
 from models.chat_models import AgentMessage, StreamChunk
 from utils.log_helper import get_logger
@@ -28,6 +28,17 @@ class ToolNode(BaseFlowNode):
 		params_raw = self.config.get('params', {})
 		params = self._render_template_value(params_raw, inputs)
 		
+		# 预处理参数
+		params = self._prepare_params(params)
+		auto_params = self._get_auto_generated_params(context)
+		if auto_params:
+			logger.info(f"工具节点 {self.id} 使用自动推理参数: {auto_params}")
+			params = auto_params
+		
+		# 调试日志：输出配置信息
+		logger.info(f"工具节点 {self.id} 配置: tool_name={tool_name}, server={server}, tool={tool}, tool_type={tool_type}")
+		logger.info(f"工具节点 {self.id} 参数: params_raw={params_raw}, params={params}, params_type={type(params)}")
+		
 		try:
 			from main import agent_manager
 			if not agent_manager:
@@ -38,11 +49,27 @@ class ToolNode(BaseFlowNode):
 			if (tool_name or tool_type) and agent_manager.tool_manager:
 				tool_manager = agent_manager.tool_manager
 				
-				# 如果没有 tool_name 但有 tool，尝试构建 tool_name
-				if not tool_name and tool:
-					if tool_type == 'mcp' and server:
+				# 如果 tool_type 明确是 mcp，优先使用 MCP 方式构建 tool_name
+				if tool_type == 'mcp':
+					if server and tool:
+						# 优先使用 server + tool 构建
 						tool_name = f"mcp_{server}_{tool}"
-					elif tool_type == 'temporary':
+						logger.info(f"工具节点 {self.id} 根据 tool_type=mcp 构建 tool_name: {tool_name}")
+					elif tool_name and tool_name.startswith('mcp_'):
+						# 如果 tool_name 已经是 MCP 格式，直接使用
+						logger.info(f"工具节点 {self.id} 使用已有的 MCP tool_name: {tool_name}")
+					elif tool:
+						# 如果 tool_type 是 mcp 但没有 server，尝试查找匹配的 MCP 工具
+						logger.warning(f"工具节点 {self.id} tool_type=mcp 但缺少 server，尝试查找可用 MCP 工具")
+						available_tools = tool_manager.get_available_tools()
+						for available_tool in available_tools:
+							if available_tool.get('type') == 'mcp' and (available_tool.get('name') == tool or available_tool.get('name').endswith(f"_{tool}")):
+								tool_name = available_tool.get('name')
+								logger.info(f"工具节点 {self.id} 找到 MCP 工具: {tool_name}")
+								break
+				# 如果没有 tool_name 但有 tool，尝试构建 tool_name
+				elif not tool_name and tool:
+					if tool_type == 'temporary':
 						tool_name = f"temp_{tool}"
 					elif tool_type == 'builtin':
 						tool_name = tool
@@ -54,20 +81,17 @@ class ToolNode(BaseFlowNode):
 								tool_name = available_tool.get('name')
 								break
 				
+				logger.info(f"工具节点 {self.id} 最终 tool_name: {tool_name}, 将使用 ToolManager 执行")
+				
 				# 如果找到了 tool_name，使用 ToolManager 执行
 				if tool_name:
-					# 确保参数是字典格式
-					if not isinstance(params, dict):
-						params = {"query": str(params)} if params else {}
-					
-					# 如果参数为空，尝试从上下文中获取默认值
-					if not params:
-						params = {}
+					logger.info(f"工具节点 {self.id} 当前参数: {params}")
 					
 					# 获取工具的参数模式，检查必需参数
 					tool_obj = tool_manager.get_tool(tool_name)
 					if tool_obj:
 						self._fill_required_params(tool_obj, params, message, context)
+						logger.info(f"工具节点 {self.id} 填充必需参数后的参数: {params}")
 					
 					# 执行工具
 					result = await tool_manager.execute_tool(tool_name, params)
@@ -125,6 +149,16 @@ class ToolNode(BaseFlowNode):
 		params_raw = self.config.get('params', {})
 		params = self._render_template_value(params_raw, inputs)
 		
+		params = self._prepare_params(params)
+		auto_params = self._get_auto_generated_params(context)
+		if auto_params:
+			logger.info(f"工具节点 {self.id} 使用自动推理参数: {auto_params}")
+			params = auto_params
+		
+		# 调试日志：输出配置信息
+		logger.info(f"工具节点 {self.id} 配置: tool_name={tool_name}, server={server}, tool={tool}, tool_type={tool_type}")
+		logger.info(f"工具节点 {self.id} 参数: params_raw={params_raw}, params={params}, params_type={type(params)}")
+		
 		try:
 			from main import agent_manager
 			if not agent_manager:
@@ -134,11 +168,27 @@ class ToolNode(BaseFlowNode):
 			if (tool_name or tool_type) and agent_manager.tool_manager:
 				tool_manager = agent_manager.tool_manager
 				
-				# 如果没有 tool_name 但有 tool，尝试构建 tool_name
-				if not tool_name and tool:
-					if tool_type == 'mcp' and server:
+				# 如果 tool_type 明确是 mcp，优先使用 MCP 方式构建 tool_name
+				if tool_type == 'mcp':
+					if server and tool:
+						# 优先使用 server + tool 构建
 						tool_name = f"mcp_{server}_{tool}"
-					elif tool_type == 'temporary':
+						logger.info(f"工具节点 {self.id} 根据 tool_type=mcp 构建 tool_name: {tool_name}")
+					elif tool_name and tool_name.startswith('mcp_'):
+						# 如果 tool_name 已经是 MCP 格式，直接使用
+						logger.info(f"工具节点 {self.id} 使用已有的 MCP tool_name: {tool_name}")
+					elif tool:
+						# 如果 tool_type 是 mcp 但没有 server，尝试查找匹配的 MCP 工具
+						logger.warning(f"工具节点 {self.id} tool_type=mcp 但缺少 server，尝试查找可用 MCP 工具")
+						available_tools = tool_manager.get_available_tools()
+						for available_tool in available_tools:
+							if available_tool.get('type') == 'mcp' and (available_tool.get('name') == tool or available_tool.get('name').endswith(f"_{tool}")):
+								tool_name = available_tool.get('name')
+								logger.info(f"工具节点 {self.id} 找到 MCP 工具: {tool_name}")
+								break
+				# 如果没有 tool_name 但有 tool，尝试构建 tool_name
+				elif not tool_name and tool:
+					if tool_type == 'temporary':
 						tool_name = f"temp_{tool}"
 					elif tool_type == 'builtin':
 						tool_name = tool
@@ -149,15 +199,15 @@ class ToolNode(BaseFlowNode):
 								tool_name = available_tool.get('name')
 								break
 				
+				logger.info(f"工具节点 {self.id} 最终 tool_name: {tool_name}, 将使用 ToolManager 执行")
+				
 				if tool_name:
-					if not isinstance(params, dict):
-						params = {"query": str(params)} if params else {}
-					if not params:
-						params = {}
+					logger.info(f"工具节点 {self.id} 当前参数: {params}")
 					
 					tool_obj = tool_manager.get_tool(tool_name)
 					if tool_obj:
 						self._fill_required_params(tool_obj, params, message, context)
+						logger.info(f"工具节点 {self.id} 填充必需参数后的参数: {params}")
 					
 					result = await tool_manager.execute_tool(tool_name, params)
 					result_text = self._format_tool_result(result)
@@ -270,16 +320,31 @@ class ToolNode(BaseFlowNode):
 		schema = tool_obj.get_parameters_schema()
 		required_params = schema.get("required", [])
 		
+		# 清理 params，确保不包含 schema 定义
+		params = self._clean_params(params)
+		
 		for param_name in required_params:
 			if param_name in params:
-				continue
+				# 确保参数值不是 schema 对象
+				if isinstance(params[param_name], dict) and ('$defs' in params[param_name] or 'type' in params[param_name] or 'properties' in params[param_name]):
+					logger.warning(f"工具节点 {self.id} 参数 {param_name} 是 schema 对象，将被替换")
+					params[param_name] = None
+				else:
+					continue
+			
 			if param_name in ["query", "task"]:
 				params[param_name] = message or self._get_flow_state(context).get('last_output', '') or ""
-				logger.info(f"工具节点 {self.id} 自动填充必需参数 {param_name}={params[param_name][:50]}...")
+				logger.info(f"工具节点 {self.id} 自动填充必需参数 {param_name}={params[param_name][:50] if params[param_name] else 'None'}...")
 			else:
 				flow_state = self._get_flow_state(context)
 				if param_name in flow_state:
-					params[param_name] = flow_state[param_name]
+					value = flow_state[param_name]
+					# 确保从 flow_state 获取的值不是 schema 对象
+					if isinstance(value, dict) and ('$defs' in value or 'type' in value or 'properties' in value):
+						logger.warning(f"工具节点 {self.id} flow_state 中的 {param_name} 是 schema 对象，使用 message 替代")
+						params[param_name] = message or ""
+					else:
+						params[param_name] = value
 					logger.info(f"工具节点 {self.id} 从 flow_state 获取参数 {param_name}")
 				elif message:
 					params[param_name] = message
@@ -288,6 +353,92 @@ class ToolNode(BaseFlowNode):
 					last_output = flow_state.get('last_output', '')
 					params[param_name] = last_output
 					logger.info(f"工具节点 {self.id} 使用 last_output 作为参数 {param_name} 的默认值")
+	
+	def _clean_params(self, params: Any) -> Dict[str, Any]:
+		"""清理参数，移除 schema 定义字段"""
+		if not isinstance(params, dict):
+			return {}
+		
+		cleaned = {}
+		for k, v in params.items():
+			# 跳过 schema 定义字段
+			if k.startswith('$') or k in ['$defs', '$schema', 'type', 'properties', 'required', 'definitions', 'title', 'description']:
+				continue
+			# 如果值是字典且包含 schema 特征，跳过
+			if isinstance(v, dict) and ('$defs' in v or ('type' in v and 'properties' in v)):
+				logger.warning(f"工具节点 {self.id} 跳过 schema 对象参数: {k}")
+				continue
+			cleaned[k] = v
+		
+		return cleaned
+	
+	def _prepare_params(self, params: Any) -> Dict[str, Any]:
+		"""标准化参数对象"""
+		params = self._extract_effective_params(params)
+		if isinstance(params, dict):
+			cleaned = self._clean_params(params)
+			return cleaned if cleaned else {}
+		if params:
+			return {"query": str(params)}
+		return {}
+	
+	def _get_auto_generated_params(self, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+		auto_key = self.config.get('auto_param_key') or f"auto_params_{self.id}"
+		if not auto_key:
+			return None
+		value = self._get_from_flow_state(context, auto_key)
+		if not value:
+			return None
+		if isinstance(value, str):
+			try:
+				value = json.loads(value)
+			except Exception:
+				logger.warning(f"工具节点 {self.id} 无法解析自动推理字符串参数")
+				return None
+		if isinstance(value, dict):
+			effective = self._extract_effective_params(value)
+			return self._clean_params(effective)
+		return None
+	
+	def _extract_effective_params(self, params: Any) -> Any:
+		"""提取真正的工具入参（剥离 tool_call、tool_calls 结构）"""
+		if isinstance(params, str):
+			try:
+				parsed = json.loads(params)
+				return self._extract_effective_params(parsed)
+			except Exception:
+				return {"query": params}
+		
+		if isinstance(params, list) and params:
+			return self._extract_effective_params(params[0])
+		
+		if isinstance(params, dict):
+			# OpenAI style tool_calls
+			if 'tool_calls' in params and isinstance(params['tool_calls'], list) and params['tool_calls']:
+				return self._extract_effective_params(params['tool_calls'][0])
+			
+			# tool_call object (name/args/id/type)
+			if 'args' in params and isinstance(params['args'], dict):
+				logger.info(f"工具节点 {self.id} 解析 tool_call 结构，改用 args 字段作为真实入参")
+				return params['args']
+			
+			# openai function style: arguments 是 JSON 字符串
+			if 'arguments' in params:
+				arguments = params['arguments']
+				if isinstance(arguments, str):
+					try:
+						return json.loads(arguments)
+					except Exception:
+						return {"query": arguments}
+				if isinstance(arguments, dict):
+					return arguments
+			
+			# 继续递归可能嵌套的字段
+			for key in ['output', 'content']:
+				if key in params and isinstance(params[key], (dict, list)):
+					return self._extract_effective_params(params[key])
+		
+		return params
 	
 	async def _resolve_server_tool(self, server: str, tool: str, mcp_helper):
 		"""解析 server 和 tool 名称"""

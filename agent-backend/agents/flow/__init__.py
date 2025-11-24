@@ -21,7 +21,8 @@ from .nodes import (
 	ToolNode,
 	StartNode,
 	EndNode,
-	RouterNode
+	RouterNode,
+	AutoParamNode
 )
 from .composite_node import CompositeNode
 
@@ -32,6 +33,7 @@ NodeRegistry.register("start", StartNode)
 NodeRegistry.register("end", EndNode)
 NodeRegistry.register("router", RouterNode)
 NodeRegistry.register("composite", CompositeNode)
+NodeRegistry.register("auto_param", AutoParamNode)
 
 __all__ = [
 	'BaseFlowNode',
@@ -40,6 +42,7 @@ __all__ = [
 	'NodeRegistry',
 	'LLMNode',
 	'ToolNode',
+	'AutoParamNode',
 	'StartNode',
 	'EndNode',
 	'RouterNode',

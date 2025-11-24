@@ -27,7 +27,7 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
     "python-dotenv>=1.0.0",
-    "httpx>=0.25.2",
+    "httpx>=0.27.0,<1.0.0",  # 确保兼容性，避免 TimeoutError 问题
     "aiofiles>=23.2.1",
     "loguru>=0.7.2",
     "asyncio-mqtt>=0.16.1",
@@ -79,7 +79,7 @@ test = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
-    "httpx>=0.25.2",
+    "httpx>=0.27.0,<1.0.0",  # 与主依赖保持一致
 ]
 
 docs = [

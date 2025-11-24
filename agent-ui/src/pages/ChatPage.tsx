@@ -223,6 +223,24 @@ const ChatPage: React.FC = () => {
     return ['file', 'download', 'save', 'export', 'write', 'read', 'pdf', 'doc', 'excel'].some(k => name.includes(k));
   };
 
+  // 重置所有节点状态为 pending（灰色）
+  const resetFlowNodesToPending = () => {
+    setFlowData(prev => ({
+      ...prev,
+      nodes: prev.nodes.map(node => ({
+        ...node,
+        status: 'pending' as const
+      })),
+      executionState: {
+        ...prev.executionState,
+        isRunning: false,
+        currentNodeId: undefined,
+        completedNodes: [],
+        failedNodes: []
+      }
+    }));
+  };
+
   // 更新流程图状态
   const updateFlowExecution = (nodeId: string, status: 'pending' | 'running' | 'completed' | 'failed') => {
     setFlowData(prev => ({
@@ -247,23 +265,15 @@ const ChatPage: React.FC = () => {
   const updateFlowFromMessage = (message: Message) => {
     if (message.type === 'agent') {
       // 智能体开始处理 - 设置流程图为运行状态
-      setFlowData(prev => {
-        // 如果有开始节点，将其标记为完成
-        const startNode = prev.nodes.find((node: any) => node.nodeType === 'start');
-        if (startNode) {
-          // 延迟更新开始节点状态，避免在setState回调中调用另一个setState
-          setTimeout(() => updateFlowExecution(startNode.id, 'completed'), 0);
+      // 注意：不在这里更新节点状态，节点状态应该由流式响应中的 node_start 事件来更新
+      setFlowData(prev => ({
+        ...prev,
+        executionState: {
+          ...prev.executionState,
+          isRunning: true,
+          currentNodeId: undefined
         }
-        
-        return {
-          ...prev,
-          executionState: {
-            ...prev.executionState,
-            isRunning: true,
-            currentNodeId: undefined
-          }
-        };
-      });
+      }));
     }
   };
 
@@ -880,6 +890,9 @@ const ChatPage: React.FC = () => {
     // 清空输入框
     setInputValue('');
 
+    // 重置所有流程图节点状态为 pending（灰色）
+    resetFlowNodesToPending();
+
     try {
       // 如果是临时会话且是第一条消息，先创建真正的会话
       if (currentSession?.isTemp && messages.length === 0) {
@@ -1242,18 +1255,15 @@ const ChatPage: React.FC = () => {
                       });
                     }
                     
-                    // 更新流程图状态 - 所有节点完成
+                    // 更新流程图状态 - 流式响应结束，但不要将所有节点都标记为 completed
+                    // 节点状态应该由 node_complete 事件来更新
                     setFlowData(prev => ({
                       ...prev,
-                      nodes: prev.nodes.map(node => ({
-                        ...node,
-                        status: 'completed' as const
-                      })),
                       executionState: {
                         ...prev.executionState,
                         isRunning: false,
-                        currentNodeId: undefined,
-                        completedNodes: prev.nodes.map(node => node.id)
+                        currentNodeId: undefined
+                        // 不更新 completedNodes，因为节点状态应该由 node_complete 事件来更新
                       }
                     }));
                     

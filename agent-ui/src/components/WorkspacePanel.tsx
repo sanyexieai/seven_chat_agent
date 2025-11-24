@@ -21,7 +21,10 @@ const { Text } = Typography;
 
 // 根据节点状态获取颜色
 const getNodeColors = (status?: 'pending' | 'running' | 'completed' | 'failed', defaultBorder?: string, defaultBg?: string) => {
-  switch (status) {
+  // 如果状态为 undefined、null 或空字符串，默认使用 pending（灰色）
+  const nodeStatus = status || 'pending';
+  
+  switch (nodeStatus) {
     case 'pending':
       return {
         border: '#d9d9d9', // 灰色
@@ -47,9 +50,10 @@ const getNodeColors = (status?: 'pending' | 'running' | 'completed' | 'failed', 
         iconColor: '#ff4d4f'
       };
     default:
+      // 默认情况也使用灰色（pending 状态）
       return {
-        border: defaultBorder || '#d9d9d9',
-        background: defaultBg || '#f5f5f5',
+        border: '#d9d9d9',
+        background: '#f5f5f5',
         iconColor: '#bfbfbf'
       };
   }
@@ -333,6 +337,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
 	// 创建节点 - 使用自定义节点类型
 	const createNode = (node: any, position: { x: number; y: number }) => {
+		// 确保状态总是被设置，默认为 pending（灰色）
+		const nodeStatus = node.status || 'pending';
+		
 		return {
 			id: node.id,
 			type: node.nodeType || 'default', // 直接使用nodeType作为ReactFlow的type
@@ -340,7 +347,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 			data: { 
 				label: node.label, 
 				nodeType: node.nodeType,
-				status: node.status || 'pending' // 传递状态信息
+				status: nodeStatus // 传递状态信息，确保总是有值
 			}
 		};
 	};

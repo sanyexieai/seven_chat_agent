@@ -478,12 +478,24 @@ class ToolNode(BaseFlowNode):
 			yield final_chunk
 		except Exception as e:
 			logger.error(f"工具节点流式执行失败: {str(e)}")
-			yield self._create_stream_chunk(
-				chunk_type="tool_error",
-				content=f"工具调用失败: {str(e)}",
+			error_msg = f"工具调用失败: {str(e)}"
+			# 发送错误事件，包含 node_id（_create_stream_chunk 会自动添加）
+			error_chunk = self._create_stream_chunk(
+				chunk_type="node_error",
+				content=error_msg,
 				agent_name=agent_name,
-				metadata={'error': str(e)}
+				metadata={'error': str(e), 'error_type': 'tool_execution_error'}
 			)
+			yield error_chunk
+			
+			# 发送节点完成事件，标记为失败
+			complete_chunk = self._create_stream_chunk(
+				chunk_type="node_complete",
+				content=self.name,
+				agent_name=agent_name,
+				metadata={'output': error_msg, 'status': 'failed', 'error': str(e)}
+			)
+			yield complete_chunk
 	
 	def _fill_required_params(self, tool_obj, params: Dict[str, Any], message: str, context: Dict[str, Any]):
 		"""检查并补全工具所需的参数"""

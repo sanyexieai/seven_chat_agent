@@ -62,10 +62,11 @@ PLANNER_SYSTEM_PROMPT = """你是一个流程图规划专家。根据用户任�
 
 重要规则：
 1. **不要包含 start 和 end 节点**（这些节点会在执行时自动添加）
-2. 所有节点必须通过 edges 连接
-3. 如果使用 tool 节点，建议在前面添加 auto_infer 节点来自动生成参数
-4. 节点 ID 必须唯一
-5. 只输出 JSON，不要包含其他文字说明"""
+2. **所有节点必须串行连接**（一个接一个，形成一条链，不能有分支或并行）
+3. **所有节点都必须在从开始到结束的路径上**（不能有游离节点）
+4. 如果使用 tool 节点，建议在前面添加 auto_infer 节点来自动生成参数
+5. 节点 ID 必须唯一
+6. 只输出 JSON，不要包含其他文字说明"""
 
 PLANNER_USER_PROMPT_TEMPLATE = """请为以下任务生成一个流程图配置：
 
@@ -74,15 +75,32 @@ PLANNER_USER_PROMPT_TEMPLATE = """请为以下任务生成一个流程图配置�
 上下文信息：
 {context}
 
+{error_context}
+
 可用工具列表：
 {available_tools}
 
+工具使用规则：
+1. **内置工具**：tool_type 为 "builtin"，tool_name 直接使用工具名称（如 "report", "deep_search"），不需要 server 参数
+2. **MCP工具**：tool_type 为 "mcp"，tool_name 格式为 "mcp_{{server}}_{{tool_name}}"（如 "mcp_1_search"），server 为服务器编号（字符串格式，如 "1"）
+3. **临时工具**：tool_type 为 "temporary"，tool_name 格式为 "temp_{{tool_name}}"，不需要 server 参数
+4. 使用工具时，**必须**在前面添加 auto_infer 节点来自动生成参数
+5. auto_infer 节点的 target_tool_node_id 应该指向对应的 tool 节点 ID
+
 请生成一个完整的流程图配置 JSON，确保：
 1. **不要包含 start 和 end 节点**（这些节点会在执行时自动添加）
-2. 所有节点通过 edges 正确连接
-3. 节点配置完整（特别是 tool 节点的 tool_name, tool_type, server）
-4. 如果使用工具，建议添加 auto_infer 节点
-5. 流程图逻辑清晰，能够完成任务
+2. **所有节点必须串行连接**（节点1 -> 节点2 -> 节点3 -> ...，形成一条链，不能有分支）
+3. **所有节点都必须在路径上**（每个节点都有且仅有一个前驱和一个后继，除了第一个节点没有前驱，最后一个节点没有后继）
+4. 节点配置完整：
+   - tool 节点：必须包含 tool_name, tool_type, server（MCP工具需要）
+   - auto_infer 节点：必须包含 target_tool_node_id（指向对应的 tool 节点）
+5. 如果使用工具，**必须**在前面添加 auto_infer 节点
+6. 流程图逻辑清晰，能够完成任务
+7. 优先使用系统提供的工具，根据任务需求选择合适的工具
+
+**重要**：edges 数组应该按照节点顺序连接，例如：
+- 如果有3个节点 [node1, node2, node3]，edges 应该是 [{{"source": "node1", "target": "node2"}}, {{"source": "node2", "target": "node3"}}]
+- 不能有多个节点指向同一个节点，也不能有一个节点指向多个节点
 
 只输出 JSON 配置，不要包含任何其他文字。"""
 
@@ -197,6 +215,73 @@ class PlannerNode(BaseFlowNode):
 				is_end=True
 			)
 	
+	def _format_failed_nodes_summary(self, failed_nodes: List[Dict[str, str]]) -> str:
+		"""格式化失败节点摘要"""
+		if not failed_nodes:
+			return ""
+		
+		summary_parts = ["执行失败的节点："]
+		for i, failed in enumerate(failed_nodes, 1):
+			summary_parts.append(f"{i}. 节点 {failed['node_name']} ({failed['node_id']}): {failed['error']}")
+		
+		return "\n".join(summary_parts)
+	
+	async def _generate_flow_config_with_errors(
+		self, 
+		task: str, 
+		context: Dict[str, Any], 
+		error_summary: str
+	) -> Optional[Dict[str, Any]]:
+		"""生成包含错误信息的流程图配置（用于重新规划）"""
+		try:
+			# 获取可用工具列表
+			available_tools = await self._get_available_tools()
+			
+			# 准备上下文信息
+			context_info = self._format_context_info(context)
+			
+			# 构建错误上下文
+			error_context = f"""
+执行错误信息：
+{error_summary}
+
+请根据以上错误信息，重新规划流程图，避免之前的错误：
+1. 分析失败节点的错误原因
+2. 调整节点配置或替换为其他工具/方法
+3. 确保新规划的节点能够成功执行
+4. 如果工具调用失败，尝试使用其他工具或调整参数
+"""
+			
+			# 构建提示词
+			system_prompt = self.config.get('system_prompt') or PLANNER_SYSTEM_PROMPT
+			user_prompt_template = self.config.get('user_prompt') or PLANNER_USER_PROMPT_TEMPLATE
+			user_prompt = user_prompt_template.format(
+				task=task,
+				context=context_info,
+				error_context=error_context,
+				available_tools=available_tools
+			)
+			
+			# 调用 LLM
+			llm_helper = get_llm_helper()
+			messages = [
+				{"role": "system", "content": system_prompt},
+				{"role": "user", "content": user_prompt}
+			]
+			
+			response = await llm_helper.call(messages, max_tokens=4000)
+			
+			# 解析 JSON
+			flow_config = self._parse_flow_config(response)
+			
+			if flow_config:
+				logger.info(f"规划节点 {self.id} 重新规划成功，包含 {len(flow_config.get('nodes', []))} 个节点")
+			
+			return flow_config
+		except Exception as e:
+			logger.error(f"规划节点 {self.id} 重新规划失败: {str(e)}")
+			return None
+	
 	async def _generate_flow_config(self, task: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 		"""使用 LLM 生成流程图配置"""
 		try:
@@ -212,6 +297,7 @@ class PlannerNode(BaseFlowNode):
 			user_prompt = user_prompt_template.format(
 				task=task,
 				context=context_info,
+				error_context="",  # 首次规划时没有错误信息
 				available_tools=available_tools
 			)
 			
@@ -298,9 +384,8 @@ class PlannerNode(BaseFlowNode):
 			
 			config['edges'] = filtered_edges
 			
-			# 确保有 edges（如果没有则生成）
-			if not config['edges']:
-				config['edges'] = self._generate_edges_from_nodes(config.get('nodes', []))
+			# 验证并修复节点连接，确保所有节点串行连接
+			config = self._ensure_serial_connection(config)
 			
 			# 确保有 metadata
 			if 'metadata' not in config:
@@ -337,28 +422,272 @@ class PlannerNode(BaseFlowNode):
 		
 		return edges
 	
+	def _ensure_serial_connection(self, config: Dict[str, Any]) -> Dict[str, Any]:
+		"""确保所有节点串行连接，移除游离节点和分支"""
+		nodes = config.get('nodes', [])
+		edges = config.get('edges', [])
+		
+		if not nodes:
+			config['edges'] = []
+			return config
+		
+		if len(nodes) == 1:
+			# 只有一个节点，不需要边
+			config['edges'] = []
+			return config
+		
+		# 构建节点ID到节点的映射
+		node_map = {node.get('id'): node for node in nodes}
+		node_ids = list(node_map.keys())
+		
+		# 构建入度和出度统计
+		in_degree = {node_id: 0 for node_id in node_ids}
+		out_degree = {node_id: 0 for node_id in node_ids}
+		edge_map = {}  # source -> [targets]
+		
+		for edge in edges:
+			source = edge.get('source')
+			target = edge.get('target')
+			if source in node_map and target in node_map:
+				if source not in edge_map:
+					edge_map[source] = []
+				edge_map[source].append(target)
+				out_degree[source] = out_degree.get(source, 0) + 1
+				in_degree[target] = in_degree.get(target, 0) + 1
+		
+		# 检查是否有分支或游离节点
+		has_branch = False
+		orphan_nodes = []
+		
+		# 检查是否有多个出边（分支）
+		for node_id, out_count in out_degree.items():
+			if out_count > 1:
+				has_branch = True
+				logger.warning(f"节点 {node_id} 有 {out_count} 个出边，存在分支")
+		
+		# 检查是否有多个入边（合并）
+		for node_id, in_count in in_degree.items():
+			if in_count > 1:
+				has_branch = True
+				logger.warning(f"节点 {node_id} 有 {in_count} 个入边，存在合并")
+		
+		# 检查游离节点（没有入边也没有出边）
+		for node_id in node_ids:
+			in_count = in_degree.get(node_id, 0)
+			out_count = out_degree.get(node_id, 0)
+			# 第一个节点应该没有入边但有出边，最后一个节点应该没有出边但有入边
+			# 中间节点应该都有入边和出边
+			# 如果节点既没有入边也没有出边，就是游离节点
+			if in_count == 0 and out_count == 0:
+				orphan_nodes.append(node_id)
+				logger.warning(f"节点 {node_id} 是游离节点（没有连接）")
+		
+		# 如果有分支或游离节点，重新生成串行连接
+		if has_branch or orphan_nodes:
+			logger.info(f"检测到非串行连接，重新生成串行边。分支: {has_branch}, 游离节点: {orphan_nodes}")
+			
+			# 移除游离节点
+			if orphan_nodes:
+				nodes = [node for node in nodes if node.get('id') not in orphan_nodes]
+				node_ids = [node.get('id') for node in nodes]
+				logger.info(f"移除了 {len(orphan_nodes)} 个游离节点，剩余 {len(nodes)} 个节点")
+			
+			# 重新生成串行边
+			new_edges = []
+			for i in range(len(nodes) - 1):
+				source_id = nodes[i].get('id')
+				target_id = nodes[i+1].get('id')
+				new_edges.append({
+					"id": f"edge_{source_id}_{target_id}",
+					"source": source_id,
+					"target": target_id,
+					"type": "default"
+				})
+			
+			config['nodes'] = nodes
+			config['edges'] = new_edges
+			logger.info(f"重新生成了 {len(new_edges)} 条串行边")
+		else:
+			# 验证是否所有节点都在路径上
+			# 找到起始节点（入度为0）
+			start_nodes = [node_id for node_id, in_count in in_degree.items() if in_count == 0]
+			if len(start_nodes) != 1:
+				logger.warning(f"起始节点数量不正确: {len(start_nodes)}，期望1个")
+				# 重新生成串行边
+				new_edges = []
+				for i in range(len(nodes) - 1):
+					source_id = nodes[i].get('id')
+					target_id = nodes[i+1].get('id')
+					new_edges.append({
+						"id": f"edge_{source_id}_{target_id}",
+						"source": source_id,
+						"target": target_id,
+						"type": "default"
+					})
+				config['edges'] = new_edges
+			else:
+				# 验证路径完整性：从起始节点开始，检查是否能到达所有节点
+				visited = set()
+				start_node_id = start_nodes[0]
+				current = start_node_id
+				
+				while current and current not in visited:
+					visited.add(current)
+					# 获取下一个节点
+					next_nodes = edge_map.get(current, [])
+					if len(next_nodes) > 1:
+						# 有分支，只取第一个
+						logger.warning(f"节点 {current} 有多个后继，只保留第一个")
+						next_nodes = [next_nodes[0]]
+					current = next_nodes[0] if next_nodes else None
+				
+				# 检查是否有未访问的节点
+				unvisited = set(node_ids) - visited
+				if unvisited:
+					logger.warning(f"有 {len(unvisited)} 个节点不在路径上: {unvisited}")
+					# 重新生成串行边
+					new_edges = []
+					for i in range(len(nodes) - 1):
+						source_id = nodes[i].get('id')
+						target_id = nodes[i+1].get('id')
+						new_edges.append({
+							"id": f"edge_{source_id}_{target_id}",
+							"source": source_id,
+							"target": target_id,
+							"type": "default"
+						})
+					config['edges'] = new_edges
+		
+		return config
+	
 	async def _get_available_tools(self) -> str:
-		"""获取可用工具列表"""
+		"""获取系统内所有可用工具列表（包括内置工具、MCP工具、临时工具）"""
 		try:
 			from main import agent_manager
 			if not agent_manager or not agent_manager.tool_manager:
+				logger.warning("AgentManager 或 ToolManager 未初始化")
 				return "暂无可用工具"
 			
 			tool_manager = agent_manager.tool_manager
-			tools = tool_manager.get_all_tools()
+			# 获取所有可用工具（包括内置、MCP、临时工具）
+			tools = tool_manager.get_available_tools()
 			
 			if not tools:
+				logger.warning("未获取到任何工具")
 				return "暂无可用工具"
 			
-			tool_list = []
-			for tool_name, tool_obj in tools.items():
-				tool_desc = tool_obj.description if hasattr(tool_obj, 'description') else tool_name
-				tool_list.append(f"- {tool_name}: {tool_desc}")
+			logger.info(f"规划节点获取到 {len(tools)} 个可用工具")
 			
-			return "\n".join(tool_list) if tool_list else "暂无可用工具"
+			# 按类型分组工具
+			tools_by_type = {}
+			for tool_info in tools:
+				tool_type = tool_info.get('type', 'unknown')
+				if tool_type not in tools_by_type:
+					tools_by_type[tool_type] = []
+				tools_by_type[tool_type].append(tool_info)
+			
+			# 格式化工具信息
+			tool_sections = []
+			
+			# 内置工具
+			if 'builtin' in tools_by_type:
+				tool_sections.append("## 内置工具：")
+				for tool_info in tools_by_type['builtin']:
+					tool_name = tool_info.get('name', 'unknown')
+					tool_desc = tool_info.get('description', '无描述')
+					params = tool_info.get('parameters', {})
+					params_desc = self._format_parameters_schema(params)
+					tool_sections.append(f"- **{tool_name}**: {tool_desc}")
+					if params_desc:
+						tool_sections.append(f"  参数: {params_desc}")
+			
+			# MCP工具（按服务器分组）
+			mcp_tools = [t for t in tools if t.get('type') == 'mcp']
+			if mcp_tools:
+				tool_sections.append("\n## MCP工具：")
+				# 按服务器分组
+				tools_by_server = {}
+				for tool_info in mcp_tools:
+					# 从工具名称中提取服务器名（格式：mcp_{server}_{tool_name}）
+					tool_name = tool_info.get('name', '')
+					if tool_name.startswith('mcp_'):
+						parts = tool_name.split('_', 2)
+						if len(parts) >= 3:
+							server_name = parts[1]
+							if server_name not in tools_by_server:
+								tools_by_server[server_name] = []
+							tools_by_server[server_name].append(tool_info)
+				
+				for server_name, server_tools in tools_by_server.items():
+					tool_sections.append(f"\n### 服务器 {server_name}：")
+					for tool_info in server_tools:
+						tool_name = tool_info.get('name', 'unknown')
+						tool_desc = tool_info.get('description', '无描述')
+						params = tool_info.get('parameters', {})
+						params_desc = self._format_parameters_schema(params)
+						# 提取实际工具名（去掉 mcp_{server}_ 前缀）
+						actual_tool_name = tool_name.split('_', 2)[-1] if '_' in tool_name else tool_name
+						tool_sections.append(f"- **{actual_tool_name}** (工具名: {tool_name}): {tool_desc}")
+						if params_desc:
+							tool_sections.append(f"  参数: {params_desc}")
+						tool_sections.append(f"  服务器: {server_name}")
+			
+			# 临时工具
+			if 'temporary' in tools_by_type:
+				tool_sections.append("\n## 临时工具：")
+				for tool_info in tools_by_type['temporary']:
+					tool_name = tool_info.get('name', 'unknown')
+					tool_desc = tool_info.get('description', '无描述')
+					params = tool_info.get('parameters', {})
+					params_desc = self._format_parameters_schema(params)
+					# 提取实际工具名（去掉 temp_ 前缀）
+					actual_tool_name = tool_name.replace('temp_', '') if tool_name.startswith('temp_') else tool_name
+					tool_sections.append(f"- **{actual_tool_name}** (工具名: {tool_name}): {tool_desc}")
+					if params_desc:
+						tool_sections.append(f"  参数: {params_desc}")
+			
+			result = "\n".join(tool_sections) if tool_sections else "暂无可用工具"
+			logger.info(f"规划节点工具列表格式化完成，长度: {len(result)} 字符")
+			return result
+			
 		except Exception as e:
-			logger.warning(f"获取可用工具列表失败: {str(e)}")
-			return "获取工具列表失败"
+			logger.error(f"获取可用工具列表失败: {str(e)}", exc_info=True)
+			return f"获取工具列表失败: {str(e)}"
+	
+	def _format_parameters_schema(self, params_schema: Dict[str, Any]) -> str:
+		"""格式化参数 schema 为易读的字符串"""
+		if not params_schema or not isinstance(params_schema, dict):
+			return ""
+		
+		try:
+			properties = params_schema.get('properties', {})
+			required = params_schema.get('required', [])
+			
+			if not properties:
+				return ""
+			
+			param_descs = []
+			for param_name, param_info in properties.items():
+				param_type = param_info.get('type', 'string')
+				param_desc = param_info.get('description', '')
+				is_required = param_name in required
+				required_mark = "(必填)" if is_required else "(可选)"
+				
+				if param_type == 'object':
+					param_descs.append(f"{param_name}: 对象 {required_mark}")
+				elif param_type == 'array':
+					items = param_info.get('items', {})
+					item_type = items.get('type', 'string')
+					param_descs.append(f"{param_name}: {item_type}数组 {required_mark}")
+				else:
+					param_descs.append(f"{param_name}: {param_type} {required_mark}")
+				if param_desc:
+					param_descs[-1] += f" - {param_desc}"
+			
+			return ", ".join(param_descs)
+		except Exception as e:
+			logger.warning(f"格式化参数 schema 失败: {str(e)}")
+			return ""
 	
 	def _format_context_info(self, context: Dict[str, Any]) -> str:
 		"""格式化上下文信息"""
@@ -518,6 +847,7 @@ class PlannerNode(BaseFlowNode):
 			# 执行生成的节点（从第一个起始节点开始）
 			current_node_id = start_nodes[0]
 			executed_nodes = set()
+			failed_nodes: List[Dict[str, str]] = []  # 收集失败节点信息
 			
 			while current_node_id and current_node_id not in executed_nodes:
 				executed_nodes.add(current_node_id)
@@ -527,17 +857,108 @@ class PlannerNode(BaseFlowNode):
 					break
 				
 				# 执行节点（流式）
+				node_failed = False
+				node_error = None
+				node_start_sent = False
+				node_complete_sent = False
+				node_label = node.config.get('label') if hasattr(node, 'config') else None
+				node_metadata = {
+					'node_id': node.id,
+					'node_type': getattr(getattr(node, 'type', None), 'value', getattr(node, 'type', 'unknown')),
+					'node_name': getattr(node, 'name', node.id),
+					'node_label': node_label or getattr(node, 'name', node.id)
+				}
+				node_output_chunks: List[str] = []
+				
+				def emit_node_start_chunk():
+					nonlocal node_start_sent
+					if node_start_sent:
+						return None
+					node_start_sent = True
+					return node._create_stream_chunk(
+						chunk_type="node_start",
+						content=f"🚀 开始执行 {getattr(node, 'name', node.id)} 节点",
+						agent_name=agent_name,
+						metadata=node_metadata.copy()
+					)
+				
+				def emit_node_complete_chunk(status: str, output: Optional[str] = None, error: Optional[str] = None):
+					nonlocal node_complete_sent
+					if node_complete_sent:
+						return None
+					node_complete_sent = True
+					metadata = node_metadata.copy()
+					metadata['status'] = status
+					if output:
+						metadata['output'] = output
+					if error:
+						metadata['error'] = error
+					return node._create_stream_chunk(
+						chunk_type="node_complete",
+						content=f"{'✅' if status == 'completed' else '⚠️'} {getattr(node, 'name', node.id)} 节点执行{ '完成' if status == 'completed' else '结束'}",
+						agent_name=agent_name,
+						metadata=metadata
+					)
+				
 				try:
+					start_chunk = emit_node_start_chunk()
+					if start_chunk:
+						yield start_chunk
+					
 					async for chunk in node.execute_stream(user_id, message, context, agent_name):
+						if chunk.type == "node_start":
+							node_start_sent = True
+						if chunk.type == "node_complete":
+							node_complete_sent = True
+						if chunk.type in ("content", "final_response", "final") and isinstance(chunk.content, str):
+							node_output_chunks.append(chunk.content)
+						
+						# 检查是否是错误事件
+						if chunk.type == "node_error":
+							node_failed = True
+							node_error = chunk.content or chunk.metadata.get('error', '节点执行失败')
+							logger.warning(f"规划节点 {self.id} 检测到节点 {current_node_id} 执行失败: {node_error}")
+						elif chunk.type == "node_complete" and chunk.metadata:
+							# 检查节点完成事件中是否标记为失败
+							if chunk.metadata.get('status') == 'failed' or chunk.metadata.get('error'):
+								node_failed = True
+								node_error = chunk.metadata.get('error', chunk.metadata.get('output', '节点执行失败'))
+								logger.warning(f"规划节点 {self.id} 检测到节点 {current_node_id} 执行失败: {node_error}")
+						
 						# 透传节点的流式输出
 						yield chunk
 				except Exception as e:
+					node_failed = True
+					node_error = str(e)
 					logger.error(f"规划节点 {self.id} 执行节点 {current_node_id} 失败: {str(e)}")
 					yield self._create_stream_chunk(
 						chunk_type="content",
 						content=f"❌ 节点 {node.name} 执行失败: {str(e)}\n",
 						agent_name=agent_name
 					)
+				
+				if not node_failed:
+					complete_chunk = emit_node_complete_chunk(
+						status="completed",
+						output=("".join(node_output_chunks)).strip() if node_output_chunks else None
+					)
+					if complete_chunk:
+						yield complete_chunk
+				
+				# 如果节点失败，记录错误信息
+				if node_failed:
+					failed_nodes.append({
+						'node_id': current_node_id,
+						'node_name': node.name,
+						'error': node_error or '节点执行失败'
+					})
+					failed_chunk = emit_node_complete_chunk(
+						status="failed",
+						output=("".join(node_output_chunks)).strip() if node_output_chunks else None,
+						error=node_error
+					)
+					if failed_chunk:
+						yield failed_chunk
 				
 				# 选择下一个节点
 				next_node_id = node.get_next_node_id(0)
@@ -550,6 +971,62 @@ class PlannerNode(BaseFlowNode):
 				else:
 					# 没有下一个节点，结束
 					current_node_id = None
+			
+			# 如果检测到失败节点，尝试重新规划
+			if failed_nodes:
+				logger.warning(f"规划节点 {self.id} 检测到 {len(failed_nodes)} 个失败节点，尝试重新规划")
+				yield self._create_stream_chunk(
+					chunk_type="content",
+					content=f"\n⚠️ 检测到 {len(failed_nodes)} 个节点执行失败，正在重新规划...\n\n",
+					agent_name=agent_name
+				)
+				
+				# 收集错误信息
+				error_summary = self._format_failed_nodes_summary(failed_nodes)
+				
+				# 重新生成流程图配置（包含错误信息）
+				retry_flow_config = await self._generate_flow_config_with_errors(message, context, error_summary)
+				
+				if retry_flow_config:
+					flow_name = retry_flow_config.get('metadata', {}).get('name', '重新规划的流程图')
+					retry_nodes = retry_flow_config.get('nodes', [])
+					node_count = len(retry_nodes)
+					
+					yield self._create_stream_chunk(
+						chunk_type="content",
+						content=f"✅ 已重新生成 {node_count} 个节点：{flow_name}\n\n",
+						agent_name=agent_name
+					)
+					
+					# 发送节点扩展事件给前端
+					yield self._create_stream_chunk(
+						chunk_type="flow_nodes_extend",
+						content="",
+						agent_name=agent_name,
+						metadata={
+							'planner_node_id': self.id,
+							'planner_next_node_id': planner_next_node_id,
+							'remove_planner_edge': False,  # 重新规划不需要移除边
+							'nodes': retry_nodes,
+							'edges': retry_flow_config.get('edges', []),
+							'flow_name': flow_name,
+							'node_count': node_count,
+							'is_retry': True  # 标记为重新规划
+						}
+					)
+					
+					# 执行重新规划的节点
+					async for chunk in self._execute_generated_nodes_stream(
+						user_id, message, context, retry_nodes, 
+						retry_flow_config.get('edges', []), planner_next_node_id, agent_name
+					):
+						yield chunk
+				else:
+					yield self._create_stream_chunk(
+						chunk_type="content",
+						content=f"❌ 重新规划失败，无法生成新的流程图配置\n",
+						agent_name=agent_name
+					)
 					
 		except Exception as e:
 			logger.error(f"规划节点 {self.id} 流式执行生成的节点失败: {str(e)}")

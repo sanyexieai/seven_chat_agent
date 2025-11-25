@@ -15,6 +15,8 @@ const { Header, Content, Sider } = Layout;
 const { TextArea } = Input;
 const { Title, Text } = Typography;
 
+type FlowNodeStatus = 'pending' | 'running' | 'completed' | 'failed';
+
 interface Message {
   id: string;
   content: string;
@@ -39,6 +41,8 @@ interface Message {
       content: string;
       type: string;
     }>;
+    node_metadata?: any; // 节点元数据，用于检查失败状态等
+    metadata?: any; // 兼容字段
   }>;
 }
 
@@ -55,6 +59,33 @@ interface Session {
   };
   created_at?: string;
   isTemp?: boolean; // 标记是否为临时会话
+}
+
+interface FlowNodeData {
+  id: string;
+  label: string;
+  nodeType: string;
+  status: FlowNodeStatus;
+}
+
+interface FlowEdgeData {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  type?: string;
+}
+
+interface FlowData {
+  nodes: FlowNodeData[];
+  edges: FlowEdgeData[];
+  executionState: {
+    isRunning: boolean;
+    currentNodeId?: string;
+    completedNodes: string[];
+    failedNodes: string[];
+  };
 }
 
 const ChatPage: React.FC = () => {
@@ -127,11 +158,11 @@ const ChatPage: React.FC = () => {
       if (agent.flow_config && agent.flow_config.nodes && agent.flow_config.nodes.length > 0) {
         console.log(`从智能体配置中获取流程图: ${agentName}`, agent.flow_config);
         return {
-          nodes: agent.flow_config.nodes.map((node: any) => ({
+          nodes: (agent.flow_config.nodes as any[]).map((node: any) => ({
             id: node.id,
             label: node.data?.label || node.name || node.id,
             nodeType: node.type || node.data?.type || 'default',
-            status: 'pending' as 'completed' | 'pending' | 'running' | 'failed'
+            status: 'pending' as FlowNodeStatus
           })),
           edges: agent.flow_config.edges || []
         };
@@ -148,28 +179,19 @@ const ChatPage: React.FC = () => {
   };
 
   // 流程图数据状态
-  const [flowData, setFlowData] = useState({
-    nodes: [] as Array<{
-      id: string;
-      label: string;
-      nodeType: string;
-      status: 'completed' | 'pending' | 'running' | 'failed';
-    }>,
-    edges: [] as Array<{
-      id: string;
-      source: string;
-      target: string;
-    }>,
+  const [flowData, setFlowData] = useState<FlowData>({
+    nodes: [] as FlowNodeData[],
+    edges: [],
     executionState: {
       isRunning: false,
-      currentNodeId: undefined as string | undefined,
-      completedNodes: [] as string[],
-      failedNodes: [] as string[]
+      currentNodeId: undefined,
+      completedNodes: [],
+      failedNodes: []
     }
   });
 
   // 从智能体配置生成流程图数据
-  const generateFlowDataFromAgent = (agent: any) => {
+  const generateFlowDataFromAgent = (agent: any): FlowData => {
     if (!agent || !agent.flow_config || !agent.flow_config.nodes) {
       return {
         nodes: [],
@@ -184,11 +206,11 @@ const ChatPage: React.FC = () => {
     }
 
     // 转换节点数据
-    const nodes = agent.flow_config.nodes.map((node: any) => ({
+    const nodes: FlowNodeData[] = agent.flow_config.nodes.map((node: any) => ({
       id: node.id,
       label: node.data?.label || node.id,
       nodeType: node.type || 'default',
-      status: 'pending' as const
+      status: 'pending' as FlowNodeStatus
     }));
 
     // 转换边数据
@@ -223,13 +245,33 @@ const ChatPage: React.FC = () => {
     return ['file', 'download', 'save', 'export', 'write', 'read', 'pdf', 'doc', 'excel'].some(k => name.includes(k));
   };
 
+  const pendingFlowStatusRef = useRef<Map<string, FlowNodeStatus>>(new Map());
+
+  const applyPendingStatusesToNodes = <T extends { id: string; status?: FlowNodeStatus }>(nodes: T[]): T[] => {
+    if (!nodes || nodes.length === 0 || pendingFlowStatusRef.current.size === 0) {
+      return nodes;
+    }
+    let modified = false;
+    const updatedNodes = nodes.map(node => {
+      const pendingStatus = pendingFlowStatusRef.current.get(node.id);
+      if (pendingStatus) {
+        modified = true;
+        pendingFlowStatusRef.current.delete(node.id);
+        return { ...node, status: pendingStatus };
+      }
+      return node;
+    });
+    return modified ? updatedNodes : nodes;
+  };
+
   // 重置所有节点状态为 pending（灰色）
   const resetFlowNodesToPending = () => {
+    pendingFlowStatusRef.current.clear();
     setFlowData(prev => ({
       ...prev,
       nodes: prev.nodes.map(node => ({
         ...node,
-        status: 'pending' as const
+        status: 'pending' as FlowNodeStatus
       })),
       executionState: {
         ...prev.executionState,
@@ -242,23 +284,45 @@ const ChatPage: React.FC = () => {
   };
 
   // 更新流程图状态
-  const updateFlowExecution = (nodeId: string, status: 'pending' | 'running' | 'completed' | 'failed') => {
-    setFlowData(prev => ({
-      ...prev,
-      nodes: prev.nodes.map(node => 
-        node.id === nodeId ? { ...node, status } : node
-      ),
-      executionState: {
-        ...prev.executionState,
-        currentNodeId: status === 'running' ? nodeId : undefined,
-        completedNodes: status === 'completed' 
-          ? [...prev.executionState.completedNodes, nodeId]
-          : prev.executionState.completedNodes.filter(id => id !== nodeId),
-        failedNodes: status === 'failed'
-          ? [...prev.executionState.failedNodes, nodeId]
-          : prev.executionState.failedNodes.filter(id => id !== nodeId)
+  const updateFlowExecution = (nodeId: string, status: FlowNodeStatus) => {
+    setFlowData(prev => {
+      let nodeFound = false;
+      const updatedNodes = prev.nodes.map(node => {
+        if (node.id === nodeId) {
+          nodeFound = true;
+          return { ...node, status };
+        }
+        return node;
+      });
+
+      if (!nodeFound) {
+        pendingFlowStatusRef.current.set(nodeId, status);
       }
-    }));
+
+      const currentNodeId =
+        status === 'running'
+          ? nodeId
+          : prev.executionState.currentNodeId === nodeId
+            ? undefined
+            : prev.executionState.currentNodeId;
+
+      return {
+        ...prev,
+        nodes: nodeFound ? updatedNodes : prev.nodes,
+        executionState: {
+          ...prev.executionState,
+          currentNodeId,
+          completedNodes:
+            status === 'completed'
+              ? Array.from(new Set([...prev.executionState.completedNodes, nodeId]))
+              : prev.executionState.completedNodes.filter(id => id !== nodeId),
+          failedNodes:
+            status === 'failed'
+              ? Array.from(new Set([...prev.executionState.failedNodes, nodeId]))
+              : prev.executionState.failedNodes.filter(id => id !== nodeId)
+        }
+      };
+    });
   };
 
   // 根据消息内容自动更新流程图状态
@@ -332,10 +396,12 @@ const ChatPage: React.FC = () => {
 
   // 当选择智能体时更新流程图
   const updateFlowForAgent = async (agentName: string) => {
+    pendingFlowStatusRef.current.clear();
     const newFlow = await fetchAgentFlowConfig(agentName);
     if (newFlow) {
       setFlowData({
         ...newFlow,
+        nodes: applyPendingStatusesToNodes(newFlow.nodes || []),
         executionState: {
           isRunning: false,
           currentNodeId: undefined,
@@ -346,12 +412,12 @@ const ChatPage: React.FC = () => {
     } else {
       // 如果没有获取到流程图配置，显示提示信息
       setFlowData({
-        nodes: [{
+        nodes: applyPendingStatusesToNodes([{
           id: 'no-flow',
           label: `${agentName} 没有流程图配置`,
           nodeType: 'info',
-          status: 'pending' as const
-        }],
+          status: 'pending' as FlowNodeStatus
+        }]),
         edges: [],
         executionState: {
           isRunning: false,
@@ -807,7 +873,8 @@ const ChatPage: React.FC = () => {
                   node_label: node.node_label,
                   content: node.content,
                   chunk_count: node.chunk_count || 0,
-                  chunk_list: []
+                  chunk_list: [],
+                  node_metadata: node.node_metadata || node.metadata || {} // 传递节点元数据，用于检查失败状态
                 })) : []
               };
             }
@@ -890,8 +957,14 @@ const ChatPage: React.FC = () => {
     // 清空输入框
     setInputValue('');
 
-    // 重置所有流程图节点状态为 pending（灰色）
-    resetFlowNodesToPending();
+    // 重新初始化流程图：如果有选中的智能体，从智能体配置重新加载；否则重置状态
+    if (selectedAgent) {
+      // 重新从智能体配置加载初始流程图
+      await updateFlowForAgent(selectedAgent.name);
+    } else {
+      // 如果没有选中智能体，重置所有流程图节点状态为 pending（灰色）
+      resetFlowNodesToPending();
+    }
 
     try {
       // 如果是临时会话且是第一条消息，先创建真正的会话
@@ -1156,14 +1229,60 @@ const ChatPage: React.FC = () => {
                       updateFlowExecution(data.metadata.node_id, 'running');
                     }
                     
+                  } else if (data.type === 'node_error' && data.metadata?.node_id) {
+                    // 收到节点错误事件
+                    const nodeId = data.metadata.node_id;
+                    const errorMsg = data.content || data.metadata?.error || '节点执行失败';
+                    
+                    console.error(`节点 ${nodeId} 执行失败:`, errorMsg);
+                    
+                    // 更新消息中的节点内容，显示错误信息
+                    setMessages(prev => {
+                      const updated = prev.map(msg => {
+                        if (msg.id === agentMessageId) {
+                          const nodeIndex = msg.nodes?.findIndex(n => n.node_id === nodeId) ?? -1;
+                          
+                          if (nodeIndex !== -1 && msg.nodes) {
+                            const updatedNodes = [...msg.nodes];
+                            const currentNode = updatedNodes[nodeIndex];
+                            updatedNodes[nodeIndex] = {
+                              ...currentNode,
+                              content: `❌ 错误: ${errorMsg}`,
+                              chunk_list: [
+                                ...(currentNode.chunk_list || []),
+                                {
+                                  chunk_id: data.chunk_id || `chunk_${Date.now()}`,
+                                  content: `❌ 错误: ${errorMsg}`,
+                                  type: 'error'
+                                }
+                              ]
+                            };
+                            return { ...msg, nodes: updatedNodes };
+                          }
+                        }
+                        return msg;
+                      });
+                      return updated;
+                    });
+                    
+                    // 更新流程图状态 - 节点失败
+                    if (nodeId) {
+                      updateFlowExecution(nodeId, 'failed');
+                    }
+                    
+                    // 在聊天内容中显示错误
+                    fullContent += `\n\n❌ 节点执行失败: ${errorMsg}\n`;
+                    
                   } else if (data.type === 'node_complete' && data.metadata?.node_id) {
                     // 收到节点完成事件，更新节点的最终输出
+                    const nodeId = data.metadata.node_id;
+                    const nodeStatus = data.metadata?.status; // 检查是否有 status 字段（可能是 'failed'）
+                    
                     // 重要：如果节点已经有内容（通过 content 事件累积的），完全保留它，不要用 output 覆盖
                     // 因为 output 可能是错误的（比如都是全局的 last_output）
                     setMessages(prev => {
                       const updated = prev.map(msg => {
                         if (msg.id === agentMessageId) {
-                          const nodeId = data.metadata.node_id;
                           const nodeIndex = msg.nodes?.findIndex(n => n.node_id === nodeId) ?? -1;
                           
                           if (nodeIndex !== -1 && msg.nodes) {
@@ -1181,6 +1300,11 @@ const ChatPage: React.FC = () => {
                             }
                             // 如果 existingContent 存在，完全忽略 output，保持原有内容
                             
+                            // 如果节点有错误信息，添加到输出中
+                            if (data.metadata?.error) {
+                              nodeOutput = nodeOutput ? `${nodeOutput}\n\n❌ 错误: ${data.metadata.error}` : `❌ 错误: ${data.metadata.error}`;
+                            }
+                            
                             updatedNodes[nodeIndex] = {
                               ...currentNode,
                               content: nodeOutput, // 保留已有内容或使用后备值
@@ -1194,9 +1318,13 @@ const ChatPage: React.FC = () => {
                       return updated;
                     });
                     
-                    // 更新流程图状态 - 节点完成
-                    if (data.metadata?.node_id) {
-                      updateFlowExecution(data.metadata.node_id, 'completed');
+                    // 更新流程图状态 - 节点完成或失败
+                    if (nodeId) {
+                      if (nodeStatus === 'failed' || data.metadata?.error) {
+                        updateFlowExecution(nodeId, 'failed');
+                      } else {
+                        updateFlowExecution(nodeId, 'completed');
+                      }
                     }
                     
                   } else if (data.type === 'tool_result' && data.content) {
@@ -1292,11 +1420,11 @@ const ChatPage: React.FC = () => {
                     });
                     
                     // 将生成的节点转换为前端格式
-                    const newNodes = generatedNodes.map((node: any) => ({
+                    const newNodes: FlowNodeData[] = generatedNodes.map((node: any) => ({
                       id: node.id,
                       label: node.data?.label || node.data?.nodeType || '节点',
                       nodeType: node.data?.nodeType || node.type || 'unknown',
-                      status: 'pending' as const
+                      status: 'pending' as FlowNodeStatus
                     }));
                     
                     // 将新节点添加到现有流程图中
@@ -1310,7 +1438,7 @@ const ChatPage: React.FC = () => {
                       }
                       
                       // 添加新节点
-                      const updatedNodes = [...prev.nodes, ...nodesToAdd];
+                      const updatedNodes = applyPendingStatusesToNodes([...prev.nodes, ...nodesToAdd]);
                       
                       // 处理边：先移除规划节点到原始下一个节点的边（如果存在）
                       let updatedEdges = [...prev.edges];
@@ -1401,6 +1529,11 @@ const ChatPage: React.FC = () => {
                     
                     // 显示提示信息
                     fullContent += `\n\n📋 ${flowName}（${nodeCount} 个节点）已添加到流程图。\n\n`;
+
+                    // 更新规划节点状态为已完成
+                    if (plannerNodeId) {
+                      updateFlowExecution(plannerNodeId, 'completed');
+                    }
                     
                   } else if (data.type === 'content' && data.content) {
                     // 内容块：需要关联到对应的节点
@@ -1583,13 +1716,56 @@ const ChatPage: React.FC = () => {
                       }, 500);
                                           }
                      
-                    } else if (data.error) {
-                    setMessages(prev => prev.map(msg => 
-                      msg.id === agentMessageId 
-                        ? { ...msg, content: `错误: ${data.error}` }
-                        : msg
-                    ));
-                    console.error('流式响应错误:', data.error);
+                  } else if (data.type === 'error' || data.error) {
+                    // 处理通用错误事件
+                    const errorMsg = data.error || data.content || '未知错误';
+                    const nodeId = data.metadata?.node_id;
+                    
+                    console.error('流式响应错误:', errorMsg, '节点ID:', nodeId);
+                    
+                    // 如果有节点ID，更新节点状态为失败
+                    if (nodeId) {
+                      updateFlowExecution(nodeId, 'failed');
+                      
+                      // 更新消息中的节点内容
+                      setMessages(prev => {
+                        const updated = prev.map(msg => {
+                          if (msg.id === agentMessageId) {
+                            const nodeIndex = msg.nodes?.findIndex(n => n.node_id === nodeId) ?? -1;
+                            
+                            if (nodeIndex !== -1 && msg.nodes) {
+                              const updatedNodes = [...msg.nodes];
+                              const currentNode = updatedNodes[nodeIndex];
+                              updatedNodes[nodeIndex] = {
+                                ...currentNode,
+                                content: currentNode.content ? `${currentNode.content}\n\n❌ 错误: ${errorMsg}` : `❌ 错误: ${errorMsg}`,
+                                chunk_list: [
+                                  ...(currentNode.chunk_list || []),
+                                  {
+                                    chunk_id: data.chunk_id || `chunk_${Date.now()}`,
+                                    content: `❌ 错误: ${errorMsg}`,
+                                    type: 'error'
+                                  }
+                                ]
+                              };
+                              return { ...msg, nodes: updatedNodes };
+                            }
+                          }
+                          return msg;
+                        });
+                        return updated;
+                      });
+                    } else {
+                      // 没有节点ID，更新整体消息
+                      setMessages(prev => prev.map(msg => 
+                        msg.id === agentMessageId 
+                          ? { ...msg, content: `${msg.content}\n\n❌ 错误: ${errorMsg}` }
+                          : msg
+                      ));
+                    }
+                    
+                    // 在聊天内容中显示错误
+                    fullContent += `\n\n❌ 错误: ${errorMsg}\n`;
                   }
                 } catch (e) {
                   console.error('解析流式数据失败:', e, line);
@@ -1779,27 +1955,51 @@ const ChatPage: React.FC = () => {
                                           border: '1px solid #e8e8e8'
                                         }}>
                                           {/* 优先使用后台存储的content，前端分片用于流式显示 */}
-                                          {node.content ? (
-                                            <ThinkTagRenderer
-                                              content={node.content}
-                                              nodeInfo={{
-                                                node_type: node.node_type,
-                                                node_name: node.node_name,
-                                                node_label: node.node_label
-                                              }}
-                                            />
-                                          ) : node.chunk_list && node.chunk_list.length > 0 ? (
-                                            <ThinkTagRenderer
-                                              content={node.chunk_list.map((chunk: any) => chunk.content).join('')}
-                                              nodeInfo={{
-                                                node_type: node.node_type,
-                                                node_name: node.node_name,
-                                                node_label: node.node_label
-                                              }}
-                                            />
-                                          ) : (
-                                            <Text type="secondary">暂无内容</Text>
-                                          )}
+                                          {(() => {
+                                            // 检查节点是否有错误信息（从 node_metadata 或 content 中）
+                                            const nodeMetadata = (node as any).node_metadata || node.metadata || {};
+                                            const hasError = nodeMetadata.status === 'failed' || nodeMetadata.error || (node.content && node.content.includes('❌'));
+                                            const errorMsg = nodeMetadata.error || (node.content && node.content.includes('❌') ? node.content : null);
+                                            
+                                            // 如果有错误信息，优先显示错误
+                                            if (hasError && errorMsg) {
+                                              return (
+                                                <div style={{ color: '#ff4d4f' }}>
+                                                  <Text strong style={{ color: '#ff4d4f' }}>❌ 节点执行失败</Text>
+                                                  <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>
+                                                    {errorMsg.replace(/^❌\s*错误:\s*/i, '')}
+                                                  </div>
+                                                </div>
+                                              );
+                                            }
+                                            
+                                            // 否则正常显示内容
+                                            if (node.content) {
+                                              return (
+                                                <ThinkTagRenderer
+                                                  content={node.content}
+                                                  nodeInfo={{
+                                                    node_type: node.node_type,
+                                                    node_name: node.node_name,
+                                                    node_label: node.node_label
+                                                  }}
+                                                />
+                                              );
+                                            } else if (node.chunk_list && node.chunk_list.length > 0) {
+                                              return (
+                                                <ThinkTagRenderer
+                                                  content={node.chunk_list.map((chunk: any) => chunk.content).join('')}
+                                                  nodeInfo={{
+                                                    node_type: node.node_type,
+                                                    node_name: node.node_name,
+                                                    node_label: node.node_label
+                                                  }}
+                                                />
+                                              );
+                                            } else {
+                                              return <Text type="secondary">暂无内容</Text>;
+                                            }
+                                          })()}
                                         </div>
                                       </div>
                                     </div>
@@ -1856,7 +2056,7 @@ const ChatPage: React.FC = () => {
                     setSelectedAgent(selectedAgentData);
                     
                     // 生成流程图数据
-                    let newFlowData;
+                    let newFlowData: FlowData;
                     if (agent.flow_config && agent.flow_config.nodes && agent.flow_config.nodes.length > 0) {
                       // 使用智能体的实际流程图配置
                       newFlowData = generateFlowDataFromAgent(agent);
@@ -1865,11 +2065,11 @@ const ChatPage: React.FC = () => {
                       // 为流程图智能体生成默认流程图
                       newFlowData = {
                         nodes: [
-                          { id: 'start', label: '开始', nodeType: 'start', status: 'pending' },
-                          { id: 'llm', label: 'LLM分析', nodeType: 'llm', status: 'pending' },
-                          { id: 'router', label: '路由判断', nodeType: 'router', status: 'pending' },
-                          { id: 'tool', label: '工具调用', nodeType: 'tool', status: 'pending' },
-                          { id: 'end', label: '结束', nodeType: 'end', status: 'pending' }
+                          { id: 'start', label: '开始', nodeType: 'start', status: 'pending' as FlowNodeStatus },
+                          { id: 'llm', label: 'LLM分析', nodeType: 'llm', status: 'pending' as FlowNodeStatus },
+                          { id: 'router', label: '路由判断', nodeType: 'router', status: 'pending' as FlowNodeStatus },
+                          { id: 'tool', label: '工具调用', nodeType: 'tool', status: 'pending' as FlowNodeStatus },
+                          { id: 'end', label: '结束', nodeType: 'end', status: 'pending' as FlowNodeStatus }
                         ],
                         edges: [
                           { id: 'edge1', source: 'start', target: 'llm' },
@@ -1888,9 +2088,9 @@ const ChatPage: React.FC = () => {
                       // 为其他类型智能体生成简单流程图
                       newFlowData = {
                         nodes: [
-                          { id: 'start', label: '开始', nodeType: 'start', status: 'pending' },
-                          { id: 'llm', label: 'LLM处理', nodeType: 'llm', status: 'pending' },
-                          { id: 'end', label: '结束', nodeType: 'end', status: 'pending' }
+                          { id: 'start', label: '开始', nodeType: 'start', status: 'pending' as FlowNodeStatus },
+                          { id: 'llm', label: 'LLM处理', nodeType: 'llm', status: 'pending' as FlowNodeStatus },
+                          { id: 'end', label: '结束', nodeType: 'end', status: 'pending' as FlowNodeStatus }
                         ],
                         edges: [
                           { id: 'edge1', source: 'start', target: 'llm' },

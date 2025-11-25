@@ -98,6 +98,32 @@ class FlowBusinessHandler:
 					# 增加该节点的 chunk 计数
 					existing_node['chunk_count'] = existing_node.get('chunk_count', 0) + 1
 		
+		# 处理节点错误事件
+		if chunk.type == "node_error" and chunk.metadata:
+			node_id = chunk.metadata.get('node_id')
+			if node_id:
+				existing_node = next(
+					(node for node in self.collected_nodes if node['node_id'] == node_id),
+					None
+				)
+				if existing_node:
+					# 从 content 或 metadata 中获取错误信息
+					error_msg = chunk.content or chunk.metadata.get('error', '节点执行失败')
+					error_content = f"❌ 错误: {error_msg}"
+					existing_node['output'] = error_content
+					# 更新 node_metadata 标记为失败
+					if 'node_metadata' not in existing_node:
+						existing_node['node_metadata'] = {}
+					existing_node['node_metadata']['status'] = 'failed'
+					existing_node['node_metadata']['error'] = error_msg
+					logger.warning(f"❌ 节点 {node_id} 执行失败: {error_msg}")
+					
+					# 如果助手消息已经保存，立即更新数据库中的节点信息
+					if self.assistant_message_id and self.db:
+						self._update_node_info_in_db(node_id, error_content, existing_node.get('chunk_count', 0))
+				else:
+					logger.warning(f"⚠️ 节点 {node_id} 的 node_error 事件，但未找到已收集的节点信息")
+		
 		# 更新节点输出
 		if chunk.type == "node_complete" and chunk.metadata:
 			node_id = chunk.metadata.get('node_id')
@@ -109,6 +135,17 @@ class FlowBusinessHandler:
 				if existing_node:
 					# 从 metadata 中获取节点输出
 					node_output = chunk.metadata.get('output', '')
+					# 如果节点状态是失败，确保错误信息被保存
+					if chunk.metadata.get('status') == 'failed' or chunk.metadata.get('error'):
+						error_msg = chunk.metadata.get('error', node_output or '节点执行失败')
+						node_output = f"❌ 错误: {error_msg}"
+						# 更新 node_metadata 标记为失败
+						if 'node_metadata' not in existing_node:
+							existing_node['node_metadata'] = {}
+						existing_node['node_metadata']['status'] = 'failed'
+						existing_node['node_metadata']['error'] = error_msg
+						logger.warning(f"❌ 节点 {node_id} 执行失败: {error_msg}")
+					
 					if node_output:
 						existing_node['output'] = node_output
 						logger.info(f"✅ 更新节点 {node_id} 的输出，length={len(node_output)}, preview={repr(node_output[:100])}, chunk_count={existing_node.get('chunk_count', 0)}")

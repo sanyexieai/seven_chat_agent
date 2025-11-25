@@ -1401,12 +1401,14 @@ const ChatPage: React.FC = () => {
                     }
                     
                   } else if (data.type === 'flow_nodes_extend' && data.metadata?.nodes) {
-                    // 规划节点生成的节点扩展（添加到现有流程图，而不是替换）
+                    // 规划节点生成的节点扩展（支持追加或替换模式）
                     const generatedNodes = data.metadata.nodes || [];
                     const generatedEdges = data.metadata.edges || [];
                     const plannerNodeId = data.metadata.planner_node_id;
                     const plannerNextNodeId = data.metadata.planner_next_node_id; // 规划节点的原始下一个节点
                     const removePlannerEdge = data.metadata.remove_planner_edge || false; // 是否需要移除规划节点到原始下一个节点的边
+                    const replaceExistingNodes = data.metadata.replace_existing_nodes || false; // 是否替换现有节点（重新规划模式）
+                    const isRetry = data.metadata.is_retry || false; // 是否为重新规划
                     const flowName = data.metadata.flow_name || '规划生成的节点';
                     const nodeCount = data.metadata.node_count || 0;
                     
@@ -1414,6 +1416,8 @@ const ChatPage: React.FC = () => {
                       plannerNodeId,
                       plannerNextNodeId,
                       removePlannerEdge,
+                      replaceExistingNodes,
+                      isRetry,
                       nodeCount,
                       generatedNodes,
                       generatedEdges
@@ -1429,20 +1433,49 @@ const ChatPage: React.FC = () => {
                     
                     // 将新节点添加到现有流程图中
                     setFlowData(prev => {
-                      const existingNodeIds = new Set(prev.nodes.map((n: any) => n.id));
-                      const nodesToAdd = newNodes.filter((n: any) => !existingNodeIds.has(n.id));
+                      let updatedNodes: FlowNodeData[];
+                      let updatedEdges: Array<{ id: string; source: string; target: string }>;
+                      let nodesToAdd: FlowNodeData[]; // 定义在外部作用域，供后续使用
                       
-                      if (nodesToAdd.length === 0) {
-                        console.log('📋 所有节点已存在，跳过添加');
-                        return prev;
+                      if (replaceExistingNodes) {
+                        // 替换模式：移除规划节点生成的所有旧节点，只保留规划节点本身和开始/结束节点
+                        const preservedNodeIds = new Set(['start', 'end', plannerNodeId]);
+                        const nodesToKeep = prev.nodes.filter(n => preservedNodeIds.has(n.id));
+                        
+                        // 移除规划节点到原始下一个节点的边
+                        let edgesToKeep = prev.edges.filter(
+                          (e: any) => !(e.source === plannerNodeId && e.target === plannerNextNodeId)
+                        );
+                        
+                        // 移除所有连接到被替换节点的边
+                        const replacedNodeIds = new Set(newNodes.map(n => n.id));
+                        edgesToKeep = edgesToKeep.filter(
+                          (e: any) => !replacedNodeIds.has(e.source) && !replacedNodeIds.has(e.target)
+                        );
+                        
+                        // 合并保留的节点和新节点
+                        nodesToAdd = newNodes; // 替换模式下，所有新节点都是要添加的
+                        updatedNodes = applyPendingStatusesToNodes([...nodesToKeep, ...nodesToAdd]);
+                        updatedEdges = [...edgesToKeep];
+                        
+                        console.log(`📋 替换模式：移除旧节点，保留 ${nodesToKeep.length} 个节点，添加 ${nodesToAdd.length} 个新节点`);
+                      } else {
+                        // 追加模式：检查哪些节点需要添加
+                        const existingNodeIds = new Set(prev.nodes.map((n: any) => n.id));
+                        nodesToAdd = newNodes.filter((n: any) => !existingNodeIds.has(n.id));
+                        
+                        if (nodesToAdd.length === 0) {
+                          console.log('📋 所有节点已存在，跳过添加');
+                          return prev;
+                        }
+                        
+                        // 添加新节点
+                        updatedNodes = applyPendingStatusesToNodes([...prev.nodes, ...nodesToAdd]);
+                        updatedEdges = [...prev.edges];
                       }
                       
-                      // 添加新节点
-                      const updatedNodes = applyPendingStatusesToNodes([...prev.nodes, ...nodesToAdd]);
-                      
                       // 处理边：先移除规划节点到原始下一个节点的边（如果存在）
-                      let updatedEdges = [...prev.edges];
-                      if (removePlannerEdge && plannerNodeId && plannerNextNodeId) {
+                      if (removePlannerEdge && plannerNodeId && plannerNextNodeId && !replaceExistingNodes) {
                         updatedEdges = updatedEdges.filter(
                           (e: any) => !(e.source === plannerNodeId && e.target === plannerNextNodeId)
                         );

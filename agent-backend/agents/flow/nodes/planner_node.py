@@ -282,6 +282,31 @@ class PlannerNode(BaseFlowNode):
 			logger.error(f"规划节点 {self.id} 重新规划失败: {str(e)}")
 			return None
 	
+	def _find_last_node_id(
+		self,
+		nodes: List[Dict[str, Any]],
+		edges: List[Dict[str, Any]]
+	) -> Optional[str]:
+		"""寻找没有出边的最后一个节点"""
+		if not nodes:
+			return None
+		
+		node_ids = [node.get('id') for node in nodes if node.get('id')]
+		if not node_ids:
+			return None
+		
+		outgoing_nodes = set()
+		for edge in edges or []:
+			source = edge.get('source')
+			if source:
+				outgoing_nodes.add(source)
+		
+		for node_id in reversed(node_ids):
+			if node_id not in outgoing_nodes:
+				return node_id
+		
+		return node_ids[-1]
+	
 	async def _generate_flow_config(self, task: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 		"""使用 LLM 生成流程图配置"""
 		try:
@@ -945,7 +970,7 @@ class PlannerNode(BaseFlowNode):
 					if complete_chunk:
 						yield complete_chunk
 				
-				# 如果节点失败，记录错误信息
+				# 如果节点失败，记录错误信息并立即停止流程
 				if node_failed:
 					failed_nodes.append({
 						'node_id': current_node_id,
@@ -959,6 +984,11 @@ class PlannerNode(BaseFlowNode):
 					)
 					if failed_chunk:
 						yield failed_chunk
+					
+					# 一旦检测到失败，立即停止执行后续节点
+					logger.warning(f"规划节点 {self.id} 检测到节点 {current_node_id} 失败，立即停止流程执行")
+					current_node_id = None  # 停止执行
+					break  # 跳出循环，不再执行后续节点
 				
 				# 选择下一个节点
 				next_node_id = node.get_next_node_id(0)
@@ -972,12 +1002,45 @@ class PlannerNode(BaseFlowNode):
 					# 没有下一个节点，结束
 					current_node_id = None
 			
-			# 如果检测到失败节点，尝试重新规划
+			if not failed_nodes:
+				virtual_end_node = {
+					'id': 'end',
+					'type': 'end',
+					'nodeType': 'end',
+					'data': {
+						'label': '结束',
+						'nodeType': 'end'
+					}
+				}
+				virtual_end_edge = {
+					'id': f"edge_{last_node_id}_end" if last_node_id else "edge_virtual_end",
+					'source': last_node_id or (generated_nodes[0]['id'] if generated_nodes else 'unknown'),
+					'target': 'end',
+					'type': 'default'
+				}
+				logger.info(f"规划节点 {self.id} 添加虚拟结束节点，last_node_id={last_node_id}")
+				yield self._create_stream_chunk(
+					chunk_type="flow_nodes_extend",
+					content="",
+					agent_name=agent_name,
+					metadata={
+						'planner_node_id': self.id,
+						'planner_next_node_id': planner_next_node_id,
+						'remove_planner_edge': False,
+						'nodes': [virtual_end_node],
+						'edges': [virtual_end_edge],
+						'flow_name': '虚拟结束节点',
+						'node_count': 1,
+						'is_virtual_end': True
+					}
+				)
+			
+			# 如果检测到失败节点，立即停止流程并重新规划一条新线路
 			if failed_nodes:
-				logger.warning(f"规划节点 {self.id} 检测到 {len(failed_nodes)} 个失败节点，尝试重新规划")
+				logger.warning(f"规划节点 {self.id} 检测到 {len(failed_nodes)} 个失败节点，停止当前流程，重新规划新线路")
 				yield self._create_stream_chunk(
 					chunk_type="content",
-					content=f"\n⚠️ 检测到 {len(failed_nodes)} 个节点执行失败，正在重新规划...\n\n",
+					content=f"\n⚠️ 检测到节点执行失败，已停止当前流程，正在重新规划新线路...\n\n",
 					agent_name=agent_name
 				)
 				
@@ -994,11 +1057,20 @@ class PlannerNode(BaseFlowNode):
 					
 					yield self._create_stream_chunk(
 						chunk_type="content",
-						content=f"✅ 已重新生成 {node_count} 个节点：{flow_name}\n\n",
+						content=f"✅ 已重新生成 {node_count} 个节点的新线路：{flow_name}\n\n",
 						agent_name=agent_name
 					)
 					
-					# 发送节点扩展事件给前端
+					# 找到最后一个生成节点ID（用于连接虚拟结束节点）
+					last_retry_node_id = self._find_last_node_id(retry_nodes, retry_flow_config.get('edges', []))
+					
+					# 发送节点替换事件给前端（替换掉原来的节点，而不是追加）
+					display_retry_nodes, display_retry_edges = self._build_display_flow_with_virtual_end(
+						retry_nodes,
+						retry_flow_config.get('edges', []),
+						last_retry_node_id
+					)
+					
 					yield self._create_stream_chunk(
 						chunk_type="flow_nodes_extend",
 						content="",
@@ -1006,16 +1078,17 @@ class PlannerNode(BaseFlowNode):
 						metadata={
 							'planner_node_id': self.id,
 							'planner_next_node_id': planner_next_node_id,
-							'remove_planner_edge': False,  # 重新规划不需要移除边
-							'nodes': retry_nodes,
-							'edges': retry_flow_config.get('edges', []),
+							'remove_planner_edge': True,  # 移除规划节点到原始下一个节点的边
+							'replace_existing_nodes': True,  # 标记为替换模式，替换掉之前失败的节点
+							'nodes': display_retry_nodes,
+							'edges': display_retry_edges,
 							'flow_name': flow_name,
 							'node_count': node_count,
 							'is_retry': True  # 标记为重新规划
 						}
 					)
 					
-					# 执行重新规划的节点
+					# 执行重新规划的节点（递归调用，支持多次重试）
 					async for chunk in self._execute_generated_nodes_stream(
 						user_id, message, context, retry_nodes, 
 						retry_flow_config.get('edges', []), planner_next_node_id, agent_name

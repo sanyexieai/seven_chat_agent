@@ -399,16 +399,17 @@ class ReportTool(BaseTool):
         
         task = parameters.get("task", "")
         file_names = parameters.get("file_names", [])
-        model = parameters.get("model", "gpt-4.1")
         file_type = parameters.get("file_type", "markdown")
         output_path = parameters.get("output_path")  # 可选：指定输出路径
+        
+        # 过滤掉已废弃的 model 参数（如果存在）
+        # model 参数已移除，现在从环境变量 REPORT_MODEL 获取
         
         results = []
         async for chunk in report(
             task=task,
-            file_names=file_names,
-            model=model,
-            file_type=file_type
+            file_type=file_type,
+            file_names=file_names if file_names else None
         ):
             results.append(chunk)
         
@@ -511,11 +512,6 @@ class ReportTool(BaseTool):
                     "items": {"type": "string"},
                     "description": "要处理的文件名列表",
                     "default": []
-                },
-                "model": {
-                    "type": "string",
-                    "description": "使用的模型",
-                    "default": "gpt-4.1"
                 },
                 "file_type": {
                     "type": "string",

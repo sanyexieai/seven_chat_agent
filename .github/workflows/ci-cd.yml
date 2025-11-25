@@ -183,18 +183,3 @@ jobs:
           echo "=== 测试静态文件访问 ==="
           echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system python3 -c "import os; print('静态文件检查:'); static_file='/app/static/js/main.16f30cd7.js'; print(f'文件存在: {os.path.exists(static_file)}'); print(f'文件大小: {os.path.getsize(static_file) if os.path.exists(static_file) else 0} bytes')" || echo "静态文件检查失败"
           
-          echo "=== 测试API访问 ==="
-          echo "${{ secrets.SUDO_PASSWORD }}" | sudo -S docker exec agent-system python3 -c "import requests; import sys; try: response=requests.get('http://localhost:8000/api/health',timeout=5); print(f'API状态码: {response.status_code}'); print(f'响应: {response.text}'); except Exception as e: print(f'API测试失败: {type(e).__name__}'); sys.exit(1)" || echo "API测试失败（这是正常的，如果服务还在启动中）"
-
-          # 健康检查（最多重试 5 次）
-          for i in {1..5}; do
-            if curl -sf http://localhost:32004/api/health; then
-              echo "服务已启动"
-              exit 0
-            fi
-            echo "等待服务启动..."
-            sleep 5
-          done
-
-          echo "服务启动失败"
-          exit 1

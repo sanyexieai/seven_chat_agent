@@ -58,7 +58,7 @@ const { TabPane } = Tabs;
 const { Sider } = Layout;
 
 const AUTO_INFER_DEFAULT_SYSTEM_PROMPT =
-  '你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。必须输出 JSON，对每个必填字段给出合理值。';
+  '你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。必须输出 JSON，对每个必填字段给出合理值。注意：不要生成 \'model\' 参数，该参数已废弃，由系统自动管理。';
 const AUTO_INFER_DEFAULT_USER_PROMPT = [
   '工具名称：{tool_name}',
   '工具类型：{tool_type}',
@@ -69,7 +69,8 @@ const AUTO_INFER_DEFAULT_USER_PROMPT = [
   '用户输入：{message}',
   '如果需要上下文，可参考上一节点输出：{previous_output}',
   '',
-  '请输出 JSON，严格遵守 schema 格式。'
+  '请输出 JSON，严格遵守 schema 格式。',
+  '重要：不要包含 \'model\' 参数（如果 schema 中有，请忽略它）。'
 ].join('\n');
 
 const normalizeAutoInferPrompt = (value: string | undefined, fallback: string) =>

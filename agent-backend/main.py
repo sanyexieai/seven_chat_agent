@@ -1,3 +1,7 @@
+# 必须在所有其他导入之前修复 httpx.TimeoutError 兼容性问题
+# 导入 utils 包会自动应用兼容性补丁（通过 utils/__init__.py）
+import utils  # noqa: F401
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

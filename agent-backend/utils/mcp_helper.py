@@ -4,25 +4,10 @@ import json
 import logging
 from typing import Dict, List, Any, Optional
 
-# 修复 httpx.TimeoutError 兼容性问题
-try:
-    import httpx
-    # 在新版本的 httpx 中，TimeoutError 可能不存在
-    # 如果不存在，创建一个别名或使用其他异常类型
-    if not hasattr(httpx, 'TimeoutError'):
-        # 使用 TimeoutException 或 RequestError 作为替代
-        if hasattr(httpx, 'TimeoutException'):
-            httpx.TimeoutError = httpx.TimeoutException
-        elif hasattr(httpx, 'Timeout'):
-            httpx.TimeoutError = httpx.Timeout
-        else:
-            # 如果都不存在，创建一个占位符类
-            class TimeoutError(Exception):
-                pass
-            httpx.TimeoutError = TimeoutError
-except ImportError:
-    pass
+# 导入兼容性模块，确保 httpx.TimeoutError 存在
+from utils.httpx_compat import is_timeout_error
 
+# 现在可以安全地导入 langchain_mcp_adapters
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # 获取logger
@@ -281,32 +266,17 @@ class MCPHelper:
                     result = await target_tool(**kwargs)
                 
                 return result
-            except AttributeError as e:
-                # 处理 httpx.TimeoutError 属性不存在的问题
-                error_msg = str(e)
-                if "TimeoutError" in error_msg or "has no attribute 'TimeoutError'" in error_msg:
-                    # httpx 新版本中 TimeoutError 可能不存在，使用通用超时错误
-                    raise RuntimeError("搜索超时，请稍后重试")
-                else:
-                    raise e
             except Exception as e:
-                # 捕获所有异常，包括 httpx 相关的超时异常
+                # 使用兼容性函数判断是否为超时错误
+                if is_timeout_error(e):
+                    raise RuntimeError("搜索超时，请稍后重试")
+                
+                # 检查是否是属性错误（可能是 httpx.TimeoutError 不存在）
                 error_type = type(e).__name__
                 error_msg = str(e)
-                
-                # 检查是否是超时相关的错误
-                timeout_keywords = ["timeout", "Timeout", "timed out", "TimedOut"]
-                if any(keyword in error_msg or keyword in error_type for keyword in timeout_keywords):
-                    raise RuntimeError("搜索超时，请稍后重试")
-                
-                # 检查是否是 httpx 相关的属性错误（httpx.TimeoutError 不存在）
-                if "has no attribute" in error_msg and ("TimeoutError" in error_msg or "httpx" in error_msg.lower()):
+                if error_type == 'AttributeError' and "TimeoutError" in error_msg:
                     logger.warning(f"httpx 版本兼容性问题: {error_msg}")
-                    # 尝试修复：如果是 AttributeError 且与 httpx.TimeoutError 相关，转换为超时错误
-                    if "TimeoutError" in error_msg:
-                        raise RuntimeError("搜索超时，请稍后重试（httpx版本兼容性问题）")
-                    else:
-                        raise RuntimeError(f"搜索工具调用失败: {error_type} - {error_msg}")
+                    raise RuntimeError("搜索超时，请稍后重试（httpx版本兼容性问题）")
                 
                 # 其他异常直接抛出
                 raise e

@@ -94,17 +94,40 @@ class AutoParamNode(BaseFlowNode):
 		try:
 			from main import agent_manager
 			if not agent_manager or not agent_manager.tool_manager:
-				return self.config.get('tool_schema')
-			tool_manager = agent_manager.tool_manager
-			target_name = tool_name
-			if tool_type == 'mcp' and server and tool_name and not tool_name.startswith('mcp_'):
-				target_name = f"mcp_{server}_{tool_name}"
-			tool_obj = tool_manager.get_tool(target_name) if target_name else None
-			if tool_obj:
-				return tool_obj.get_parameters_schema()
+				schema = self.config.get('tool_schema')
+			else:
+				tool_manager = agent_manager.tool_manager
+				target_name = tool_name
+				if tool_type == 'mcp' and server and tool_name and not tool_name.startswith('mcp_'):
+					target_name = f"mcp_{server}_{tool_name}"
+				tool_obj = tool_manager.get_tool(target_name) if target_name else None
+				if tool_obj:
+					schema = tool_obj.get_parameters_schema()
+				else:
+					schema = self.config.get('tool_schema')
+			
+			# 过滤掉已废弃的参数（如 model）
+			if schema and isinstance(schema, dict):
+				schema = schema.copy()
+				# 从 properties 中移除 model 参数
+				if 'properties' in schema and isinstance(schema['properties'], dict):
+					schema['properties'] = {k: v for k, v in schema['properties'].items() if k != 'model'}
+				# 从 required 列表中移除 model
+				if 'required' in schema and isinstance(schema['required'], list):
+					schema['required'] = [r for r in schema['required'] if r != 'model']
+			
+			return schema
 		except Exception as exc:
 			logger.warning(f"自动推理节点 {self.id} 获取工具 schema 失败: {exc}")
-		return self.config.get('tool_schema')
+			schema = self.config.get('tool_schema')
+			# 即使出错也尝试过滤
+			if schema and isinstance(schema, dict):
+				schema = schema.copy()
+				if 'properties' in schema and isinstance(schema['properties'], dict):
+					schema['properties'] = {k: v for k, v in schema['properties'].items() if k != 'model'}
+				if 'required' in schema and isinstance(schema['required'], list):
+					schema['required'] = [r for r in schema['required'] if r != 'model']
+			return schema
 	
 	def _parse_params(self, text: str) -> Optional[Dict[str, Any]]:
 		if not text:
@@ -132,6 +155,7 @@ class AutoParamNode(BaseFlowNode):
 		return (
 			"你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。"
 			"必须输出 JSON，对每个必填字段给出合理值。"
+			"注意：不要生成 'model' 参数，该参数已废弃，由系统自动管理。"
 		)
 	
 	def _default_user_prompt(self) -> str:
@@ -143,6 +167,7 @@ class AutoParamNode(BaseFlowNode):
 			"用户输入：{message}\n"
 			"如果需要上下文，可参考上一节点输出：{previous_output}\n\n"
 			"请输出 JSON，严格遵守 schema 格式。"
+			"重要：不要包含 'model' 参数（如果 schema 中有，请忽略它）。"
 		)
 	
 	def _get_auto_param_key(self) -> str:

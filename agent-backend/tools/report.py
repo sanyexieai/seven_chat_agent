@@ -130,28 +130,40 @@ MARKDOWN_REPORT_PROMPT_TEMPLATE = Template("""
 @timer()
 async def report(
         task: str,
-        file_names: Optional[List[str]] = tuple(),
-        model: str = "gpt-4.1",
         file_type: Literal["markdown", "html", "ppt"] = "markdown",
+        file_names: Optional[List[str]] = None,
 ) -> AsyncGenerator:
+    """
+    生成报告
+    
+    Args:
+        task: 任务描述
+        file_type: 报告类型（markdown/html/ppt）
+        file_names: 文件列表（可选，如果不提供则从 flow_state 获取）
+    """
     report_factory = {
         "ppt": ppt_report,
         "markdown": markdown_report,
         "html": html_report,
     }
-    model = os.getenv("REPORT_MODEL", "gpt-4.1")
-    async for chunk in report_factory[file_type](task, file_names, model):
-        yield chunk
+    # 如果提供了 file_names，传递给内部函数
+    if file_names is not None:
+        async for chunk in report_factory[file_type](task, file_names):
+            yield chunk
+    else:
+        async for chunk in report_factory[file_type](task):
+            yield chunk
 
 
 @timer()
 async def ppt_report(
         task: str,
-        file_names: Optional[List[str]] = tuple(),
-        model: str = "gpt-4.1",
+        file_names: Optional[List[str]] = None,
         temperature: float = None,
         top_p: float = 0.6,
 ) -> AsyncGenerator:
+    if file_names is None:
+        file_names = []
     files = await download_all_files(file_names)
     flat_files = []
 
@@ -165,6 +177,7 @@ async def ppt_report(
         else:
             flat_files.append(f)
 
+    model = os.getenv("REPORT_MODEL", "gpt-4.1")
     truncate_flat_files = truncate_files(flat_files, max_tokens=int(LLMModelInfoFactory.get_context_length(model) * 0.8))
     prompt = Template(get_prompt("report")["ppt_prompt"]) \
         .render(task=task, files=truncate_flat_files, date=datetime.now().strftime("%Y-%m-%d"))
@@ -181,11 +194,12 @@ async def ppt_report(
 @timer()
 async def markdown_report(
         task,
-        file_names: Optional[List[str]] = tuple(),
-        model: str = "gpt-4.1",
+        file_names: Optional[List[str]] = None,
         temperature: float = 0,
         top_p: float = 0.9,
 ) -> AsyncGenerator:
+    if file_names is None:
+        file_names = []
     files = await download_all_files(file_names)
     flat_files = []
     for f in files:
@@ -195,6 +209,7 @@ async def markdown_report(
         else:
             flat_files.append(f)
 
+    model = os.getenv("REPORT_MODEL", "gpt-4.1")
     truncate_flat_files = truncate_files(flat_files, max_tokens=int(LLMModelInfoFactory.get_context_length(model) * 0.8))
 
     file_entries: List[Dict[str, str]] = []
@@ -308,11 +323,12 @@ async def markdown_report(
 @timer()
 async def html_report(
         task,
-        file_names: Optional[List[str]] = tuple(),
-        model: str = "gpt-4.1",
+        file_names: Optional[List[str]] = None,
         temperature: float = 0,
         top_p: float = 0.9,
 ) -> AsyncGenerator:
+    if file_names is None:
+        file_names = []
     files = await download_all_files(file_names)
     key_files = []
     flat_files = []
@@ -344,6 +360,7 @@ async def html_report(
                     "type": "txt",
                     "link": fpath
                 })
+    model = os.getenv("REPORT_MODEL", "gpt-4.1")
     discount = int(LLMModelInfoFactory.get_context_length(model) * 0.8)
     key_files = truncate_files(key_files, max_tokens=discount)
     flat_files = truncate_files(flat_files, max_tokens=discount - sum([len(f["content"]) for f in key_files]))

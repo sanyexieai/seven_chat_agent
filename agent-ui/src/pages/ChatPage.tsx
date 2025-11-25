@@ -1272,6 +1272,136 @@ const ChatPage: React.FC = () => {
                       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                     }
                     
+                  } else if (data.type === 'flow_nodes_extend' && data.metadata?.nodes) {
+                    // 规划节点生成的节点扩展（添加到现有流程图，而不是替换）
+                    const generatedNodes = data.metadata.nodes || [];
+                    const generatedEdges = data.metadata.edges || [];
+                    const plannerNodeId = data.metadata.planner_node_id;
+                    const plannerNextNodeId = data.metadata.planner_next_node_id; // 规划节点的原始下一个节点
+                    const removePlannerEdge = data.metadata.remove_planner_edge || false; // 是否需要移除规划节点到原始下一个节点的边
+                    const flowName = data.metadata.flow_name || '规划生成的节点';
+                    const nodeCount = data.metadata.node_count || 0;
+                    
+                    console.log('📋 收到规划节点生成的节点扩展:', {
+                      plannerNodeId,
+                      plannerNextNodeId,
+                      removePlannerEdge,
+                      nodeCount,
+                      generatedNodes,
+                      generatedEdges
+                    });
+                    
+                    // 将生成的节点转换为前端格式
+                    const newNodes = generatedNodes.map((node: any) => ({
+                      id: node.id,
+                      label: node.data?.label || node.data?.nodeType || '节点',
+                      nodeType: node.data?.nodeType || node.type || 'unknown',
+                      status: 'pending' as const
+                    }));
+                    
+                    // 将新节点添加到现有流程图中
+                    setFlowData(prev => {
+                      const existingNodeIds = new Set(prev.nodes.map((n: any) => n.id));
+                      const nodesToAdd = newNodes.filter((n: any) => !existingNodeIds.has(n.id));
+                      
+                      if (nodesToAdd.length === 0) {
+                        console.log('📋 所有节点已存在，跳过添加');
+                        return prev;
+                      }
+                      
+                      // 添加新节点
+                      const updatedNodes = [...prev.nodes, ...nodesToAdd];
+                      
+                      // 处理边：先移除规划节点到原始下一个节点的边（如果存在）
+                      let updatedEdges = [...prev.edges];
+                      if (removePlannerEdge && plannerNodeId && plannerNextNodeId) {
+                        updatedEdges = updatedEdges.filter(
+                          (e: any) => !(e.source === plannerNodeId && e.target === plannerNextNodeId)
+                        );
+                        console.log(`📋 移除规划节点 ${plannerNodeId} 到原始下一个节点 ${plannerNextNodeId} 的边`);
+                      }
+                      
+                      // 处理边：将新边添加到现有边中
+                      const existingEdgeIds = new Set(updatedEdges.map((e: any) => e.id));
+                      const newEdges = generatedEdges
+                        .filter((e: any) => !existingEdgeIds.has(e.id))
+                        .map((edge: any) => ({
+                          id: edge.id || `edge_${edge.source}_${edge.target}`,
+                          source: edge.source,
+                          target: edge.target,
+                          type: edge.type || 'default'
+                        }));
+                      
+                      // 如果规划节点存在，添加从规划节点到第一个新节点的边
+                      if (plannerNodeId && nodesToAdd.length > 0) {
+                        const firstNewNodeId = nodesToAdd[0].id;
+                        const plannerToFirstEdgeId = `edge_${plannerNodeId}_${firstNewNodeId}`;
+                        if (!existingEdgeIds.has(plannerToFirstEdgeId)) {
+                          newEdges.unshift({
+                            id: plannerToFirstEdgeId,
+                            source: plannerNodeId,
+                            target: firstNewNodeId,
+                            type: 'default'
+                          });
+                        }
+                      }
+                      
+                      // 找到最后一个生成节点（出度为0的节点，即没有连接到其他生成节点的节点）
+                      const generatedNodeIds = new Set(newNodes.map((n: any) => n.id));
+                      let lastGeneratedNodeId: string | null = null;
+                      
+                      // 检查每个生成节点是否有出边连接到其他生成节点
+                      for (const node of newNodes) {
+                        const hasOutgoingToGenerated = newEdges.some(
+                          (e: any) => e.source === node.id && generatedNodeIds.has(e.target)
+                        );
+                        if (!hasOutgoingToGenerated) {
+                          lastGeneratedNodeId = node.id;
+                          break;
+                        }
+                      }
+                      
+                      // 如果没有找到出度为0的节点，使用最后一个节点
+                      if (!lastGeneratedNodeId && newNodes.length > 0) {
+                        lastGeneratedNodeId = newNodes[newNodes.length - 1].id;
+                      }
+                      
+                      // 如果找到了最后一个生成节点，并且规划节点有下一个节点，添加从最后一个生成节点到规划节点下一个节点的边
+                      if (lastGeneratedNodeId && plannerNextNodeId) {
+                        const lastToNextEdgeId = `edge_${lastGeneratedNodeId}_${plannerNextNodeId}`;
+                        if (!existingEdgeIds.has(lastToNextEdgeId)) {
+                          newEdges.push({
+                            id: lastToNextEdgeId,
+                            source: lastGeneratedNodeId,
+                            target: plannerNextNodeId,
+                            type: 'default'
+                          });
+                          console.log(`📋 添加从最后一个生成节点 ${lastGeneratedNodeId} 到规划节点下一个节点 ${plannerNextNodeId} 的边`);
+                        }
+                      }
+                      
+                      updatedEdges = [...updatedEdges, ...newEdges];
+                      
+                      console.log('📋 扩展流程图:', {
+                        addedNodes: nodesToAdd.length,
+                        addedEdges: newEdges.length,
+                        removedPlannerEdge: removePlannerEdge,
+                        lastGeneratedNodeId,
+                        plannerNextNodeId,
+                        totalNodes: updatedNodes.length,
+                        totalEdges: updatedEdges.length
+                      });
+                      
+                      return {
+                        ...prev,
+                        nodes: updatedNodes,
+                        edges: updatedEdges
+                      };
+                    });
+                    
+                    // 显示提示信息
+                    fullContent += `\n\n📋 ${flowName}（${nodeCount} 个节点）已添加到流程图。\n\n`;
+                    
                   } else if (data.type === 'content' && data.content) {
                     // 内容块：需要关联到对应的节点
                     fullContent += data.content;

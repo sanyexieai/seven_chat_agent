@@ -373,6 +373,42 @@ const AutoInferNode = ({ data, id }: { data: any; id: string }) => (
   </div>
 );
 
+const PlannerNode = ({ data, id }: { data: any; id: string }) => (
+  <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#f6ffed', position: 'relative' }}>
+    <Handle type="target" position={Position.Top} />
+    <div style={{ textAlign: 'center' }}>
+      <BulbOutlined style={{ fontSize: '20px', color: '#52c41a' }} />
+      <div style={{ fontWeight: 'bold' }}>{data.label}</div>
+      <div style={{ fontSize: '12px', color: '#666' }}>规划节点</div>
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+    <Button
+      type="text"
+      size="small"
+      danger
+      icon={<DeleteOutlined />}
+      style={{
+        position: 'absolute',
+        top: '-8px',
+        right: '-8px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0',
+        borderRadius: '50%',
+        background: '#fff',
+        border: '1px solid #ff4d4f',
+        zIndex: 10
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (data.onDelete) {
+          data.onDelete(id);
+        }
+      }}
+    />
+  </div>
+);
+
 const InputNode = ({ data, id }: { data: any; id: string }) => (
   <div style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '8px', background: '#e6f7ff', position: 'relative' }}>
     <div style={{ textAlign: 'center' }}>
@@ -528,7 +564,8 @@ const nodeTypes: NodeTypes = {
   agent: AgentNode,
   action: ActionNode,
   knowledgeBase: KnowledgeBaseNode,
-  auto_infer: AutoInferNode
+  auto_infer: AutoInferNode,
+  planner: PlannerNode
 };
 
 const FlowEditorPage: React.FC = () => {
@@ -656,7 +693,9 @@ const FlowEditorPage: React.FC = () => {
       'end': 'end',
       'knowledgeBase': 'knowledge_base',
       'agent': 'agent',
-      'action': 'tool'
+      'action': 'tool',
+      'planner': 'planner',
+      'auto_infer': 'auto_param'
     };
 
     // 确保第一个节点是开始节点，最后一个节点是结束节点
@@ -963,6 +1002,7 @@ const FlowEditorPage: React.FC = () => {
             'knowledge_base': 'knowledgeBase',
             'agent': 'agent',
             'action': 'tool', // action 映射为 tool
+            'planner': 'planner',
             'auto_param': 'auto_infer'
           };
           
@@ -1314,6 +1354,7 @@ const FlowEditorPage: React.FC = () => {
       case 'router': return '路由节点';
       case 'composite': return '复合节点';
       case 'auto_infer': return '自动推理';
+      case 'planner': return '规划节点';
       default: return '节点';
     }
   };
@@ -1321,8 +1362,8 @@ const FlowEditorPage: React.FC = () => {
   const onNodeClick = async (event: React.MouseEvent, node: Node) => {
     setSelectedNode(node);
     
-    // 如果是LLM或自动推理节点，加载LLM配置列表
-    if (node.data.nodeType === 'llm' || node.data.nodeType === 'auto_infer') {
+    // 如果是LLM、自动推理或规划节点，加载LLM配置列表
+    if (node.data.nodeType === 'llm' || node.data.nodeType === 'auto_infer' || node.data.nodeType === 'planner') {
       try {
         setNodeLlmConfigsLoading(true);
         const configs = await fetchLlmConfigs();
@@ -1356,17 +1397,21 @@ const FlowEditorPage: React.FC = () => {
       agent_name: node.data.config?.agent_name || '',
       
       action: node.data.config?.action || '',
-      llm_config_id: (node.data.nodeType === 'llm' || node.data.nodeType === 'auto_infer') ? (node.data.config?.llm_config_id || undefined) : undefined,
+      llm_config_id: (node.data.nodeType === 'llm' || node.data.nodeType === 'auto_infer' || node.data.nodeType === 'planner') ? (node.data.config?.llm_config_id || undefined) : undefined,
       system_prompt: node.data.nodeType === 'llm'
         ? (node.data.config?.system_prompt || '')
         : node.data.nodeType === 'auto_infer'
           ? normalizeAutoInferPrompt(node.data.config?.system_prompt, AUTO_INFER_DEFAULT_SYSTEM_PROMPT)
-          : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
+          : node.data.nodeType === 'planner'
+            ? (node.data.config?.system_prompt || '')
+            : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
       user_prompt: node.data.nodeType === 'llm'
         ? (node.data.config?.user_prompt || '')
         : node.data.nodeType === 'auto_infer'
           ? normalizeAutoInferPrompt(node.data.config?.user_prompt, AUTO_INFER_DEFAULT_USER_PROMPT)
-          : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
+          : node.data.nodeType === 'planner'
+            ? (node.data.config?.user_prompt || '')
+            : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),
       save_as: node.data.nodeType === 'llm' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'tool' ? (node.data.config?.save_as || 'last_output') : (node.data.nodeType === 'judge' ? (node.data.config?.save_as || 'judge_result') : undefined)),
       tool_name: node.data.nodeType === 'tool' ? (node.data.config?.tool_name || 
         (node.data.config?.server && node.data.config?.tool 
@@ -1539,6 +1584,13 @@ const FlowEditorPage: React.FC = () => {
         if (typeof values.user_prompt !== 'undefined') config.user_prompt = values.user_prompt || '';
         if (typeof values.auto_param_key !== 'undefined') config.auto_param_key = values.auto_param_key || config.auto_param_key;
         if (typeof values.llm_config_id !== 'undefined') config.llm_config_id = values.llm_config_id || null;
+      } else if (selectedNode.data.nodeType === 'planner') {
+        // 规划节点配置
+        if (typeof values.llm_config_id !== 'undefined') {
+          config.llm_config_id = values.llm_config_id || null;
+        }
+        if (values.system_prompt !== undefined) config.system_prompt = values.system_prompt || '';
+        if (values.user_prompt !== undefined) config.user_prompt = values.user_prompt || '';
       }
       
       setNodes((nds) =>
@@ -1934,7 +1986,9 @@ const FlowEditorPage: React.FC = () => {
             'end': 'end',
             'knowledge_base': 'knowledgeBase',
             'agent': 'agent',
-            'action': 'tool' // action 映射为 tool
+            'action': 'tool', // action 映射为 tool
+            'planner': 'planner',
+            'auto_param': 'auto_infer'
           };
           
           let nodeType = node.data?.nodeType; // 优先使用保存的nodeType
@@ -2388,6 +2442,13 @@ const FlowEditorPage: React.FC = () => {
                   路由节点
                 </Button>
                 <Button
+                  icon={<BulbOutlined />}
+                  block
+                  onClick={() => addNode('planner', { x: 300, y: 400 })}
+                >
+                  规划节点
+                </Button>
+                <Button
                   icon={<div style={{ fontSize: '16px' }}>📦</div>}
                   block
                   onClick={() => addNode('composite', { x: 300, y: 450 })}
@@ -2617,6 +2678,55 @@ const FlowEditorPage: React.FC = () => {
             </>
           )}
           
+          {selectedNode?.data.nodeType === 'planner' && (
+            <>
+              <Form.Item 
+                name="llm_config_id" 
+                label="LLM配置" 
+                extra="选择此节点使用的LLM配置（可选，不选择则使用全局配置）"
+              >
+                <Select 
+                  placeholder="选择LLM配置（可选，默认使用全局配置）" 
+                  allowClear 
+                  loading={nodeLlmConfigsLoading}
+                  showSearch
+                  optionFilterProp="children"
+                  filterOption={(input, option) =>
+                    (option?.children as unknown as string)?.toLowerCase().includes(input.toLowerCase())
+                  }
+                >
+                  {nodeLlmConfigs.map((cfg: any) => (
+                    <Select.Option key={cfg.id} value={cfg.id}>
+                      <Space>
+                        {cfg.display_name || cfg.name}
+                        {cfg.provider && <Tag color="blue">{cfg.provider}</Tag>}
+                        {cfg.model_name && <Tag color="green">{cfg.model_name}</Tag>}
+                        {cfg.is_default && <Tag color="orange">默认</Tag>}
+                      </Space>
+                    </Select.Option>
+                  ))}
+                </Select>
+              </Form.Item>
+              <Form.Item name="system_prompt" label="系统提示词">
+                <Input.TextArea 
+                  rows={5} 
+                  placeholder="可选：自定义系统提示词，用于指导LLM生成流程图。如果不填写，将使用默认提示词。" 
+                />
+              </Form.Item>
+              <Form.Item name="user_prompt" label="用户提示词模板">
+                <Input.TextArea 
+                  rows={5} 
+                  placeholder="可选：自定义用户提示词模板，支持 {task}, {context}, {available_tools} 变量。如果不填写，将使用默认模板。" 
+                />
+              </Form.Item>
+              <div style={{ marginTop: 16, padding: 12, background: '#f5f5f5', borderRadius: 4 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  💡 规划节点会根据任务自动生成流程图并执行。生成的流程图包含节点（nodes）和连接（edges），会自动从开始节点执行到结束节点。
+                </Typography.Text>
+              </div>
+            </>
+          )}
+
           {selectedNode?.data.nodeType === 'auto_infer' && (
             <>
               <Form.Item 

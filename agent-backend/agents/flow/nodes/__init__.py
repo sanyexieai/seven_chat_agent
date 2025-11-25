@@ -6,6 +6,7 @@ from .auto_param_node import AutoParamNode
 from .start_node import StartNode
 from .end_node import EndNode
 from .router_node import RouterNode
+from .planner_node import PlannerNode
 
 __all__ = [
 	'LLMNode',
@@ -13,6 +14,7 @@ __all__ = [
 	'AutoParamNode',
 	'StartNode',
 	'EndNode',
-	'RouterNode'
+	'RouterNode',
+	'PlannerNode'
 ]
 

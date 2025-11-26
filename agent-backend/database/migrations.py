@@ -777,195 +777,18 @@ def create_default_agents():
                             }
                         },
                         {
-                            "id": "auto_1763970206195",
-                            "type": "auto_infer",
+                            "id": "node_1764068082424",
+                            "type": "planner",
                             "category": "processor",
-                            "implementation": "auto_infer",
+                            "implementation": "planner",
                             "position": {
-                                "x": 20.686306683447697,
-                                "y": -14.429027260433855
+                                "x": -326.98345782300225,
+                                "y": 112.89646375781717
                             },
                             "data": {
-                                "label": "自动推理",
-                                "nodeType": "auto_infer",
-                                "config": {
-                                    "target_tool_node_id": "node_1763970206195",
-                                    "auto_param_key": "auto_params_node_1763970206195",
-                                    "system_prompt": "你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。必须输出 JSON，对每个必填字段给出合理值。注意：不要生成 'model' 参数，该参数已废弃，由系统自动管理。",
-                                    "user_prompt": "工具名称：{tool_name}\n工具类型：{tool_type}\n服务器：{server}\n参数 Schema：\n{schema_json}\n\n用户输入：{message}\n如果需要上下文，可参考上一节点输出：{previous_output}\n\n请输出 JSON，严格遵守 schema 格式。\n重要：不要包含 'model' 参数（如果 schema 中有，请忽略它）。",
-                                    "tool_name": "mcp_1_search",
-                                    "tool_type": "mcp",
-                                    "server": "1"
-                                },
-                                "isStartNode": False,
-                                "isEndNode": False
-                            }
-                        },
-                        {
-                            "id": "node_1763970206195",
-                            "type": "tool",
-                            "category": "processor",
-                            "implementation": "tool",
-                            "position": {
-                                "x": 22.08963383873936,
-                                "y": 85.94638883910847
-                            },
-                            "data": {
-                                "label": "搜索节点",
-                                "nodeType": "tool",
-                                "config": {
-                                    "auto_infer_node_id": "auto_1763970206195",
-                                    "auto_param_key": "auto_params_node_1763970206195",
-                                    "tool_name": "mcp_1_search",
-                                    "server": "1",
-                                    "tool": "search",
-                                    "tool_type": "mcp",
-                                    "append_to_output": True,
-                                    "save_as": "last_output",
-                                    "params": {
-                                        "$defs": {
-                                            "ToolCall": {
-                                                "description": "Represents a request to call a tool.\n\nExample:\n\n    .. code-block:: python\n\n        {\n            \"name\": \"foo\",\n            \"args\": {\"a\": 1},\n            \"id\": \"123\"\n        }\n\n    This represents a request to call the tool named \"foo\" with arguments {\"a\": 1}\n    and an identifier of \"123\".",
-                                                "properties": {
-                                                    "name": {
-                                                        "title": "Name",
-                                                        "type": "string"
-                                                    },
-                                                    "args": {
-                                                        "additionalProperties": True,
-                                                        "title": "Args",
-                                                        "type": "object"
-                                                    },
-                                                    "id": {
-                                                        "anyOf": [
-                                                            {
-                                                                "type": "string"
-                                                            },
-                                                            {
-                                                                "type": "null"
-                                                            }
-                                                        ],
-                                                        "title": "Id"
-                                                    },
-                                                    "type": {
-                                                        "const": "tool_call",
-                                                        "title": "Type",
-                                                        "type": "string"
-                                                    }
-                                                },
-                                                "required": [
-                                                    "name",
-                                                    "args",
-                                                    "id"
-                                                ],
-                                                "title": "ToolCall",
-                                                "type": "object"
-                                            }
-                                        },
-                                        "anyOf": [
-                                            {
-                                                "type": "string"
-                                            },
-                                            {
-                                                "additionalProperties": True,
-                                                "type": "object"
-                                            },
-                                            {
-                                                "$ref": "#/$defs/ToolCall"
-                                            }
-                                        ],
-                                        "title": "search_input"
-                                    }
-                                },
-                                "isStartNode": False,
-                                "isEndNode": False
-                            }
-                        },
-                        {
-                            "id": "auto_1763974669275",
-                            "type": "auto_infer",
-                            "category": "processor",
-                            "implementation": "auto_infer",
-                            "position": {
-                                "x": 20.827888359741678,
-                                "y": 206.1630568498768
-                            },
-                            "data": {
-                                "label": "自动推理",
-                                "nodeType": "auto_infer",
-                                "config": {
-                                    "target_tool_node_id": "node_1763974669275",
-                                    "auto_param_key": "auto_params_node_1763974669275",
-                                    "system_prompt": "你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。必须输出 JSON，对每个必填字段给出合理值。注意：不要生成 'model' 参数，该参数已废弃，由系统自动管理。",
-                                    "user_prompt": "工具名称：{tool_name}\n工具类型：{tool_type}\n服务器：{server}\n参数 Schema：\n{schema_json}\n\n用户输入：{message}\n如果需要上下文，可参考上一节点输出：{previous_output}\n\n请输出 JSON，严格遵守 schema 格式。\n重要：不要包含 'model' 参数（如果 schema 中有，请忽略它）。",
-                                    "tool_name": "report",
-                                    "tool_type": "builtin"
-                                },
-                                "isStartNode": False,
-                                "isEndNode": False
-                            }
-                        },
-                        {
-                            "id": "node_1763974669275",
-                            "type": "tool",
-                            "category": "processor",
-                            "implementation": "tool",
-                            "position": {
-                                "x": 22.572823643540687,
-                                "y": 326.55529554545467
-                            },
-                            "data": {
-                                "label": "报告节点",
-                                "nodeType": "tool",
-                                "config": {
-                                    "auto_infer_node_id": "auto_1763974669275",
-                                    "auto_param_key": "auto_params_node_1763974669275",
-                                    "tool_name": "report",
-                                    "tool": "report",
-                                    "tool_type": "builtin",
-                                    "append_to_output": True,
-                                    "save_as": "last_output",
-                                    "params": {
-                                        "type": "object",
-                                        "properties": {
-                                            "task": {
-                                                "type": "string",
-                                                "description": "报告生成任务描述"
-                                            },
-                                            "file_names": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "string"
-                                                },
-                                                "description": "要处理的文件名列表",
-                                                "default": []
-                                            },
-                                            "model": {
-                                                "type": "string",
-                                                "description": "使用的模型",
-                                                "default": "gpt-4.1"
-                                            },
-                                            "file_type": {
-                                                "type": "string",
-                                                "enum": [
-                                                    "markdown",
-                                                    "html",
-                                                    "ppt"
-                                                ],
-                                                "description": "报告类型",
-                                                "default": "markdown"
-                                            },
-                                            "output_path": {
-                                                "type": "string",
-                                                "description": "输出文件路径（可选，如果不指定则自动生成）",
-                                                "default": None
-                                            }
-                                        },
-                                        "required": [
-                                            "task"
-                                        ]
-                                    }
-                                },
+                                "label": "规划节点",
+                                "nodeType": "planner",
+                                "config": {},
                                 "isStartNode": False,
                                 "isEndNode": False
                             }
@@ -990,32 +813,14 @@ def create_default_agents():
                     ],
                     "edges": [
                         {
-                            "id": "edge_auto_1763970206195_node_1763970206195_1763970206195",
-                            "source": "auto_1763970206195",
-                            "target": "node_1763970206195",
-                            "type": "default"
-                        },
-                        {
-                            "id": "edge_1763970225941",
+                            "id": "edge_1764068086456",
                             "source": "start_node",
-                            "target": "auto_1763970206195",
+                            "target": "node_1764068082424",
                             "type": "default"
                         },
                         {
-                            "id": "edge_auto_1763974669275_node_1763974669275_1763974669275",
-                            "source": "auto_1763974669275",
-                            "target": "node_1763974669275",
-                            "type": "default"
-                        },
-                        {
-                            "id": "edge_1763974672766",
-                            "source": "node_1763970206195",
-                            "target": "auto_1763974669275",
-                            "type": "default"
-                        },
-                        {
-                            "id": "edge_1763974682829",
-                            "source": "node_1763974669275",
+                            "id": "edge_1764068146739",
+                            "source": "node_1764068082424",
                             "target": "end_node",
                             "type": "default"
                         }

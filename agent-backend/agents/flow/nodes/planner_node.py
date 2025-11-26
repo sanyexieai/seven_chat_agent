@@ -78,6 +78,10 @@ PLANNER_USER_PROMPT_TEMPLATE = """请为以下任务生成一个流程图配置�
 
 {error_context}
 
+当前规划信息：
+- 规划节点ID：{planner_id}
+- 本次规划序号（0表示首次规划，>=1表示第几次重试）：{retry_index}
+
 可用工具列表：
 {available_tools}
 
@@ -87,6 +91,17 @@ PLANNER_USER_PROMPT_TEMPLATE = """请为以下任务生成一个流程图配置�
 3. **临时工具**：tool_type 为 "temporary"，tool_name 格式为 "temp_{{tool_name}}"，不需要 server 参数
 4. 使用工具时，**必须**在前面添加 auto_infer 节点来自动生成参数
 5. auto_infer 节点的 target_tool_node_id 应该指向对应的 tool 节点 ID
+
+ID 与连线规则（必须严格遵守）：
+1. 所有节点 id 必须使用格式：`{planner_id}_retry_{retry_index}_N`
+   - 其中 `N` 从 1 开始递增（1, 2, 3, ...），不要跳号也不要复用旧的 N
+2. 重新规划（retry_index >= 1）时：
+   - 本次生成的所有节点 id 必须是全新的，**不得与历史节点 id 相同**
+   - 禁止复用之前规划产生的任何节点 id
+3. edges 中的 source 和 target：
+   - 必须全部来自本次 `nodes` 数组中定义的 id
+   - **严禁**连接到历史节点或系统自动创建的节点（例如开始、结束或之前规划产生的节点）
+4. 不要在本次输出中包含任何 start / end 节点，也不要连接到这些节点
 
 请生成一个完整的流程图配置 JSON，确保：
 1. **不要包含 start 和 end 节点**（这些节点会在执行时自动添加）
@@ -189,6 +204,7 @@ class PlannerNode(BaseFlowNode):
 			logger.info(f"规划节点 {self.id} 临时清空 connections，原始连接: {original_connections}")
 			
 			# 发送节点扩展事件给前端（添加到现有流程图，而不是替换）
+			# 不再要求前端删除原有规划节点到下一个节点的边，只追加新子流程结构。
 			yield self._create_stream_chunk(
 				chunk_type="flow_nodes_extend",
 				content="",
@@ -196,7 +212,6 @@ class PlannerNode(BaseFlowNode):
 				metadata={
 					'planner_node_id': self.id,
 					'planner_next_node_id': planner_next_node_id,  # 规划节点的原始下一个节点
-					'remove_planner_edge': True,  # 标记需要移除规划节点到原始下一个节点的边
 					'nodes': generated_nodes,
 					'edges': flow_config.get('edges', []),
 					'flow_name': flow_name,
@@ -236,7 +251,8 @@ class PlannerNode(BaseFlowNode):
 		self, 
 		task: str, 
 		context: Dict[str, Any], 
-		error_summary: str
+		error_summary: str,
+		retry_index: int,
 	) -> Optional[Dict[str, Any]]:
 		"""生成包含错误信息的流程图配置（用于重新规划）"""
 		try:
@@ -265,7 +281,9 @@ class PlannerNode(BaseFlowNode):
 				task=task,
 				context=context_info,
 				error_context=error_context,
-				available_tools=available_tools
+				available_tools=available_tools,
+				planner_id=self.id,
+				retry_index=retry_index,
 			)
 			
 			# 调用 LLM
@@ -324,35 +342,13 @@ class PlannerNode(BaseFlowNode):
 		last_node_id: Optional[str]
 	) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
 		"""
-		根据生成的节点和边，构建用于前端展示的流程图，并在成功路径末尾添加虚拟结束节点。
+		根据生成的节点和边，构建用于前端展示的流程图。
 		
-		- 只负责结构组织和添加虚拟 end，不做失败判断（失败逻辑在调用方）
-		- 前端收到带 is_virtual_end 的扩展节点时，只在整条线路正确完成时展示 end
+		注意：为了保证所有不同路线最终汇聚到全局唯一的结束节点，
+		这里不再在子流程内部创建独立的虚拟 end 节点，仅透传原有 nodes/edges。
 		"""
 		display_nodes = list(nodes)
 		display_edges = list(edges)
-
-		# 构建虚拟结束节点及其边（仅在提供了 last_node_id 时添加）
-		if last_node_id:
-			virtual_end_node = {
-				'id': 'end',
-				'type': 'end',
-				'nodeType': 'end',
-				'data': {
-					'label': '结束',
-					'nodeType': 'end'
-				}
-			}
-			virtual_end_edge = {
-				'id': f"edge_{last_node_id}_end",
-				'source': last_node_id,
-				'target': 'end',
-				'type': 'default'
-			}
-
-			display_nodes = display_nodes + [virtual_end_node]
-			display_edges = display_edges + [virtual_end_edge]
-
 		return display_nodes, display_edges
 	
 	def _build_retry_flow_display_nodes(
@@ -368,11 +364,11 @@ class PlannerNode(BaseFlowNode):
 		- 在原规划节点下方新增一个虚拟的 retry 节点
 		- 从原规划节点连接到 retry 节点
 		- 从 retry 节点连接到新子流程的起始节点
-		- 在子流程末尾按需添加虚拟 end 节点
+		- 子流程末尾不再创建独立的虚拟 end 节点，而是统一连接到全局 end_node
 		
 		返回：display_nodes, display_edges, retry_node_id
 		"""
-		# 先在子流程内部添加虚拟结束节点
+		# 子流程内部仅使用自身的 nodes/edges，不再创建虚拟 end 节点
 		child_nodes, child_edges = self._build_display_flow_with_virtual_end(nodes, edges, last_node_id)
 
 		retry_node_id = f"{root_planner_id}_retry_{retry_index}"
@@ -416,6 +412,16 @@ class PlannerNode(BaseFlowNode):
 				'id': f"edge_{retry_node_id}_{start_node_id}",
 				'source': retry_node_id,
 				'target': start_node_id,
+				'type': 'default'
+			})
+
+		# 所有不同的路线最终统一连接到全局唯一的结束节点 end_node
+		global_end_id = "end_node"
+		if last_node_id:
+			display_edges.append({
+				'id': f"edge_{last_node_id}_{global_end_id}",
+				'source': last_node_id,
+				'target': global_end_id,
 				'type': 'default'
 			})
 
@@ -543,6 +549,14 @@ class PlannerNode(BaseFlowNode):
 				if isinstance(ref_id, str) and ref_id in id_map:
 					config[key] = id_map[ref_id]
 					changed = True
+
+			# 重试分支：为节点 label 添加“重试”后缀，方便前端区分不同线路
+			if retry_index > 0:
+				label = data.get("label") or data.get("nodeType") or n_copy.get("type") or old_id
+				retry_suffix = f"重试{retry_index}" if retry_index > 1 else "重试1"
+				data["label"] = f"{label} ({retry_suffix})"
+				changed = True
+
 			if changed:
 				data["config"] = config
 				n_copy["data"] = data
@@ -599,7 +613,9 @@ class PlannerNode(BaseFlowNode):
 				task=task,
 				context=context_info,
 				error_context="",  # 首次规划时没有错误信息
-				available_tools=available_tools
+				available_tools=available_tools,
+				planner_id=self.id,
+				retry_index=0,
 			)
 			
 			# 调用 LLM
@@ -1322,23 +1338,17 @@ class PlannerNode(BaseFlowNode):
 					# 没有下一个节点，结束
 					current_node_id = None
 			
-			if not failed_nodes:
-				virtual_end_node = {
-					'id': 'end',
-					'type': 'end',
-					'nodeType': 'end',
-					'data': {
-						'label': '结束',
-						'nodeType': 'end'
-					}
-				}
-				virtual_end_edge = {
-					'id': f"edge_{last_node_id}_end" if last_node_id else "edge_virtual_end",
-					'source': last_node_id or (generated_nodes[0]['id'] if generated_nodes else 'unknown'),
-					'target': 'end',
+			# 首次规划且全程无失败时，将子流程最后一个节点连到全局唯一的结束节点 end_node，
+			# 这样所有不同的路线（初始路线 + 各次重试）最终都会在前端汇聚到同一个结束节点。
+			if not failed_nodes and last_node_id and retry_index == 0:
+				global_end_id = "end_node"
+				end_edge = {
+					'id': f"edge_{last_node_id}_{global_end_id}",
+					'source': last_node_id,
+					'target': global_end_id,
 					'type': 'default'
 				}
-				logger.info(f"规划节点 {self.id} 添加虚拟结束节点，last_node_id={last_node_id}")
+				logger.info(f"规划节点 {self.id} 首次规划成功，连接 {last_node_id} -> {global_end_id} 作为统一结束节点")
 				yield self._create_stream_chunk(
 					chunk_type="flow_nodes_extend",
 					content="",
@@ -1347,11 +1357,11 @@ class PlannerNode(BaseFlowNode):
 						'planner_node_id': self.id,
 						'planner_next_node_id': planner_next_node_id,
 						'remove_planner_edge': False,
-						'nodes': [virtual_end_node],
-						'edges': [virtual_end_edge],
-						'flow_name': '虚拟结束节点',
-						'node_count': 1,
-						'is_virtual_end': True
+						'nodes': [],
+						'edges': [end_edge],
+						'flow_name': '连接到全局结束节点',
+						'node_count': 0,
+						'is_virtual_end': False
 					}
 				)
 			
@@ -1394,7 +1404,9 @@ class PlannerNode(BaseFlowNode):
 				error_summary = self._format_failed_nodes_summary(failed_nodes)
 				
 				# 重新生成流程图配置（包含错误信息）
-				retry_flow_config = await self._generate_flow_config_with_errors(message, context, error_summary)
+				retry_flow_config = await self._generate_flow_config_with_errors(
+					message, context, error_summary, next_retry_index
+				)
 				
 				if retry_flow_config:
 					flow_name = retry_flow_config.get('metadata', {}).get('name', '重新规划的流程图')

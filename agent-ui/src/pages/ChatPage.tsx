@@ -1485,15 +1485,21 @@ const ChatPage: React.FC = () => {
                       }
                       
                       // 处理边：将新边添加到现有边中
+                      // 注意：后端 / LLM 可能重复使用简单的边 ID（例如 "edge_1", "edge_2"...），
+                      // 如果直接用这些 ID，会被认为是“已存在的边”而被过滤掉，导致新子流程节点之间没有连线。
+                      // 这里统一使用基于 source/target 的 ID，避免不同子流程之间的边 ID 冲突。
                       const existingEdgeIds = new Set(updatedEdges.map((e: any) => e.id));
                       const newEdges = generatedEdges
-                        .filter((e: any) => !existingEdgeIds.has(e.id))
-                        .map((edge: any) => ({
-                          id: edge.id || `edge_${edge.source}_${edge.target}`,
-                          source: edge.source,
-                          target: edge.target,
-                          type: edge.type || 'default'
-                        }));
+                        .map((edge: any) => {
+                          const edgeId = `edge_${edge.source}_${edge.target}`;
+                          return {
+                            id: edgeId,
+                            source: edge.source,
+                            target: edge.target,
+                            type: edge.type || 'default'
+                          };
+                        })
+                        .filter((e: any) => !existingEdgeIds.has(e.id));
                       
                       // 如果是 retry 模式，plannerNodeId 是原始规划节点，retryPlannerNodeId 是虚拟重规划节点：
                       // - 原始规划节点到 retry 节点的边已经在后端提供的 generatedEdges 中

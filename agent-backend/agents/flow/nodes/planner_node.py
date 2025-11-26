@@ -98,10 +98,13 @@ ID 与连线规则（必须严格遵守）：
 2. 重新规划（retry_index >= 1）时：
    - 本次生成的所有节点 id 必须是全新的，**不得与历史节点 id 相同**
    - 禁止复用之前规划产生的任何节点 id
-3. edges 中的 source 和 target：
-   - 必须全部来自本次 `nodes` 数组中定义的 id
-   - **严禁**连接到历史节点或系统自动创建的节点（例如开始、结束或之前规划产生的节点）
-4. 不要在本次输出中包含任何 start / end 节点，也不要连接到这些节点
+3. 所有边（edges）也必须由你显式生成，且满足以下要求：
+   - 每条边对象必须包含：`id`, `source`, `target`, `type`
+   - `source` 和 `target` 必须全部来自本次 `nodes` 数组中定义的 id
+   - 边的 id 必须使用格式：`edge_{{source}}_{{target}}`（例如：`edge_{{planner_id}}_retry_{{retry_index}}_1_{{planner_id}}_retry_{{retry_index}}_2`）
+   - 禁止省略 `edges`，也不要依赖系统自动补全连线
+4. **严禁**在 edges 中连接到历史节点或系统自动创建的节点（例如开始、结束或之前规划产生的节点）
+5. 不要在本次输出中包含任何 start / end 节点，也不要连接到这些节点
 
 请生成一个完整的流程图配置 JSON，确保：
 1. **不要包含 start 和 end 节点**（这些节点会在执行时自动添加）
@@ -368,7 +371,8 @@ class PlannerNode(BaseFlowNode):
 		
 		返回：display_nodes, display_edges, retry_node_id
 		"""
-		# 子流程内部仅使用自身的 nodes/edges，不再创建虚拟 end 节点
+		# 子流程内部仅使用自身的 nodes/edges，不再创建虚拟 end 节点，也不做硬编码兜底补边，
+		# 以避免后端“猜测”业务逻辑；连线情况完全由 LLM 输出和前端展示逻辑决定。
 		child_nodes, child_edges = self._build_display_flow_with_virtual_end(nodes, edges, last_node_id)
 
 		retry_node_id = f"{root_planner_id}_retry_{retry_index}"
@@ -386,7 +390,7 @@ class PlannerNode(BaseFlowNode):
 
 		# 计算子流程起始节点（入度为 0 的节点）
 		node_ids = [n.get('id') for n in nodes if n.get('id')]
-		target_ids = {e.get('target') for e in edges or [] if e.get('target')}
+		target_ids = {e.get('target') for e in child_edges or [] if e.get('target')}
 		start_node_id: Optional[str] = None
 		for nid in node_ids:
 			if nid not in target_ids:
@@ -580,8 +584,15 @@ class PlannerNode(BaseFlowNode):
 
 		# 兜底：如果子图内部仍然有“断链”，按节点顺序补一条链式边，保证重试子图连成一条路
 		if new_nodes:
-			existing_pairs = {(e["source"], e["target"]) for e in new_edges}
-			ordered_ids = [n["id"] for n in new_nodes]
+			# 使用 get 安全读取，忽略缺少 source/target 的异常边，避免 KeyError('source')
+			existing_pairs = set()
+			for e in new_edges:
+				src_e = e.get("source")
+				tgt_e = e.get("target")
+				if src_e and tgt_e:
+					existing_pairs.add((src_e, tgt_e))
+
+			ordered_ids = [n["id"] for n in new_nodes if n.get("id")]
 			for i in range(len(ordered_ids) - 1):
 				src_id = ordered_ids[i]
 				tgt_id = ordered_ids[i + 1]
@@ -640,7 +651,8 @@ class PlannerNode(BaseFlowNode):
 			
 			return flow_config
 		except Exception as e:
-			logger.error(f"规划节点 {self.id} 生成流程图配置失败: {str(e)}")
+			# 打印完整堆栈，方便定位例如 KeyError('source') 这类内部结构错误
+			logger.error(f"规划节点 {self.id} 生成流程图配置失败: {str(e)}", exc_info=True)
 			return None
 	
 	def _parse_flow_config(self, text: str) -> Optional[Dict[str, Any]]:

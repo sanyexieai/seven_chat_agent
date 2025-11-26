@@ -205,6 +205,7 @@ class MCPTool(Base):
     output_schema = Column(JSON, nullable=True)  # 输出schema
     examples = Column(JSON, nullable=True)  # 示例
     tool_schema = Column(JSON, nullable=True)  # 工具schema（兼容性）
+    score = Column(Float, default=3.0)  # 工具评分：范围[1,5]，默认取中间值3.0
     container_type = Column(String(50), nullable=True, default="none")  # 容器类型：browser, file, none
     container_config = Column(JSON, nullable=True)  # 容器配置
     is_active = Column(Boolean, default=True)
@@ -231,6 +232,7 @@ class TemporaryTool(Base):
     container_config = Column(JSON, nullable=True)  # 容器配置
     is_active = Column(Boolean, default=True)
     is_temporary = Column(Boolean, default=True)  # 是否为临时工具
+    score = Column(Float, default=3.0)  # 工具评分：范围[1,5]，默认取中间值3.0
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -245,6 +247,7 @@ class ToolConfig(Base):
     tool_type = Column(String(50), nullable=False)  # 工具类型：builtin, mcp, temporary
     container_type = Column(String(50), nullable=True, default="none")  # 容器类型：browser, file, none
     container_config = Column(JSON, nullable=True)  # 容器配置
+    score = Column(Float, default=3.0)  # 工具评分（用于内置工具，范围[1,5]，默认3.0）
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

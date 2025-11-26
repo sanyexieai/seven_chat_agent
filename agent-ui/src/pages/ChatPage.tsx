@@ -1409,6 +1409,8 @@ const ChatPage: React.FC = () => {
                     const removePlannerEdge = data.metadata.remove_planner_edge || false; // 是否需要移除规划节点到原始下一个节点的边
                     const replaceExistingNodes = data.metadata.replace_existing_nodes || false; // 是否替换现有节点（重新规划模式）
                     const isRetry = data.metadata.is_retry || false; // 是否为重新规划
+                    const rootPlannerNodeId = data.metadata.root_planner_node_id || plannerNodeId;
+                    const retryPlannerNodeId = data.metadata.retry_planner_node_id || null;
                     const flowName = data.metadata.flow_name || '规划生成的节点';
                     const nodeCount = data.metadata.node_count || 0;
                     
@@ -1493,8 +1495,10 @@ const ChatPage: React.FC = () => {
                           type: edge.type || 'default'
                         }));
                       
-                      // 如果规划节点存在，添加从规划节点到第一个新节点的边
-                      if (plannerNodeId && nodesToAdd.length > 0) {
+                      // 如果是 retry 模式，plannerNodeId 是原始规划节点，retryPlannerNodeId 是虚拟重规划节点：
+                      // - 原始规划节点到 retry 节点的边已经在后端提供的 generatedEdges 中
+                      // - 这里只在非 retry 模式下补一条 planner -> 第一个新节点的边，保持旧行为
+                      if (!isRetry && plannerNodeId && nodesToAdd.length > 0) {
                         const firstNewNodeId = nodesToAdd[0].id;
                         const plannerToFirstEdgeId = `edge_${plannerNodeId}_${firstNewNodeId}`;
                         if (!existingEdgeIds.has(plannerToFirstEdgeId)) {
@@ -1528,7 +1532,9 @@ const ChatPage: React.FC = () => {
                       }
                       
                       // 如果找到了最后一个生成节点，并且规划节点有下一个节点，添加从最后一个生成节点到规划节点下一个节点的边
-                      if (lastGeneratedNodeId && plannerNextNodeId) {
+                      // 注意：对于重新规划出来的节点（isRetry=true），不再与原有路线相连，
+                      // 只允许在初始规划时补这条边，避免新旧两条路线纠缠在一起。
+                      if (!isRetry && lastGeneratedNodeId && plannerNextNodeId) {
                         const lastToNextEdgeId = `edge_${lastGeneratedNodeId}_${plannerNextNodeId}`;
                         if (!existingEdgeIds.has(lastToNextEdgeId)) {
                           newEdges.push({

@@ -41,6 +41,7 @@ interface Tool {
   type: 'builtin' | 'mcp' | 'temporary';
   container_type?: string;  // 容器类型
   container_config?: any;   // 容器配置
+  score?: number;           // 工具评分（持久化后从后端返回）
 }
 
 interface TemporaryTool {
@@ -421,6 +422,17 @@ const ToolsPage: React.FC = () => {
       dataIndex: 'category',
       key: 'category',
       width: 100,
+    },
+    {
+      title: '评分',
+      dataIndex: 'score',
+      key: 'score',
+      width: 100,
+      render: (score?: number) => (
+        <Tag color={score && score >= 3 ? 'green' : score && score >= 1.5 ? 'blue' : 'red'}>
+          {score !== undefined ? score.toFixed(2) : '—'}
+        </Tag>
+      ),
     },
     {
       title: '绑定容器',

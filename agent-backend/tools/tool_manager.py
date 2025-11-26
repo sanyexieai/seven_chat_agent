@@ -6,8 +6,10 @@ from tools.file_tools import FileReaderTool, FileWriterTool
 from tools.builtin_tools import get_builtin_tools
 from utils.log_helper import get_logger
 from database.database import get_db, SessionLocal
-from models.database_models import MCPTool, TemporaryTool
+from models.database_models import MCPTool, TemporaryTool, ToolConfig
 from agents.agent_manager import AgentManager
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 # 获取logger实例
 logger = get_logger("tool_manager")
@@ -172,11 +174,12 @@ class TemporaryToolWrapper(BaseTool):
 
 class ToolManager:
     """工具管理器 - 支持内置工具、MCP工具和临时工具"""
-    
+
     def __init__(self):
         self.tools: Dict[str, BaseTool] = {}
         self.tool_categories: Dict[str, List[str]] = {}
         self.tool_types: Dict[str, str] = {}  # 工具名称 -> 工具类型 (builtin, mcp, temporary)
+        self.tool_scores: Dict[str, float] = {}  # 工具名称 -> 评分，默认 1.0，失败时降低
         self.agent_manager: Optional[AgentManager] = None
         
     def set_agent_manager(self, agent_manager: AgentManager):
@@ -201,6 +204,9 @@ class ToolManager:
         
         # 按类别组织工具
         self._organize_tools_by_category()
+
+        # 从数据库加载已有评分（如果有），覆盖默认评分
+        self._load_tool_scores_from_db()
         
         logger.info(f"工具管理器初始化完成，共 {len(self.tools)} 个工具")
     
@@ -219,7 +225,17 @@ class ToolManager:
         try:
             db = SessionLocal()
             try:
-                mcp_tools = db.query(MCPTool).filter(MCPTool.is_active == True).all()
+                try:
+                    mcp_tools = db.query(MCPTool).filter(MCPTool.is_active == True).all()
+                except OperationalError as e:
+                    # 自动迁移：为 mcp_tools 表添加 score 字段（如果不存在）
+                    msg = str(e)
+                    if "no such column" in msg and "mcp_tools.score" in msg:
+                        logger.warning("检测到 mcp_tools.score 缺失，尝试自动迁移添加 score 字段")
+                        self._auto_migrate_score_columns()
+                        mcp_tools = db.query(MCPTool).filter(MCPTool.is_active == True).all()
+                    else:
+                        raise
                 for mcp_tool in mcp_tools:
                     tool = MCPToolWrapper(mcp_tool, self.agent_manager)
                     self.register_tool(tool, tool_type="mcp")
@@ -234,7 +250,17 @@ class ToolManager:
         try:
             db = SessionLocal()
             try:
-                temp_tools = db.query(TemporaryTool).filter(TemporaryTool.is_active == True).all()
+                try:
+                    temp_tools = db.query(TemporaryTool).filter(TemporaryTool.is_active == True).all()
+                except OperationalError as e:
+                    # 自动迁移：为 temporary_tools 表添加 score 字段（如果不存在）
+                    msg = str(e)
+                    if "no such column" in msg and "temporary_tools.score" in msg:
+                        logger.warning("检测到 temporary_tools.score 缺失，尝试自动迁移添加 score 字段")
+                        self._auto_migrate_score_columns()
+                        temp_tools = db.query(TemporaryTool).filter(TemporaryTool.is_active == True).all()
+                    else:
+                        raise
                 for temp_tool in temp_tools:
                     tool = TemporaryToolWrapper(temp_tool)
                     self.register_tool(tool, tool_type="temporary")
@@ -275,6 +301,9 @@ class ToolManager:
         """注册工具"""
         self.tools[tool.name] = tool
         self.tool_types[tool.name] = tool_type
+        # 初始化工具评分（默认 3.0，取区间[1,5]的中间值），如果已有评分则保留
+        if tool.name not in self.tool_scores:
+            self.tool_scores[tool.name] = 3.0
         logger.info(f"注册工具: {tool.name} (类型: {tool_type})")
     
     def unregister_tool(self, tool_name: str):
@@ -293,16 +322,19 @@ class ToolManager:
         for tool_name, tool in self.tools.items():
             if tool_type and self.tool_types.get(tool_name) != tool_type:
                 continue
-            tool_info = tool.get_info()
+            score = self.tool_scores.get(tool_name, 1.0)
             tools_list.append({
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.get_parameters_schema(),
                 "category": self._get_tool_category(tool.name),
                 "type": self.tool_types.get(tool_name, "unknown"),
+                "score": score,
                 "container_type": tool.get_container_type(),  # 容器类型
                 "container_config": tool.get_container_config()  # 容器配置
             })
+        # 按评分从高到低排序，规划节点会优先看到高评分工具
+        tools_list.sort(key=lambda t: t.get("score", 1.0), reverse=True)
         return tools_list
     
     def get_tools_by_type(self, tool_type: str) -> List[Dict[str, Any]]:
@@ -338,10 +370,93 @@ class ToolManager:
         try:
             result = await tool.execute_with_validation(parameters)
             logger.info(f"工具 {tool_name} 执行成功")
+            # 成功时略微提高评分
+            self._update_tool_score(tool_name, success=True)
             return result
         except Exception as e:
             logger.error(f"工具 {tool_name} 执行失败: {str(e)}")
+            # 失败时降低评分
+            self._update_tool_score(tool_name, success=False)
             raise
+	
+    def _update_tool_score(self, tool_name: str, success: bool):
+        """根据执行结果更新工具评分"""
+        if tool_name not in self.tool_scores:
+            # 不存在时从中间值 3.0 开始
+            self.tool_scores[tool_name] = 3.0
+        
+        score = self.tool_scores[tool_name]
+        if success:
+            # 成功轻微加分，向上缓慢收敛
+            score += 0.1
+        else:
+            # 失败重扣分
+            score -= 0.5
+        
+        # 限制评分范围 [1.0, 5.0]
+        score = max(1.0, min(5.0, score))
+        self.tool_scores[tool_name] = score
+        logger.info(f"工具 {tool_name} 新评分: {score:.2f} (success={success})")
+
+    def _auto_migrate_score_columns(self) -> None:
+        """
+        自动为工具相关表添加 score 字段（仅在检测到列缺失时调用）。
+        主要针对 SQLite，避免因为手工没跑迁移脚本导致启动报错。
+        """
+        try:
+            db = SessionLocal()
+            conn = db.connection()
+            dialect = conn.dialect.name
+
+            def has_column_sqlite(table: str, column: str) -> bool:
+                result = conn.execute(text(f"PRAGMA table_info({table})"))
+                columns = [row[1] for row in result.fetchall()]
+                return column in columns
+
+            if dialect == "sqlite":
+                # mcp_tools.score
+                if not has_column_sqlite("mcp_tools", "score"):
+                    conn.execute(
+                        text(
+                            """
+                            ALTER TABLE mcp_tools
+                            ADD COLUMN score REAL DEFAULT 3.0
+                            """
+                        )
+                    )
+                    logger.info("自动迁移: 已为 mcp_tools 表添加 score 字段")
+                # temporary_tools.score
+                if not has_column_sqlite("temporary_tools", "score"):
+                    conn.execute(
+                        text(
+                            """
+                            ALTER TABLE temporary_tools
+                            ADD COLUMN score REAL DEFAULT 3.0
+                            """
+                        )
+                    )
+                    logger.info("自动迁移: 已为 temporary_tools 表添加 score 字段")
+                # tool_configs.score
+                if not has_column_sqlite("tool_configs", "score"):
+                    conn.execute(
+                        text(
+                            """
+                            ALTER TABLE tool_configs
+                            ADD COLUMN score REAL DEFAULT 3.0
+                            """
+                        )
+                    )
+                    logger.info("自动迁移: 已为 tool_configs 表添加 score 字段")
+                db.commit()
+            else:
+                logger.warning(f"当前数据库方言为 {dialect}，暂不自动迁移 score 字段，请手动执行迁移脚本")
+        except Exception as e:
+            logger.warning(f"自动迁移工具评分字段失败: {str(e)}")
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
     
     async def execute_tools_chain(self, tool_chain: List[Dict[str, Any]]) -> List[Any]:
         """执行工具链"""
@@ -437,6 +552,7 @@ class ToolManager:
         logger.info("重新加载工具...")
         self.tools.clear()
         self.tool_types.clear()
+        self.tool_scores.clear()
         await self.initialize()
     
     async def reload_mcp_tools(self):
@@ -450,6 +566,8 @@ class ToolManager:
                 del self.tool_types[name]
         # 重新注册MCP工具
         await self._register_mcp_tools()
+        # 重新加载评分
+        self._load_tool_scores_from_db()
     
     async def reload_temporary_tools(self):
         """重新加载临时工具"""
@@ -461,4 +579,32 @@ class ToolManager:
                 del self.tools[name]
                 del self.tool_types[name]
         # 重新注册临时工具
-        await self._register_temporary_tools() 
+        await self._register_temporary_tools()
+        # 重新加载评分
+        self._load_tool_scores_from_db()
+
+    def _load_tool_scores_from_db(self):
+        """从数据库加载工具评分，覆盖内存中的默认评分"""
+        try:
+            db = SessionLocal()
+            # MCP 工具评分
+            mcp_tools = db.query(MCPTool).all()
+            for t in mcp_tools:
+                if t.score is not None:
+                    tool_name = f"mcp_{t.server_id}_{t.name}"
+                    self.tool_scores[tool_name] = float(t.score)
+            # 临时工具评分
+            temp_tools = db.query(TemporaryTool).all()
+            for t in temp_tools:
+                if t.score is not None:
+                    tool_name = f"temp_{t.name}"
+                    self.tool_scores[tool_name] = float(t.score)
+            # 内置工具评分（ToolConfig）
+            builtin_configs = db.query(ToolConfig).filter(ToolConfig.tool_type == "builtin").all()
+            for cfg in builtin_configs:
+                if cfg.score is not None:
+                    self.tool_scores[cfg.tool_name] = float(cfg.score)
+            db.close()
+            logger.info(f"从数据库加载工具评分完成，数量: {len(self.tool_scores)}")
+        except Exception as e:
+            logger.warning(f"从数据库加载工具评分失败: {str(e)}")

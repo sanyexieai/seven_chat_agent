@@ -1,5 +1,6 @@
 """规划节点实现：根据任务自动生成流程图并执行"""
-from typing import Dict, Any, AsyncGenerator, Optional, List
+from typing import Dict, Any, AsyncGenerator, Optional, List, Tuple
+from collections import defaultdict
 import json
 import re
 
@@ -101,6 +102,8 @@ PLANNER_USER_PROMPT_TEMPLATE = """请为以下任务生成一个流程图配置�
 **重要**：edges 数组应该按照节点顺序连接，例如：
 - 如果有3个节点 [node1, node2, node3]，edges 应该是 [{{"source": "node1", "target": "node2"}}, {{"source": "node2", "target": "node3"}}]
 - 不能有多个节点指向同一个节点，也不能有一个节点指向多个节点
+- 所有 edges 的 source/target 必须来自本次 nodes 数组中定义的 id，**禁止连接到历史节点或系统自动创建的节点**（例如开始、结束或之前规划产生的节点）
+- 当上文中包含错误信息（说明这是重新规划）时：本次生成的所有节点 id **必须是全新的，不得与历史节点 id 重复**，不要复用之前的节点 id
 
 只输出 JSON 配置，不要包含任何其他文字。"""
 
@@ -202,7 +205,10 @@ class PlannerNode(BaseFlowNode):
 			)
 			
 			# 2. 执行生成的节点（流式）
-			async for chunk in self._execute_generated_nodes_stream(user_id, message, context, generated_nodes, flow_config.get('edges', []), planner_next_node_id, agent_name):
+			async for chunk in self._execute_generated_nodes_stream(
+				user_id, message, context, generated_nodes,
+				flow_config.get('edges', []), planner_next_node_id, agent_name
+			):
 				yield chunk
 				
 		except Exception as e:
@@ -275,7 +281,11 @@ class PlannerNode(BaseFlowNode):
 			flow_config = self._parse_flow_config(response)
 			
 			if flow_config:
-				logger.info(f"规划节点 {self.id} 重新规划成功，包含 {len(flow_config.get('nodes', []))} 个节点")
+				# 为重新规划得到的流程图也做一次参数推理节点兜底处理
+				flow_config = self._ensure_auto_infer_edges(flow_config)
+				logger.info(
+					f"规划节点 {self.id} 重新规划成功，包含 {len(flow_config.get('nodes', []))} 个节点"
+				)
 			
 			return flow_config
 		except Exception as e:
@@ -306,6 +316,272 @@ class PlannerNode(BaseFlowNode):
 				return node_id
 		
 		return node_ids[-1]
+	
+	def _build_display_flow_with_virtual_end(
+		self,
+		nodes: List[Dict[str, Any]],
+		edges: List[Dict[str, Any]],
+		last_node_id: Optional[str]
+	) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+		"""
+		根据生成的节点和边，构建用于前端展示的流程图，并在成功路径末尾添加虚拟结束节点。
+		
+		- 只负责结构组织和添加虚拟 end，不做失败判断（失败逻辑在调用方）
+		- 前端收到带 is_virtual_end 的扩展节点时，只在整条线路正确完成时展示 end
+		"""
+		display_nodes = list(nodes)
+		display_edges = list(edges)
+
+		# 构建虚拟结束节点及其边（仅在提供了 last_node_id 时添加）
+		if last_node_id:
+			virtual_end_node = {
+				'id': 'end',
+				'type': 'end',
+				'nodeType': 'end',
+				'data': {
+					'label': '结束',
+					'nodeType': 'end'
+				}
+			}
+			virtual_end_edge = {
+				'id': f"edge_{last_node_id}_end",
+				'source': last_node_id,
+				'target': 'end',
+				'type': 'default'
+			}
+
+			display_nodes = display_nodes + [virtual_end_node]
+			display_edges = display_edges + [virtual_end_edge]
+
+		return display_nodes, display_edges
+	
+	def _build_retry_flow_display_nodes(
+		self,
+		root_planner_id: str,
+		retry_index: int,
+		nodes: List[Dict[str, Any]],
+		edges: List[Dict[str, Any]],
+		last_node_id: Optional[str]
+	) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], str]:
+		"""
+		构建“重新规划节点 + 新子流程”的展示结构：
+		- 在原规划节点下方新增一个虚拟的 retry 节点
+		- 从原规划节点连接到 retry 节点
+		- 从 retry 节点连接到新子流程的起始节点
+		- 在子流程末尾按需添加虚拟 end 节点
+		
+		返回：display_nodes, display_edges, retry_node_id
+		"""
+		# 先在子流程内部添加虚拟结束节点
+		child_nodes, child_edges = self._build_display_flow_with_virtual_end(nodes, edges, last_node_id)
+
+		retry_node_id = f"{root_planner_id}_retry_{retry_index}"
+		retry_label = "重新规划" if retry_index == 1 else f"重新规划 {retry_index} 次"
+
+		retry_node = {
+			'id': retry_node_id,
+			'type': 'planner_retry',
+			'nodeType': 'planner_retry',
+			'data': {
+				'label': retry_label,
+				'nodeType': 'planner_retry'
+			}
+		}
+
+		# 计算子流程起始节点（入度为 0 的节点）
+		node_ids = [n.get('id') for n in nodes if n.get('id')]
+		target_ids = {e.get('target') for e in edges or [] if e.get('target')}
+		start_node_id: Optional[str] = None
+		for nid in node_ids:
+			if nid not in target_ids:
+				start_node_id = nid
+				break
+		if not start_node_id and node_ids:
+			start_node_id = node_ids[0]
+
+		display_nodes = [retry_node] + child_nodes
+		display_edges = list(child_edges)
+
+		# 从原规划节点连接到 retry 节点（保证 retry 节点不是孤儿节点）
+		display_edges.append({
+			'id': f"edge_{root_planner_id}_{retry_node_id}",
+			'source': root_planner_id,
+			'target': retry_node_id,
+			'type': 'default'
+		})
+
+		# 从 retry 节点连接到新子流程起始节点（保证子流程与 retry 相连）
+		if start_node_id:
+			display_edges.append({
+				'id': f"edge_{retry_node_id}_{start_node_id}",
+				'source': retry_node_id,
+				'target': start_node_id,
+				'type': 'default'
+			})
+
+		return display_nodes, display_edges, retry_node_id
+	
+	def _ensure_auto_infer_edges(self, flow_config: Dict[str, Any]) -> Dict[str, Any]:
+		"""
+		后端兜底：保证参数推理节点（auto_infer）至少有一条出边指向目标工具节点，
+		否则将其从流程图中移除，避免在前端出现完全没有上下文的孤立节点。
+		"""
+		if not flow_config:
+			return flow_config
+		
+		nodes = flow_config.get("nodes", []) or []
+		edges = flow_config.get("edges", []) or []
+		
+		# 方便查找节点与边
+		node_map: Dict[str, Dict[str, Any]] = {}
+		for n in nodes:
+			nid = n.get("id")
+			if nid:
+				node_map[nid] = n
+		
+		outgoing_by_source: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+		for e in edges:
+			src = e.get("source")
+			if src:
+				outgoing_by_source[src].append(e)
+		
+		new_edges = list(edges)
+		nodes_to_keep: List[Dict[str, Any]] = []
+		
+		for n in nodes:
+			nid = n.get("id")
+			if not nid:
+				continue
+			
+			# 判断是否是 auto_infer 节点
+			raw_type = (n.get("type") or "").lower()
+			data_node_type = (n.get("data", {}).get("nodeType") or "").lower()
+			is_auto_infer = ("auto_infer" in raw_type) or ("auto_infer" in data_node_type)
+			
+			if not is_auto_infer:
+				nodes_to_keep.append(n)
+				continue
+			
+			# 已经有出边则认为不是孤立的（至少连接到别的节点）
+			has_outgoing = nid in outgoing_by_source and len(outgoing_by_source[nid]) > 0
+			
+			if not has_outgoing:
+				# 尝试从 config 中读取目标工具节点 ID，并补一条出边
+				config = n.get("data", {}).get("config", {}) or {}
+				target_id = (
+					config.get("target_tool_node_id")
+					or config.get("targetNodeId")
+					or config.get("target_tool_id")
+				)
+				
+				if target_id and target_id in node_map:
+					edge_id = f"edge_{nid}_{target_id}"
+					new_edge = {
+						"id": edge_id,
+						"source": nid,
+						"target": target_id,
+						"type": "default",
+					}
+					new_edges.append(new_edge)
+					outgoing_by_source[nid].append(new_edge)
+					has_outgoing = True
+					logger.info(
+						f"规划节点 {self.id} 为参数推理节点 {nid} 自动补充出边 -> {target_id}，避免孤立"
+					)
+			
+			# 如果最终仍然没有任何出边，则认为是“无法正确挂载的孤儿节点”，直接丢弃
+			if has_outgoing:
+				nodes_to_keep.append(n)
+			else:
+				logger.warning(
+					f"规划节点 {self.id} 检测到孤立参数推理节点 {nid}，且无法确定目标工具节点，已从流程图中移除"
+				)
+		
+		flow_config["nodes"] = nodes_to_keep
+		flow_config["edges"] = new_edges
+		return flow_config
+
+	def _namespace_flow_nodes_for_retry(
+		self,
+		flow_config: Dict[str, Any],
+		retry_index: int
+	) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+		"""
+		为重新规划出来的节点生成独立的 ID 命名空间：
+		- 每个节点 ID 加上前缀: {planner_id}_retry_{retry_index}_原ID
+		- 同时修正 edges 中的 source/target
+		- 修正节点 config 中引用其它节点 ID 的字段（如 target_tool_node_id）
+		
+		这样新路线上的节点与老路线完全独立，不会复用之前的 node_id。
+		"""
+		nodes = flow_config.get("nodes", []) or []
+		edges = flow_config.get("edges", []) or []
+
+		id_map: Dict[str, str] = {}
+		for n in nodes:
+			old_id = n.get("id")
+			if not old_id:
+				continue
+			new_id = f"{self.id}_retry_{retry_index}_{old_id}"
+			id_map[old_id] = new_id
+
+		# 重写节点 ID 以及 config 中的目标节点引用
+		new_nodes: List[Dict[str, Any]] = []
+		for n in nodes:
+			old_id = n.get("id")
+			if not old_id:
+				continue
+			n_copy = json.loads(json.dumps(n))  # 深拷贝以避免修改原配置
+			n_copy["id"] = id_map.get(old_id, old_id)
+
+			# 修正 data.config 中可能引用其它节点 ID 的字段
+			data = n_copy.get("data") or {}
+			config = data.get("config") or {}
+			changed = False
+			for key in ("target_tool_node_id", "targetNodeId", "target_tool_id"):
+				ref_id = config.get(key)
+				if isinstance(ref_id, str) and ref_id in id_map:
+					config[key] = id_map[ref_id]
+					changed = True
+			if changed:
+				data["config"] = config
+				n_copy["data"] = data
+
+			new_nodes.append(n_copy)
+
+		# 重写边的 source/target，仅保留“完全在本子图内部”的边
+		new_edges: List[Dict[str, Any]] = []
+		for e in edges:
+			e_copy = dict(e)
+			src = e_copy.get("source")
+			tgt = e_copy.get("target")
+			# 只保留 source 和 target 都属于当前重试子图节点的边，丢弃指向老节点的边
+			if src not in id_map or tgt not in id_map:
+				continue
+			e_copy["source"] = id_map[src]
+			e_copy["target"] = id_map[tgt]
+			# 为避免与旧路线的边 ID 冲突，重试子流程的每条边都使用基于新 source/target 的唯一 ID
+			e_copy["id"] = f"edge_{e_copy.get('source')}_{e_copy.get('target')}"
+			new_edges.append(e_copy)
+
+		# 兜底：如果子图内部仍然有“断链”，按节点顺序补一条链式边，保证重试子图连成一条路
+		if new_nodes:
+			existing_pairs = {(e["source"], e["target"]) for e in new_edges}
+			ordered_ids = [n["id"] for n in new_nodes]
+			for i in range(len(ordered_ids) - 1):
+				src_id = ordered_ids[i]
+				tgt_id = ordered_ids[i + 1]
+				if (src_id, tgt_id) not in existing_pairs:
+					edge_id = f"edge_{src_id}_{tgt_id}"
+					new_edges.append({
+						"id": edge_id,
+						"source": src_id,
+						"target": tgt_id,
+						"type": "default",
+					})
+					existing_pairs.add((src_id, tgt_id))
+
+		return new_nodes, new_edges
 	
 	async def _generate_flow_config(self, task: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 		"""使用 LLM 生成流程图配置"""
@@ -339,8 +615,12 @@ class PlannerNode(BaseFlowNode):
 			flow_config = self._parse_flow_config(response)
 			
 			if flow_config:
+				# 先为参数推理节点兜底补边 / 过滤孤立 auto_infer 节点
+				flow_config = self._ensure_auto_infer_edges(flow_config)
 				self._generated_flow_config = flow_config
-				logger.info(f"规划节点 {self.id} 成功生成流程图配置，包含 {len(flow_config.get('nodes', []))} 个节点")
+				logger.info(
+					f"规划节点 {self.id} 成功生成流程图配置，包含 {len(flow_config.get('nodes', []))} 个节点"
+				)
 			
 			return flow_config
 		except Exception as e:
@@ -586,7 +866,13 @@ class PlannerNode(BaseFlowNode):
 		return config
 	
 	async def _get_available_tools(self) -> str:
-		"""获取系统内所有可用工具列表（包括内置工具、MCP工具、临时工具）"""
+		"""获取系统内所有可用工具列表（包括内置工具、MCP工具、临时工具）
+		
+		规则：
+		- ToolManager 先按评分从高到低排序
+		- 这里再按 (type, category) 分组，**每组只保留评分最高的一个工具**
+		  也就是说：多个功能相近（同一类型+同一类别）的工具时，只暴露评分最高的那个给规划 LLM，避免低分工具被选择。
+		"""
 		try:
 			from main import agent_manager
 			if not agent_manager or not agent_manager.tool_manager:
@@ -594,42 +880,67 @@ class PlannerNode(BaseFlowNode):
 				return "暂无可用工具"
 			
 			tool_manager = agent_manager.tool_manager
-			# 获取所有可用工具（包括内置、MCP、临时工具）
-			tools = tool_manager.get_available_tools()
+			# 获取所有可用工具（包括内置、MCP、临时工具），已按评分从高到低排序
+			all_tools = tool_manager.get_available_tools()
 			
-			if not tools:
+			if not all_tools:
 				logger.warning("未获取到任何工具")
 				return "暂无可用工具"
 			
-			logger.info(f"规划节点获取到 {len(tools)} 个可用工具")
+			# 按 (type, category) 分组，只保留每组评分最高的一个
+			grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+			for t in all_tools:
+				t_type = t.get("type", "unknown")
+				t_category = t.get("category", "utility")
+				grouped[(t_type, t_category)].append(t)
 			
-			# 按类型分组工具
-			tools_by_type = {}
-			for tool_info in tools:
+			filtered_tools: List[Dict[str, Any]] = []
+			for (t_type, t_category), group in grouped.items():
+				# group 已经是整体排序之后的切片，但为稳妥再局部排序一次
+				group_sorted = sorted(group, key=lambda x: x.get("score", 1.0), reverse=True)
+				best_tool = group_sorted[0]
+				filtered_tools.append(best_tool)
+				if len(group_sorted) > 1:
+					removed_names = [g.get("name", "unknown") for g in group_sorted[1:]]
+					logger.info(
+						f"规划节点按 (type={t_type}, category={t_category}) 分组，只保留评分最高工具 "
+						f"{best_tool.get('name')} (score={best_tool.get('score')})，"
+						f"过滤掉同组其它工具: {removed_names}"
+					)
+			
+			logger.info(
+				f"规划节点获取到 {len(all_tools)} 个原始工具，按功能分组后保留 {len(filtered_tools)} 个代表工具"
+			)
+			
+			# 按类型分组工具（基于过滤后的列表）
+			tools_by_type: Dict[str, List[Dict[str, Any]]] = {}
+			for tool_info in filtered_tools:
 				tool_type = tool_info.get('type', 'unknown')
 				if tool_type not in tools_by_type:
 					tools_by_type[tool_type] = []
 				tools_by_type[tool_type].append(tool_info)
 			
 			# 格式化工具信息
-			tool_sections = []
+			tool_sections: List[str] = []
 			
-			# 内置工具
+			# 内置工具（每个功能类别只保留一个代表工具，按评分从高到低展示）
 			if 'builtin' in tools_by_type:
-				tool_sections.append("## 内置工具：")
-				for tool_info in tools_by_type['builtin']:
+				tool_sections.append("## 内置工具（每个功能类别只保留评分最高的一个，按评分从高到低排序）：")
+				for tool_info in sorted(tools_by_type['builtin'], key=lambda x: x.get('score', 1.0), reverse=True):
 					tool_name = tool_info.get('name', 'unknown')
 					tool_desc = tool_info.get('description', '无描述')
 					params = tool_info.get('parameters', {})
 					params_desc = self._format_parameters_schema(params)
-					tool_sections.append(f"- **{tool_name}**: {tool_desc}")
+					score = tool_info.get('score', 1.0)
+					category = tool_info.get('category', 'utility')
+					tool_sections.append(f"- **{tool_name}** (类别: {category}, 评分: {score:.2f}): {tool_desc}")
 					if params_desc:
 						tool_sections.append(f"  参数: {params_desc}")
 			
-			# MCP工具（按服务器分组）
-			mcp_tools = [t for t in tools if t.get('type') == 'mcp']
+			# MCP工具（每个服务器+类别只保留评分最高的一个，在每个服务器内按评分从高到低展示）
+			mcp_tools = [t for t in filtered_tools if t.get('type') == 'mcp']
 			if mcp_tools:
-				tool_sections.append("\n## MCP工具：")
+				tool_sections.append("\n## MCP工具（按评分从高到低排序，优先选择高评分工具）：")
 				# 按服务器分组
 				tools_by_server = {}
 				for tool_info in mcp_tools:
@@ -644,30 +955,35 @@ class PlannerNode(BaseFlowNode):
 							tools_by_server[server_name].append(tool_info)
 				
 				for server_name, server_tools in tools_by_server.items():
+					# 每个服务器内按评分排序
+					server_tools_sorted = sorted(server_tools, key=lambda t: t.get('score', 1.0), reverse=True)
 					tool_sections.append(f"\n### 服务器 {server_name}：")
-					for tool_info in server_tools:
+					for tool_info in server_tools_sorted:
 						tool_name = tool_info.get('name', 'unknown')
 						tool_desc = tool_info.get('description', '无描述')
 						params = tool_info.get('parameters', {})
 						params_desc = self._format_parameters_schema(params)
+						score = tool_info.get('score', 1.0)
 						# 提取实际工具名（去掉 mcp_{server}_ 前缀）
 						actual_tool_name = tool_name.split('_', 2)[-1] if '_' in tool_name else tool_name
-						tool_sections.append(f"- **{actual_tool_name}** (工具名: {tool_name}): {tool_desc}")
+						tool_sections.append(f"- **{actual_tool_name}** (工具名: {tool_name}, 评分: {score:.2f}): {tool_desc}")
 						if params_desc:
 							tool_sections.append(f"  参数: {params_desc}")
 						tool_sections.append(f"  服务器: {server_name}")
 			
-			# 临时工具
+			# 临时工具（同样按评分从高到低排序）
 			if 'temporary' in tools_by_type:
-				tool_sections.append("\n## 临时工具：")
-				for tool_info in tools_by_type['temporary']:
+				tool_sections.append("\n## 临时工具（按评分从高到低排序，优先选择高评分工具）：")
+				sorted_temp_tools = sorted(tools_by_type['temporary'], key=lambda t: t.get('score', 1.0), reverse=True)
+				for tool_info in sorted_temp_tools:
 					tool_name = tool_info.get('name', 'unknown')
 					tool_desc = tool_info.get('description', '无描述')
 					params = tool_info.get('parameters', {})
 					params_desc = self._format_parameters_schema(params)
+					score = tool_info.get('score', 1.0)
 					# 提取实际工具名（去掉 temp_ 前缀）
 					actual_tool_name = tool_name.replace('temp_', '') if tool_name.startswith('temp_') else tool_name
-					tool_sections.append(f"- **{actual_tool_name}** (工具名: {tool_name}): {tool_desc}")
+					tool_sections.append(f"- **{actual_tool_name}** (工具名: {tool_name}, 评分: {score:.2f}): {tool_desc}")
 					if params_desc:
 						tool_sections.append(f"  参数: {params_desc}")
 			
@@ -781,7 +1097,8 @@ class PlannerNode(BaseFlowNode):
 		generated_nodes: List[Dict[str, Any]],
 		generated_edges: List[Dict[str, Any]],
 		planner_next_node_id: Optional[str] = None,
-		agent_name: str = None
+		agent_name: str = None,
+		retry_index: int = 0
 	) -> AsyncGenerator[StreamChunk, None]:
 		"""执行生成的节点（流式）"""
 		if not generated_nodes:
@@ -853,7 +1170,9 @@ class PlannerNode(BaseFlowNode):
 					last_node_id = list(engine._node_map.keys())[-1]
 			
 			# 将最后一个生成节点连接到规划节点的原始下一个节点
-			if last_node_id and planner_next_node_id:
+			# 注意：这里仅用于首轮规划，重新规划时我们不再从新路线连回原来的下一个节点，
+			# 以保证新旧两条路线在图结构上完全独立。
+			if last_node_id and planner_next_node_id and retry_index == 0:
 				last_node = engine._node_map.get(last_node_id)
 				if last_node:
 					last_node.add_connection(planner_next_node_id)
@@ -993,7 +1312,8 @@ class PlannerNode(BaseFlowNode):
 				# 选择下一个节点
 				next_node_id = node.get_next_node_id(0)
 				# 如果下一个节点是规划节点的原始下一个节点，结束执行（让 FlowEngine 继续执行）
-				if next_node_id == planner_next_node_id:
+				# 对于重试场景（retry_index > 0），新子流程不再连回原路线，直接在本子流程内终止。
+				if retry_index == 0 and next_node_id == planner_next_node_id:
 					logger.info(f"规划节点 {self.id} 生成的节点执行完成，将继续执行规划节点的下一个节点 {planner_next_node_id}")
 					current_node_id = None
 				elif next_node_id and next_node_id in engine._node_map:
@@ -1035,13 +1355,39 @@ class PlannerNode(BaseFlowNode):
 					}
 				)
 			
-			# 如果检测到失败节点，立即停止流程并重新规划一条新线路
+			# 如果检测到失败节点，立即停止流程，并在规划节点下新增“重新规划”子节点挂载新子流程
 			if failed_nodes:
 				logger.warning(f"规划节点 {self.id} 检测到 {len(failed_nodes)} 个失败节点，停止当前流程，重新规划新线路")
+
+				# 计算本次重试的虚拟规划节点ID和标签（用于前端和左侧聊天节点）
+				next_retry_index = retry_index + 1
+				retry_planner_node_id = f"{self.id}_retry_{next_retry_index}"
+				retry_label = "重新规划" if next_retry_index == 1 else f"重新规划 {next_retry_index} 次"
+
+				# 为“重新规划”创建一个单独的节点（左侧聊天中的新节点）
+				yield self._create_stream_chunk(
+					chunk_type="node_start",
+					content=f"🔁 {retry_label}：准备重新规划新的子流程...\n",
+					agent_name=agent_name,
+					metadata={
+						"node_id": retry_planner_node_id,
+						"node_type": "planner_retry",
+						"node_name": self.name,
+						"node_label": retry_label,
+					},
+				)
+
+				# 将失败说明也归入这个“重新规划”节点
 				yield self._create_stream_chunk(
 					chunk_type="content",
 					content=f"\n⚠️ 检测到节点执行失败，已停止当前流程，正在重新规划新线路...\n\n",
-					agent_name=agent_name
+					agent_name=agent_name,
+					metadata={
+						"node_id": retry_planner_node_id,
+						"node_type": "planner_retry",
+						"node_name": self.name,
+						"node_label": retry_label,
+					},
 				)
 				
 				# 收集错误信息
@@ -1054,18 +1400,27 @@ class PlannerNode(BaseFlowNode):
 					flow_name = retry_flow_config.get('metadata', {}).get('name', '重新规划的流程图')
 					retry_nodes = retry_flow_config.get('nodes', [])
 					node_count = len(retry_nodes)
-					
+
+					# 将“重新生成新线路”的说明文本也归入重新规划节点
 					yield self._create_stream_chunk(
 						chunk_type="content",
 						content=f"✅ 已重新生成 {node_count} 个节点的新线路：{flow_name}\n\n",
-						agent_name=agent_name
+						agent_name=agent_name,
+						metadata={
+							"node_id": retry_planner_node_id,
+							"node_type": "planner_retry",
+							"node_name": self.name,
+							"node_label": retry_label,
+						},
 					)
-					
+
 					# 找到最后一个生成节点ID（用于连接虚拟结束节点）
 					last_retry_node_id = self._find_last_node_id(retry_nodes, retry_flow_config.get('edges', []))
 					
-					# 发送节点替换事件给前端（替换掉原来的节点，而不是追加）
-					display_retry_nodes, display_retry_edges = self._build_display_flow_with_virtual_end(
+					# 生成“重新规划节点 + 新子流程”展示结构
+					display_retry_nodes, display_retry_edges, retry_planner_node_id = self._build_retry_flow_display_nodes(
+						self.id,
+						next_retry_index,
 						retry_nodes,
 						retry_flow_config.get('edges', []),
 						last_retry_node_id
@@ -1076,22 +1431,41 @@ class PlannerNode(BaseFlowNode):
 						content="",
 						agent_name=agent_name,
 						metadata={
-							'planner_node_id': self.id,
+							'planner_node_id': self.id,                 # 原始规划节点ID（用于从原规划节点连到 retry 节点）
 							'planner_next_node_id': planner_next_node_id,
-							'remove_planner_edge': True,  # 移除规划节点到原始下一个节点的边
-							'replace_existing_nodes': True,  # 标记为替换模式，替换掉之前失败的节点
+							'remove_planner_edge': False,               # 不移除原有连接，保留失败路径
+							'replace_existing_nodes': False,           # 追加模式，保留旧节点
 							'nodes': display_retry_nodes,
 							'edges': display_retry_edges,
 							'flow_name': flow_name,
-							'node_count': node_count,
-							'is_retry': True  # 标记为重新规划
+							'node_count': len(display_retry_nodes),
+							'is_retry': True,                          # 标记为重新规划
+							'root_planner_node_id': self.id,
+							'retry_planner_node_id': retry_planner_node_id,
+							'retry_index': next_retry_index
 						}
+					)
+
+					# 标记“重新规划”节点完成，让左侧聊天中的该节点状态为已完成
+					retry_output_summary = f"{retry_label}：已重新生成 {node_count} 个节点的新线路：{flow_name}"
+					yield self._create_stream_chunk(
+						chunk_type="node_complete",
+						content=f"✅ {retry_label} 完成，共生成 {node_count} 个节点的新子流程",
+						agent_name=agent_name,
+						metadata={
+							"node_id": retry_planner_node_id,
+							"node_type": "planner_retry",
+							"node_name": self.name,
+							"node_label": retry_label,
+							"status": "completed",
+							"output": retry_output_summary,
+						},
 					)
 					
 					# 执行重新规划的节点（递归调用，支持多次重试）
 					async for chunk in self._execute_generated_nodes_stream(
 						user_id, message, context, retry_nodes, 
-						retry_flow_config.get('edges', []), planner_next_node_id, agent_name
+						retry_flow_config.get('edges', []), planner_next_node_id, agent_name, next_retry_index
 					):
 						yield chunk
 				else:

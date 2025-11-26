@@ -1350,31 +1350,33 @@ class PlannerNode(BaseFlowNode):
 					# 没有下一个节点，结束
 					current_node_id = None
 			
-			# 首次规划且全程无失败时，将子流程最后一个节点连到全局唯一的结束节点 end_node，
-			# 这样所有不同的路线（初始路线 + 各次重试）最终都会在前端汇聚到同一个结束节点。
-			if not failed_nodes and last_node_id and retry_index == 0:
+			# 全程无失败时，显式触发全局结束节点的执行事件，
+			# 让前端看到统一的 end_node 被标记为已执行（绿色完成状态）。
+			if not failed_nodes:
 				global_end_id = "end_node"
-				end_edge = {
-					'id': f"edge_{last_node_id}_{global_end_id}",
-					'source': last_node_id,
-					'target': global_end_id,
-					'type': 'default'
-				}
-				logger.info(f"规划节点 {self.id} 首次规划成功，连接 {last_node_id} -> {global_end_id} 作为统一结束节点")
+				# 仅作为可视化执行节点，不真正运行一个新的子节点逻辑。
 				yield self._create_stream_chunk(
-					chunk_type="flow_nodes_extend",
-					content="",
+					chunk_type="node_start",
+					content="🏁 开始执行结束节点",
 					agent_name=agent_name,
 					metadata={
-						'planner_node_id': self.id,
-						'planner_next_node_id': planner_next_node_id,
-						'remove_planner_edge': False,
-						'nodes': [],
-						'edges': [end_edge],
-						'flow_name': '连接到全局结束节点',
-						'node_count': 0,
-						'is_virtual_end': False
-					}
+						"node_id": global_end_id,
+						"node_type": "end",
+						"node_name": "结束",
+						"node_label": "结束",
+					},
+				)
+				yield self._create_stream_chunk(
+					chunk_type="node_complete",
+					content="✅ 结束节点执行完成，流程已顺利结束",
+					agent_name=agent_name,
+					metadata={
+						"node_id": global_end_id,
+						"node_type": "end",
+						"node_name": "结束",
+						"node_label": "结束",
+						"status": "completed",
+					},
 				)
 			
 			# 如果检测到失败节点，立即停止流程，并在规划节点下新增“重新规划”子节点挂载新子流程

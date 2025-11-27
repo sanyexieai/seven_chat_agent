@@ -13,7 +13,9 @@ from models.database_models import (
     ToolConfig, ToolConfigCreate, ToolConfigUpdate, ToolConfigResponse
 )
 from utils.log_helper import get_logger
+from utils.llm_helper import get_llm_helper
 from tools.tool_manager import ToolManager
+import json
 
 logger = get_logger("tools_api")
 router = APIRouter(prefix="/api/tools", tags=["tools"])
@@ -133,6 +135,137 @@ async def execute_tool(
             "error": str(e)
         }
 
+
+class InferParamsRequest(BaseModel):
+    """AI 自动推断工具参数请求"""
+    tool_name: str
+    tool_type: Optional[str] = None
+    server: Optional[str] = None
+    message: Optional[str] = None
+
+
+@router.post("/infer-params")
+async def infer_tool_params(
+    req: InferParamsRequest,
+    tool_manager: ToolManager = Depends(get_tool_manager),
+):
+    """使用与自动推理节点相同的逻辑，AI 推断工具入参"""
+    try:
+        # 获取工具参数 Schema（复用自动推断节点的逻辑）
+        schema: Optional[Dict[str, Any]] = None
+        try:
+            tool_name = req.tool_name
+            tool_type = req.tool_type
+            server = req.server
+
+            target_name = tool_name
+            if tool_type == "mcp" and server and tool_name and not tool_name.startswith("mcp_"):
+                target_name = f"mcp_{server}_{tool_name}"
+
+            tool_obj = tool_manager.get_tool(target_name) if target_name else None
+            if tool_obj and hasattr(tool_obj, "get_parameters_schema"):
+                schema = tool_obj.get_parameters_schema()
+        except Exception as exc:
+            logger.warning(f"获取工具 schema 失败: {exc}")
+
+        # 过滤掉已废弃的参数（如 model），与自动推断节点保持一致
+        if schema and isinstance(schema, dict):
+            schema = schema.copy()
+            if "properties" in schema and isinstance(schema["properties"], dict):
+                schema["properties"] = {
+                    k: v for k, v in schema["properties"].items() if k != "model"
+                }
+            if "required" in schema and isinstance(schema["required"], list):
+                schema["required"] = [r for r in schema["required"] if r != "model"]
+
+        # 构造提示词（与 AutoParamNode 中默认提示保持一致）
+        system_prompt = (
+            "你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。"
+            "必须输出 JSON，对每个必填字段给出合理值。"
+            "注意：不要生成 'model' 参数，该参数已废弃，由系统自动管理。"
+        )
+        user_prompt = (
+            "工具名称：{tool_name}\n"
+            "工具类型：{tool_type}\n"
+            "服务器：{server}\n"
+            "参数 Schema：\n{schema_json}\n\n"
+            "用户输入：{message}\n"
+            "如果需要上下文，可参考上一节点输出：{previous_output}\n\n"
+            "请输出 JSON，严格遵守 schema 格式。"
+            "重要：不要包含 'model' 参数（如果 schema 中有，请忽略它）。"
+        )
+
+        schema_json = json.dumps(schema, ensure_ascii=False, indent=2) if schema else "{}"
+        # 如果没有提供用户输入，自动构造一段用于推断的说明
+        message_text = req.message or (
+            f"请为工具 {req.tool_name} 生成一组合理的示例参数，用于一次标准测试调用。"
+        )
+        prompt_variables = {
+            "message": message_text,
+            "tool_name": req.tool_name,
+            "tool_type": req.tool_type,
+            "server": req.server,
+            "schema_json": schema_json,
+            "previous_output": None,
+        }
+
+        system_text = system_prompt.format(**prompt_variables)
+        try:
+            user_text = user_prompt.format(**prompt_variables)
+        except Exception:
+            # 简单兜底：不做模板替换
+            user_text = user_prompt
+
+        llm_helper = get_llm_helper()
+        messages = [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text},
+        ]
+
+        try:
+            response_text = await llm_helper.call(messages, max_tokens=800)
+        except Exception as exc:
+            logger.error(f"调用 LLM 推断参数失败: {exc}")
+            # 退化为简单兜底逻辑
+            params = _fallback_params(message_text, schema)
+            return {"success": True, "params": params, "fallback": True}
+
+        params = _parse_params(response_text)
+        if not params:
+            params = _fallback_params(message_text, schema)
+            return {"success": True, "params": params, "fallback": True}
+
+        return {"success": True, "params": params}
+    except Exception as e:
+        logger.error(f"AI 推断工具参数失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI 推断工具参数失败: {str(e)}")
+
+
+def _parse_params(text: str) -> Optional[Dict[str, Any]]:
+    """解析 LLM 返回的 JSON 字符串，兼容 ```json 包裹"""
+    if not text:
+        return None
+    try:
+        clean = text.strip()
+        if clean.startswith("```"):
+            # 去掉代码块包裹和可能的语言标识
+            clean = clean.strip("`")
+            clean = clean.replace("json", "", 1).strip()
+        return json.loads(clean)
+    except Exception:
+        return None
+
+
+def _fallback_params(message: str, schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """兜底：按必填字段或 query 字段填充"""
+    params: Dict[str, Any] = {}
+    required = schema.get("required") if isinstance(schema, dict) else None
+    if isinstance(required, list) and required:
+        for field in required:
+            params[field] = message
+    else:
+        params["query"] = message
+    return params
 
 # 临时工具管理API
 @router.get("/temporary", response_model=List[TemporaryToolResponse])

@@ -80,6 +80,14 @@ const ToolsPage: React.FC = () => {
   const [toolForm] = Form.useForm();
   const [activeTab, setActiveTab] = useState('all');
 
+  // 工具测试相关状态
+  const [showTestModal, setShowTestModal] = useState(false);
+  const [testingTool, setTestingTool] = useState<Tool | null>(null);
+  const [testParams, setTestParams] = useState<string>('{}');
+  const [testResult, setTestResult] = useState<any>(null);
+  const [testing, setTesting] = useState(false);
+  const [inferLoading, setInferLoading] = useState(false);
+
   // 加载工具列表
   const loadTools = async () => {
     try {
@@ -247,7 +255,7 @@ const ToolsPage: React.FC = () => {
   const [editingContainerTool, setEditingContainerTool] = useState<Tool | null>(null);
   const [containerForm] = Form.useForm();
 
-  // 执行工具（显示工具详情）
+  // 查看工具详情
   const executeTool = async (toolName: string) => {
     const tool = tools.find(t => t.name === toolName);
     Modal.info({
@@ -302,6 +310,85 @@ const ToolsPage: React.FC = () => {
         </div>
       ),
     });
+  };
+
+  // 打开工具测试弹窗
+  const openTestTool = (tool: Tool) => {
+    setTestingTool(tool);
+    // 默认给一个空对象，方便用户直接编辑
+    setTestParams('{}');
+    setTestResult(null);
+    setShowTestModal(true);
+  };
+
+  // 执行工具测试
+  const runToolTest = async () => {
+    if (!testingTool) return;
+    let paramsObj: any = {};
+    try {
+      paramsObj = testParams ? JSON.parse(testParams) : {};
+    } catch (e) {
+      message.error('参数JSON格式错误，请检查输入');
+      return;
+    }
+
+    try {
+      setTesting(true);
+      const url = `${API_PATHS.TOOLS_EXECUTE}?tool_name=${encodeURIComponent(
+        testingTool.name,
+      )}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(paramsObj),
+      });
+
+      const data = await response.json();
+      if (response.ok && data.success) {
+        message.success('工具执行成功');
+      } else {
+        message.error(data.error || '工具执行失败');
+      }
+      setTestResult(data);
+    } catch (error: any) {
+      message.error(error?.message || '工具执行失败');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // AI 推断参数（与自动推断节点逻辑一致）
+  const inferParamsByAI = async () => {
+    if (!testingTool) return;
+    try {
+      setInferLoading(true);
+      const response = await fetch(API_PATHS.TOOLS_INFER_PARAMS, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          tool_name: testingTool.name,
+          tool_type: testingTool.type,
+          server: undefined,
+        }),
+      });
+
+      const data = await response.json();
+      if (response.ok && data.success) {
+        const params = data.params || {};
+        setTestParams(JSON.stringify(params, null, 2));
+        message.success(data.fallback ? '已使用兜底逻辑生成参数' : 'AI 推断参数成功');
+      } else {
+        message.error(data.detail || data.error || 'AI 推断参数失败');
+      }
+    } catch (error: any) {
+      message.error(error?.message || 'AI 推断参数失败');
+    } finally {
+      setInferLoading(false);
+    }
   };
 
   // 编辑容器配置
@@ -461,7 +548,7 @@ const ToolsPage: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 260,
       render: (_, record) => (
         <Space>
           <Button
@@ -477,6 +564,13 @@ const ToolsPage: React.FC = () => {
             onClick={() => editContainer(record)}
           >
             编辑容器
+          </Button>
+          <Button
+            type="link"
+            icon={<CodeOutlined />}
+            onClick={() => openTestTool(record)}
+          >
+            测试
           </Button>
         </Space>
       ),
@@ -807,6 +901,84 @@ const ToolsPage: React.FC = () => {
             />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 工具测试模态框 */}
+      <Modal
+        title={testingTool ? `测试工具：${testingTool.name}` : '测试工具'}
+        open={showTestModal}
+        onCancel={() => {
+          setShowTestModal(false);
+          setTestingTool(null);
+          setTestResult(null);
+        }}
+        onOk={runToolTest}
+        okText="执行测试"
+        confirmLoading={testing}
+        width={800}
+      >
+        {testingTool && (
+          <>
+            <Descriptions column={1} bordered size="small">
+              <Descriptions.Item label="工具名称">{testingTool.name}</Descriptions.Item>
+              <Descriptions.Item label="描述">
+                {testingTool.description || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="参数Schema">
+                <pre
+                  style={{
+                    margin: 0,
+                    fontSize: '12px',
+                    maxHeight: '200px',
+                    overflow: 'auto',
+                  }}
+                >
+                  {JSON.stringify(testingTool.parameters || {}, null, 2)}
+                </pre>
+              </Descriptions.Item>
+            </Descriptions>
+            <Divider />
+            <Form layout="vertical">
+              <Form.Item label="测试参数 (JSON)">
+                <Button
+                  type="primary"
+                  size="small"
+                  loading={inferLoading}
+                  onClick={inferParamsByAI}
+                  style={{ marginBottom: 8 }}
+                >
+                  AI 推断参数（基于工具信息与 Schema 自动生成）
+                </Button>
+                <TextArea
+                  rows={6}
+                  value={testParams}
+                  onChange={(e) => setTestParams(e.target.value)}
+                  placeholder='请输入与参数Schema匹配的JSON，例如：{"query": "北京天气"}'
+                  style={{ fontFamily: 'monospace' }}
+                />
+              </Form.Item>
+            </Form>
+            {testResult && (
+              <>
+                <Divider />
+                <Title level={5}>执行结果</Title>
+                <pre
+                  style={{
+                    margin: 0,
+                    fontSize: '12px',
+                    maxHeight: '260px',
+                    overflow: 'auto',
+                    background: '#f7f7f7',
+                    padding: '8px',
+                    borderRadius: '4px',
+                  }}
+                >
+                  {JSON.stringify(testResult, null, 2)}
+                </pre>
+              </>
+            )}
+          </>
+        )}
       </Modal>
 
       {/* 编辑容器配置模态框 */}

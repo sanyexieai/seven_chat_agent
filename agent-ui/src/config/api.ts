@@ -57,6 +57,7 @@ export const API_PATHS = {
   TOOLS_SEARCH: (query: string) => `/api/tools/search?q=${encodeURIComponent(query)}`,
   TOOLS_STATISTICS: '/api/tools/statistics',
   TOOLS_EXECUTE: '/api/tools/execute',
+  TOOLS_INFER_PARAMS: '/api/tools/infer-params',
   TOOLS_RELOAD: (type?: string) => type ? `/api/tools/reload?tool_type=${type}` : '/api/tools/reload',
         TOOLS_TEMPORARY: '/api/tools/temporary',
         TOOLS_TEMPORARY_BY_ID: (id: number | string) => `/api/tools/temporary/${id}`,

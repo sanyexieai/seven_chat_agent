@@ -124,8 +124,16 @@ async def execute_tool(
     """执行工具"""
     try:
         result = await tool_manager.execute_tool(tool_name, parameters)
+
+        # 使用与 ToolManager 内部一致的逻辑来判断此次执行是否“成功”
+        try:
+            is_success = tool_manager._is_result_successful(tool_name, result)  # type: ignore[attr-defined]
+        except Exception:
+            # 兜底：如果判断失败，按成功处理，避免影响主流程
+            is_success = True
+
         return {
-            "success": True,
+            "success": is_success,
             "result": result
         }
     except Exception as e:
@@ -142,6 +150,11 @@ class InferParamsRequest(BaseModel):
     tool_type: Optional[str] = None
     server: Optional[str] = None
     message: Optional[str] = None
+
+
+class ResetToolScoreRequest(BaseModel):
+    """重置工具评分请求"""
+    tool_name: str
 
 
 @router.post("/infer-params")
@@ -239,6 +252,27 @@ async def infer_tool_params(
     except Exception as e:
         logger.error(f"AI 推断工具参数失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI 推断工具参数失败: {str(e)}")
+
+
+@router.post("/reset-score")
+async def reset_tool_score(
+    req: ResetToolScoreRequest,
+    tool_manager: ToolManager = Depends(get_tool_manager),
+):
+    """重置指定工具的评分为默认值"""
+    try:
+        new_score = tool_manager.reset_tool_score(req.tool_name)
+        return {
+            "success": True,
+            "tool_name": req.tool_name,
+            "score": new_score,
+        }
+    except ValueError as ve:
+        # 工具不存在
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        logger.error(f"重置工具评分失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"重置工具评分失败: {str(e)}")
 
 
 def _parse_params(text: str) -> Optional[Dict[str, Any]]:

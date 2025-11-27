@@ -42,6 +42,7 @@ interface Tool {
   container_type?: string;  // 容器类型
   container_config?: any;   // 容器配置
   score?: number;           // 工具评分（持久化后从后端返回）
+  is_available?: boolean;   // 是否可用（由评分阈值计算并从后端返回）
 }
 
 interface TemporaryTool {
@@ -515,11 +516,35 @@ const ToolsPage: React.FC = () => {
       dataIndex: 'score',
       key: 'score',
       width: 100,
-      render: (score?: number) => (
-        <Tag color={score && score >= 3 ? 'green' : score && score >= 1.5 ? 'blue' : 'red'}>
-          {score !== undefined ? score.toFixed(2) : '—'}
-        </Tag>
-      ),
+      render: (score?: number, record?: Tool) => {
+        const isAvailable = record?.is_available ?? true;
+        const color = !isAvailable
+          ? 'red'
+          : score && score >= 3
+          ? 'green'
+          : score && score >= 1.5
+          ? 'blue'
+          : 'orange';
+        return (
+          <Tag color={color}>
+            {score !== undefined ? score.toFixed(2) : '—'}
+          </Tag>
+        );
+      },
+    },
+    {
+      title: '可用状态',
+      dataIndex: 'is_available',
+      key: 'is_available',
+      width: 100,
+      render: (isAvailable?: boolean) => {
+        const available = isAvailable ?? true;
+        return (
+          <Tag color={available ? 'green' : 'red'}>
+            {available ? '可用' : '禁用'}
+          </Tag>
+        );
+      },
     },
     {
       title: '绑定容器',

@@ -1,23 +1,22 @@
 from typing import Dict, List, Optional, Any
-from tools.base_tool import BaseTool
-from tools.search_tools import WebSearchTool, DocumentSearchTool
-from tools.report_tools import DataAnalysisTool, ReportGeneratorTool
-from tools.file_tools import FileReaderTool, FileWriterTool
-from tools.builtin_tools import get_builtin_tools
-from utils.log_helper import get_logger
+import asyncio
+import importlib
+import inspect
+import os
+import sys
+import tempfile
+
+from agents.agent_manager import AgentManager
+from config.settings import get_settings
 from database.database import get_db, SessionLocal
 from models.database_models import MCPTool, TemporaryTool, ToolConfig
-from agents.agent_manager import AgentManager
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
+from tools.base_tool import BaseTool
+from utils.log_helper import get_logger
 
 # 获取logger实例
 logger = get_logger("tool_manager")
-import asyncio
-import importlib
-import sys
-import tempfile
-import os
 
 
 class MCPToolWrapper(BaseTool):
@@ -179,8 +178,13 @@ class ToolManager:
         self.tools: Dict[str, BaseTool] = {}
         self.tool_categories: Dict[str, List[str]] = {}
         self.tool_types: Dict[str, str] = {}  # 工具名称 -> 工具类型 (builtin, mcp, temporary)
-        self.tool_scores: Dict[str, float] = {}  # 工具名称 -> 评分，默认 1.0，失败时降低
+        self.tool_scores: Dict[str, float] = {}  # 工具名称 -> 评分
         self.agent_manager: Optional[AgentManager] = None
+
+        # 评分相关配置（可通过 .env 覆盖）
+        settings = get_settings()
+        self.default_score: float = getattr(settings, "TOOL_DEFAULT_SCORE", 3.0)
+        self.min_available_score: float = getattr(settings, "TOOL_MIN_AVAILABLE_SCORE", 1.5)
         
     def set_agent_manager(self, agent_manager: AgentManager):
         """设置AgentManager引用"""
@@ -189,36 +193,69 @@ class ToolManager:
     async def initialize(self):
         """初始化工具管理器"""
         logger.info("初始化工具管理器...")
-        
-        # 注册内置工具
-        await self._register_builtin_tools()
-        
-        # 注册MCP工具
+
+        # 1. 扫描并注册所有内置工具（统一从 tools/builtin/*/tool.py 加载）
+        await self._discover_and_register_builtin_tools()
+
+        # 2. 注册MCP工具
         await self._register_mcp_tools()
-        
-        # 注册临时工具
+
+        # 3. 注册临时工具
         await self._register_temporary_tools()
-        
-        # 注册默认工具（保持向后兼容）
-        await self._register_default_tools()
-        
-        # 按类别组织工具
+
+        # 4. 按类别组织工具
         self._organize_tools_by_category()
 
-        # 从数据库加载已有评分（如果有），覆盖默认评分
+        # 5. 从数据库加载已有评分（如果有），覆盖默认评分
         self._load_tool_scores_from_db()
-        
+
         logger.info(f"工具管理器初始化完成，共 {len(self.tools)} 个工具")
     
-    async def _register_builtin_tools(self):
-        """注册内置工具"""
+    async def _discover_and_register_builtin_tools(self):
+        """
+        扫描并注册所有内置工具。
+
+        约定：
+        - 目录结构为 tools/builtin/<tool_name>/tool.py
+        - 每个 tool.py 中定义一个或多个继承自 BaseTool 的类
+        """
         try:
-            builtin_tools = get_builtin_tools()
-            for tool in builtin_tools:
-                self.register_tool(tool, tool_type="builtin")
-            logger.info(f"注册了 {len(builtin_tools)} 个内置工具")
+            base_dir = os.path.dirname(__file__)
+            builtin_dir = os.path.join(base_dir, "builtin")
+
+            if not os.path.isdir(builtin_dir):
+                logger.warning(f"内置工具目录不存在: {builtin_dir}")
+                return
+
+            registered_count = 0
+
+            for entry in os.listdir(builtin_dir):
+                entry_path = os.path.join(builtin_dir, entry)
+                if not os.path.isdir(entry_path):
+                    continue
+
+                module_name = f"tools.builtin.{entry}.tool"
+                try:
+                    module = importlib.import_module(module_name)
+                except Exception as e:
+                    logger.warning(f"导入内置工具模块失败: {module_name}, 错误: {e}")
+                    continue
+
+                # 反射查找 BaseTool 子类
+                for _, obj in inspect.getmembers(module, inspect.isclass):
+                    if issubclass(obj, BaseTool) and obj is not BaseTool:
+                        try:
+                            tool_instance = obj()
+                            self.register_tool(tool_instance, tool_type="builtin")
+                            registered_count += 1
+                        except Exception as inst_err:
+                            logger.warning(
+                                f"实例化内置工具 {obj.__name__} 失败: {inst_err}"
+                            )
+
+            logger.info(f"通过目录扫描注册了 {registered_count} 个内置工具")
         except Exception as e:
-            logger.error(f"注册内置工具失败: {e}")
+            logger.error(f"扫描注册内置工具失败: {e}")
     
     async def _register_mcp_tools(self):
         """从数据库注册MCP工具"""
@@ -271,31 +308,13 @@ class ToolManager:
             logger.error(f"注册临时工具失败: {e}")
     
     async def _register_default_tools(self):
-        """注册默认工具（保持向后兼容）"""
-        try:
-            # 搜索工具
-            web_search = WebSearchTool()
-            doc_search = DocumentSearchTool()
-            
-            # 报告工具
-            data_analysis = DataAnalysisTool()
-            report_generator = ReportGeneratorTool()
-            
-            # 文件工具
-            file_reader = FileReaderTool()
-            file_writer = FileWriterTool()
-            
-            # 注册工具
-            self.register_tool(web_search, tool_type="builtin")
-            self.register_tool(doc_search, tool_type="builtin")
-            self.register_tool(data_analysis, tool_type="builtin")
-            self.register_tool(report_generator, tool_type="builtin")
-            self.register_tool(file_reader, tool_type="builtin")
-            self.register_tool(file_writer, tool_type="builtin")
-            
-            logger.info("默认工具注册完成")
-        except Exception as e:
-            logger.error(f"注册默认工具失败: {e}")
+        """
+        旧的默认工具注册逻辑（已废弃，保留以兼容历史代码调用）。
+
+        当前 initialize 已改为使用 _discover_and_register_builtin_tools，
+        不再依赖此方法注册新工具。
+        """
+        logger.info("默认工具注册逻辑已由目录扫描替代，_register_default_tools 不再实际注册工具")
     
     def register_tool(self, tool: BaseTool, tool_type: str = "builtin"):
         """注册工具"""
@@ -303,7 +322,7 @@ class ToolManager:
         self.tool_types[tool.name] = tool_type
         # 初始化工具评分（默认 3.0，取区间[1,5]的中间值），如果已有评分则保留
         if tool.name not in self.tool_scores:
-            self.tool_scores[tool.name] = 3.0
+            self.tool_scores[tool.name] = self.default_score
         logger.info(f"注册工具: {tool.name} (类型: {tool_type})")
     
     def unregister_tool(self, tool_name: str):
@@ -322,7 +341,8 @@ class ToolManager:
         for tool_name, tool in self.tools.items():
             if tool_type and self.tool_types.get(tool_name) != tool_type:
                 continue
-            score = self.tool_scores.get(tool_name, 1.0)
+            score = self.tool_scores.get(tool_name, self.default_score)
+            is_available = score >= self.min_available_score
             tools_list.append({
                 "name": tool.name,
                 "description": tool.description,
@@ -330,6 +350,7 @@ class ToolManager:
                 "category": self._get_tool_category(tool.name),
                 "type": self.tool_types.get(tool_name, "unknown"),
                 "score": score,
+                "is_available": is_available,
                 "container_type": tool.get_container_type(),  # 容器类型
                 "container_config": tool.get_container_config()  # 容器配置
             })
@@ -362,29 +383,91 @@ class ToolManager:
         return list(self.tool_categories.keys())
     
     async def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Any:
-        """执行工具"""
+        """执行工具
+
+        说明：
+        - 如果工具执行过程中抛异常，视为失败，降低评分；异常向上抛出。
+        - 如果工具返回结果但内容明显是错误信息（如包含“失败”“错误”“不可用”等），
+          也视为逻辑失败，用于调整评分和日志，但仍把结果原样返回给调用方。
+        """
         tool = self.get_tool(tool_name)
         if not tool:
             raise ValueError(f"工具 {tool_name} 不存在")
+
+        # 检查评分阈值，低于阈值的工具视为不可用
+        current_score = self.tool_scores.get(tool_name, self.default_score)
+        if current_score < self.min_available_score:
+            msg = (
+                f"工具 {tool_name} 当前评分为 {current_score:.2f}，"
+                f"低于可用阈值 {self.min_available_score:.2f}，已被设置为不可用。"
+                f"请在工具管理中重置评分后再使用。"
+            )
+            logger.warning(msg)
+            raise RuntimeError(msg)
         
         try:
             result = await tool.execute_with_validation(parameters)
-            logger.info(f"工具 {tool_name} 执行成功")
-            # 成功时略微提高评分
-            self._update_tool_score(tool_name, success=True)
+
+            # 根据结果内容进行成功/失败判定（软失败也要反映到评分和日志）
+            is_success = self._is_result_successful(tool_name, result)
+            if is_success:
+                logger.info(f"工具 {tool_name} 执行成功")
+                # 成功时略微提高评分
+                self._update_tool_score(tool_name, success=True)
+            else:
+                logger.warning(f"工具 {tool_name} 执行结果包含错误信息，视为失败")
+                # 逻辑失败：降低评分，但仍返回结果给上层（由上层决定如何展示）
+                self._update_tool_score(tool_name, success=False)
+
             return result
         except Exception as e:
             logger.error(f"工具 {tool_name} 执行失败: {str(e)}")
             # 失败时降低评分
             self._update_tool_score(tool_name, success=False)
             raise
-	
+
+    def _is_result_successful(self, tool_name: str, result: Any) -> bool:
+        """
+        根据工具返回结果内容做一次“软判断”是否成功。
+
+        注意：
+        - 这里只做启发式判断，不改变工具自身的返回值。
+        - 主要用于修正像 web_search 这类内部已经捕获异常并返回“搜索失败: ...”字符串的场景，
+          否则从外面看永远是“执行成功”。
+        """
+        try:
+            # 显式 error 字段
+            if isinstance(result, dict):
+                if result.get("error"):
+                    return False
+
+            # 文本结果里包含典型错误关键词时，认为是失败
+            if isinstance(result, str):
+                error_keywords = ["失败", "错误", "不可用", "异常"]
+                if any(kw in result for kw in error_keywords):
+                    return False
+                # 对 web_search 这种搜索类工具，"未找到关于 ..." 也视为失败，避免误判为成功
+                if tool_name == "web_search" and result.startswith("未找到关于 "):
+                    return False
+
+            return True
+        except Exception as e:
+            # 任何判断过程中的异常都不影响主流程，默认按成功处理
+            logger.warning(f"判断工具 {tool_name} 结果成功/失败时出错: {e}")
+            return True
+
     def _update_tool_score(self, tool_name: str, success: bool):
-        """根据执行结果更新工具评分"""
+        """
+        根据执行结果更新工具评分
+
+        - 内存中的 `self.tool_scores` 始终更新
+        - 同步回写到数据库对应的 score 字段，保证下次启动后仍然生效
+        """
+        # 1. 先更新内存分数
         if tool_name not in self.tool_scores:
-            # 不存在时从中间值 3.0 开始
-            self.tool_scores[tool_name] = 3.0
-        
+            # 不存在时从中间值 default_score 开始
+            self.tool_scores[tool_name] = self.default_score
+
         score = self.tool_scores[tool_name]
         if success:
             # 成功轻微加分，向上缓慢收敛
@@ -392,11 +475,108 @@ class ToolManager:
         else:
             # 失败重扣分
             score -= 0.5
-        
+
         # 限制评分范围 [1.0, 5.0]
         score = max(1.0, min(5.0, score))
         self.tool_scores[tool_name] = score
         logger.info(f"工具 {tool_name} 新评分: {score:.2f} (success={success})")
+
+        # 2. 尝试把评分持久化到数据库
+        self._persist_tool_score(tool_name, score)
+
+    def _persist_tool_score(self, tool_name: str, score: float) -> None:
+        """将工具评分及可用状态持久化到数据库"""
+        try:
+            db = SessionLocal()
+            try:
+                tool_type = self.tool_types.get(tool_name)
+                is_available = score >= self.min_available_score
+
+                if tool_type == "mcp":
+                    # mcp 工具在 DB 中的唯一标识：server_id + name
+                    # runtime 名称为 mcp_{server_id}_{name}
+                    if tool_name.startswith("mcp_"):
+                        parts = tool_name.split("_", 2)
+                        # 期望格式：["mcp", "{server_id}", "{name}"]
+                        if len(parts) == 3:
+                            server_id_str, mcp_name = parts[1], parts[2]
+                            try:
+                                server_id = int(server_id_str)
+                                mcp_row = (
+                                    db.query(MCPTool)
+                                    .filter(
+                                        MCPTool.server_id == server_id,
+                                        MCPTool.name == mcp_name,
+                                    )
+                                    .first()
+                                )
+                                if mcp_row:
+                                    mcp_row.score = score
+                                    # 同步可用状态
+                                    if hasattr(mcp_row, "is_available"):
+                                        mcp_row.is_available = is_available
+                                    db.add(mcp_row)
+                            except ValueError:
+                                # server_id 解析失败时忽略持久化，但不影响内存
+                                logger.warning(
+                                    f"解析 MCP 工具 server_id 失败，tool_name={tool_name}"
+                                )
+
+                elif tool_type == "temporary":
+                    # 临时工具：name 唯一
+                    temp_row = (
+                        db.query(TemporaryTool)
+                        .filter(TemporaryTool.name == tool_name)
+                        .first()
+                    )
+                    if temp_row:
+                        temp_row.score = score
+                        if hasattr(temp_row, "is_available"):
+                            temp_row.is_available = is_available
+                        db.add(temp_row)
+
+                else:
+                    # 其它情况（builtin / 默认）使用 ToolConfig 记录评分
+                    cfg = (
+                        db.query(ToolConfig)
+                        .filter(ToolConfig.tool_name == tool_name)
+                        .first()
+                    )
+                    if cfg:
+                        cfg.score = score
+                        if hasattr(cfg, "is_available"):
+                            cfg.is_available = is_available
+                        db.add(cfg)
+                    else:
+                        # 没有记录时自动创建一条 ToolConfig，保持评分及可用状态可持久化
+                        cfg = ToolConfig(
+                            tool_name=tool_name,
+                            tool_type=tool_type or "builtin",
+                            score=score,
+                            is_available=is_available,
+                        )
+                        db.add(cfg)
+
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            # 持久化失败不影响主流程，只打日志方便排查
+            logger.warning(f"更新工具 {tool_name} 评分到数据库失败: {e}")
+
+    def reset_tool_score(self, tool_name: str) -> float:
+        """
+        将指定工具的评分重置为默认值。
+
+        返回重置后的评分。
+        """
+        if tool_name not in self.tools:
+            raise ValueError(f"工具 {tool_name} 不存在")
+
+        self.tool_scores[tool_name] = self.default_score
+        logger.info(f"工具 {tool_name} 评分已重置为默认值 {self.default_score:.2f}")
+        self._persist_tool_score(tool_name, self.default_score)
+        return self.default_score
 
     def _auto_migrate_score_columns(self) -> None:
         """
@@ -447,6 +627,42 @@ class ToolManager:
                         )
                     )
                     logger.info("自动迁移: 已为 tool_configs 表添加 score 字段")
+
+                # mcp_tools.is_available
+                if not has_column_sqlite("mcp_tools", "is_available"):
+                    conn.execute(
+                        text(
+                            """
+                            ALTER TABLE mcp_tools
+                            ADD COLUMN is_available BOOLEAN DEFAULT 1
+                            """
+                        )
+                    )
+                    logger.info("自动迁移: 已为 mcp_tools 表添加 is_available 字段")
+
+                # temporary_tools.is_available
+                if not has_column_sqlite("temporary_tools", "is_available"):
+                    conn.execute(
+                        text(
+                            """
+                            ALTER TABLE temporary_tools
+                            ADD COLUMN is_available BOOLEAN DEFAULT 1
+                            """
+                        )
+                    )
+                    logger.info("自动迁移: 已为 temporary_tools 表添加 is_available 字段")
+
+                # tool_configs.is_available
+                if not has_column_sqlite("tool_configs", "is_available"):
+                    conn.execute(
+                        text(
+                            """
+                            ALTER TABLE tool_configs
+                            ADD COLUMN is_available BOOLEAN DEFAULT 1
+                            """
+                        )
+                    )
+                    logger.info("自动迁移: 已为 tool_configs 表添加 is_available 字段")
                 db.commit()
             else:
                 logger.warning(f"当前数据库方言为 {dialect}，暂不自动迁移 score 字段，请手动执行迁移脚本")

@@ -910,6 +910,9 @@ class PlannerNode(BaseFlowNode):
 			tool_manager = agent_manager.tool_manager
 			# 获取所有可用工具（包括内置、MCP、临时工具），已按评分从高到低排序
 			all_tools = tool_manager.get_available_tools()
+
+			# 过滤掉评分低于可用阈值的工具（is_available=False）
+			all_tools = [t for t in all_tools if t.get("is_available", True)]
 			
 			if not all_tools:
 				logger.warning("未获取到任何工具")

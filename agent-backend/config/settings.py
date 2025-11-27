@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     AUTO_SELECT_AGENT: bool = True
     
     # 工具配置
+    TOOL_DEFAULT_SCORE: float = 3.0  # 工具默认评分
+    TOOL_MIN_AVAILABLE_SCORE: float = 1.5  # 工具可用阈值，低于此分数视为不可用
     ENABLE_WEB_SEARCH: bool = True
     ENABLE_DOCUMENT_SEARCH: bool = True
     ENABLE_FILE_OPERATIONS: bool = True

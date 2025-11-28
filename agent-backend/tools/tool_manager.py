@@ -13,6 +13,7 @@ from models.database_models import MCPTool, TemporaryTool, ToolConfig
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from tools.base_tool import BaseTool
+from tools.containers.manager import ContainerManager
 from utils.log_helper import get_logger
 
 # 获取logger实例
@@ -180,6 +181,8 @@ class ToolManager:
         self.tool_types: Dict[str, str] = {}  # 工具名称 -> 工具类型 (builtin, mcp, temporary)
         self.tool_scores: Dict[str, float] = {}  # 工具名称 -> 评分
         self.agent_manager: Optional[AgentManager] = None
+        # 容器管理器：统一管理 browser/file/realtime/todo 等容器
+        self.container_manager = ContainerManager()
 
         # 评分相关配置（可通过 .env 覆盖）
         settings = get_settings()
@@ -406,9 +409,13 @@ class ToolManager:
             raise RuntimeError(msg)
         
         try:
-            result = await tool.execute_with_validation(parameters)
+            # 1. 执行工具本身逻辑
+            raw_result = await tool.execute_with_validation(parameters)
 
-            # 根据结果内容进行成功/失败判定（软失败也要反映到评分和日志）
+            # 2. 交给容器做统一后处理（例如文件输出、实时跟随等）
+            result = await self.container_manager.handle_result(tool, raw_result)
+
+            # 3. 根据结果内容进行成功/失败判定（软失败也要反映到评分和日志）
             is_success = self._is_result_successful(tool_name, result)
             if is_success:
                 logger.info(f"工具 {tool_name} 执行成功")

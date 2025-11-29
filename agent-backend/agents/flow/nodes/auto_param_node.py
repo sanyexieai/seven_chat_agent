@@ -198,9 +198,10 @@ class AutoParamNode(BaseFlowNode):
 		return PromptTemplates.get_auto_infer_system_prompt()
 	
 	def _default_user_prompt(self) -> str:
-		"""获取默认用户提示词模板（从统一模板获取）"""
-		# 使用简化模板（不包含 required_fields_text），因为这里会在运行时填充
-		return PromptTemplates.AUTO_INFER_USER_PROMPT_SIMPLE_TEMPLATE
+		"""获取默认用户提示词模板标识（用于比较）"""
+		# 返回一个标识字符串，用于判断是否使用默认模板
+		# 实际模板内容通过 PromptTemplates.get_auto_infer_user_prompt() 获取
+		return "__DEFAULT_AUTO_INFER_USER_PROMPT__"
 	
 	def _get_auto_param_key(self) -> str:
 		return self.config.get('auto_param_key') or f"auto_params_{self.config.get('target_tool_node_id') or self.id}"

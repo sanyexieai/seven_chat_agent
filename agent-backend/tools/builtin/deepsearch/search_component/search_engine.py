@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-# =====================
-# 
-# 
-# Author: liumin.423
-# Date:   2025/7/9
-# =====================
 import asyncio
 import json
 import os
@@ -17,10 +10,10 @@ from bs4 import BeautifulSoup
 try:
     from genie_tool.util.log_util import timer
 except ImportError:
-    from tools.genie_tool_adapter.util.log_util import timer
+    from utils.timer_decorator import timer
 
-# 始终使用适配层的 Doc，确保类型一致性
-from tools.genie_tool_adapter.model.document import Doc
+# 始终使用本地模型的 Doc，确保类型一致性
+from tools.builtin.deepsearch.models import Doc
 
 
 class SearchBase(ABC):

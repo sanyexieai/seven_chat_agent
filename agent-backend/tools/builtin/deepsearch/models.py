@@ -1,7 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-文档模型适配
-"""
+"""深度搜索相关模型"""
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
@@ -43,4 +40,10 @@ class Doc:
             "doc_type": self.doc_type,
             "metadata": self.metadata or {}
         }
+
+
+@dataclass
+class StreamMode:
+    """流式模式配置"""
+    token: int = 100  # 每次输出的token数
 

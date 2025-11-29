@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-# =====================
-# 
-# 
-# Author: wanghanmin1
-# Date:   2025/7/8
-# =====================
 import asyncio
 import json
 import os
@@ -26,15 +19,15 @@ except ImportError:
     # 使用适配层
     from utils.log_helper import get_logger
     logger = get_logger("deepsearch")
-    from tools.genie_tool_adapter.util.log_util import timer
-    from tools.genie_tool_adapter.model.document import Doc
-    from tools.search_component.query_process import query_decompose
-    from tools.search_component.answer import answer_question
-    from tools.search_component.reasoning import search_reasoning
-    from tools.search_component.search_engine import MixSearch
-    from tools.genie_tool_adapter.model.protocal import StreamMode
-    from tools.genie_tool_adapter.util.file_util import truncate_files
-    from tools.genie_tool_adapter.model.context import LLMModelInfoFactory
+    from utils.timer_decorator import timer
+    from tools.builtin.deepsearch.models import Doc
+    from tools.builtin.deepsearch.search_component.query_process import query_decompose
+    from tools.builtin.deepsearch.search_component.answer import answer_question
+    from tools.builtin.deepsearch.search_component.reasoning import search_reasoning
+    from tools.builtin.deepsearch.search_component.search_engine import MixSearch
+    from tools.builtin.deepsearch.models import StreamMode
+    from tools.builtin.deepsearch.file_util import truncate_files
+    from utils.context_helper import LLMModelInfoFactory
 
 
 class DeepSearch:
@@ -211,3 +204,4 @@ class DeepSearch:
                 deduped_docs.append(doc)
                 seen_content.add(doc.content)
         return deduped_docs, results
+

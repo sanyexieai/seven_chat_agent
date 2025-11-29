@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-# =====================
-# 
-# 
-# Author: liumin.423
-# Date:   2025/7/9
-# =====================
 import json
 import os
 import time
@@ -14,9 +7,9 @@ try:
     from genie_tool.util.prompt_util import get_prompt
     from genie_tool.util.log_util import timer
 except ImportError:
-    # 使用适配层
-    from tools.genie_tool_adapter.util.prompt_util import get_prompt
-    from tools.genie_tool_adapter.util.log_util import timer
+    # 使用本地工具和 utils
+    from tools.builtin.deepsearch.prompt_util import get_prompt
+    from utils.timer_decorator import timer
 
 from utils.llm_helper import get_llm_helper
 
@@ -64,3 +57,4 @@ def _parser(request_id, reasoning: dict) -> dict:
 
 if __name__ == "__main__":
     pass
+

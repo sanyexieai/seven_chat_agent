@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-# =====================
-# 
-# 
-# Author: liumin.423
-# Date:   2025/7/7
-# =====================
 import os
 import re
 from datetime import datetime
@@ -20,11 +13,11 @@ try:
     from genie_tool.util.log_util import timer
     from genie_tool.model.context import LLMModelInfoFactory
 except ImportError:
-    # 使用适配层
-    from tools.genie_tool_adapter.util.file_util import download_all_files, truncate_files, flatten_search_file
-    from tools.genie_tool_adapter.util.prompt_util import get_prompt
-    from tools.genie_tool_adapter.util.log_util import timer
-    from tools.genie_tool_adapter.model.context import LLMModelInfoFactory
+    # 使用本地工具和 utils
+    from tools.builtin.report.file_util import download_all_files, truncate_files, flatten_search_file
+    from tools.builtin.report.prompt_util import get_prompt
+    from utils.timer_decorator import timer
+    from utils.context_helper import LLMModelInfoFactory
 
 from utils.llm_helper import get_llm_helper
 
@@ -381,6 +374,3 @@ async def html_report(
             temperature=temperature, top_p=top_p):
         yield chunk
 
-
-if __name__ == "__main__":
-    pass

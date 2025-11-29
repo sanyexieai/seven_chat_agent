@@ -420,7 +420,8 @@ class ToolManager:
 
             for entry in os.listdir(builtin_dir):
                 entry_path = os.path.join(builtin_dir, entry)
-                if not os.path.isdir(entry_path):
+                # 跳过非目录和特殊目录（如 __pycache__）
+                if not os.path.isdir(entry_path) or entry.startswith('__'):
                     continue
 
                 module_name = f"tools.builtin.{entry}.tool"

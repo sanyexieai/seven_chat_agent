@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-# =====================
-#
-#
-# Author: liumin.423
-# Date:   2025/7/7
-# =====================
 import asyncio
 import importlib
 import os
@@ -25,11 +18,11 @@ try:
     from genie_tool.model.code import ActionOutput, CodeOuput
 except ImportError:
     # 使用适配层
-    from tools.ci_agent import CIAgent
-    from tools.genie_tool_adapter.util.file_util import download_all_files_in_path, upload_file, upload_file_by_path
-    from tools.genie_tool_adapter.util.log_util import timer
-    from tools.genie_tool_adapter.util.prompt_util import get_prompt
-    from tools.genie_tool_adapter.model.code import ActionOutput, CodeOuput
+    from tools.builtin.code_interpreter.ci_agent import CIAgent
+    from tools.builtin.code_interpreter.file_util import download_all_files_in_path, upload_file, upload_file_by_path
+    from utils.timer_decorator import timer
+    from tools.builtin.code_interpreter.prompt_util import get_prompt
+    from tools.builtin.code_interpreter.models import ActionOutput, CodeOuput
 import requests
 
 @timer()
@@ -186,6 +179,3 @@ def create_ci_agent(
         output_dir=output_dir,
     )
 
-
-if __name__ == "__main__":
-    pass

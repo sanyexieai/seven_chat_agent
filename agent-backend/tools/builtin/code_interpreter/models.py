@@ -1,7 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-代码输出模型适配
-"""
+"""代码解释器相关模型"""
 from dataclasses import dataclass
 from typing import List, Optional, Any
 

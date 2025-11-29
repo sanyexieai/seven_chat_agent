@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-# =====================
-# 
-# 
-# Author: liumin.423
-# Date:   2025/7/9
-# =====================
 import os
 import time
 
@@ -12,9 +5,9 @@ try:
     from genie_tool.util.log_util import timer
     from genie_tool.util.prompt_util import get_prompt
 except ImportError:
-    # 使用适配层
-    from tools.genie_tool_adapter.util.log_util import timer
-    from tools.genie_tool_adapter.util.prompt_util import get_prompt
+    # 使用本地工具和 utils
+    from utils.timer_decorator import timer
+    from tools.builtin.deepsearch.prompt_util import get_prompt
 
 from utils.llm_helper import get_llm_helper
 
@@ -44,3 +37,4 @@ async def answer_question(query: str, search_content: str):
 
 if __name__ == "__main__":
     pass
+

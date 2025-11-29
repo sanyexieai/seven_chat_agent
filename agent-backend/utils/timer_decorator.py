@@ -1,13 +1,10 @@
-# -*- coding: utf-8 -*-
-"""
-日志工具适配
-"""
+"""计时装饰器工具"""
 from functools import wraps
 from typing import Callable, Any
 import time
 from utils.log_helper import get_logger
 
-logger = get_logger("genie_tool_adapter")
+logger = get_logger("timer")
 
 
 def timer(key: str = ""):

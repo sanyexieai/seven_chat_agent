@@ -1,7 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-上下文模型适配
-"""
+"""上下文管理工具"""
 from contextvars import ContextVar
 from typing import Optional
 

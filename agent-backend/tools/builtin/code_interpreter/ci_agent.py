@@ -42,10 +42,10 @@ try:
     from genie_tool.util.log_util import timer
 except ImportError:
     # 使用适配层
-    from tools.genie_tool_adapter.model.code import CodeOuput
-    from tools.final_answer_check import FinalAnswerCheck
-    from tools.genie_tool_adapter.util.file_util import generate_data_id
-    from tools.genie_tool_adapter.util.log_util import timer
+    from tools.builtin.code_interpreter.models import CodeOuput
+    from tools.builtin.code_interpreter.final_answer_check import FinalAnswerCheck
+    from tools.builtin.code_interpreter.file_util import generate_data_id
+    from utils.timer_decorator import timer
 
 
 class CIAgent(CodeAgent):

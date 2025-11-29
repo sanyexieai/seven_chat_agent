@@ -10,10 +10,12 @@ from database.database import get_db
 from pydantic import BaseModel
 from models.database_models import (
     TemporaryTool, TemporaryToolCreate, TemporaryToolUpdate, TemporaryToolResponse,
-    ToolConfig, ToolConfigCreate, ToolConfigUpdate, ToolConfigResponse
+    ToolConfig, ToolConfigCreate, ToolConfigUpdate, ToolConfigResponse,
+    PromptTemplate
 )
 from utils.log_helper import get_logger
 from utils.llm_helper import get_llm_helper
+from utils.prompt_templates import PromptTemplates
 from tools.tool_manager import ToolManager
 import json
 
@@ -161,73 +163,139 @@ class ResetToolScoreRequest(BaseModel):
 async def infer_tool_params(
     req: InferParamsRequest,
     tool_manager: ToolManager = Depends(get_tool_manager),
+    db: Session = Depends(get_db),
 ):
     """使用与自动推理节点相同的逻辑，AI 推断工具入参"""
     try:
         # 获取工具参数 Schema（复用自动推断节点的逻辑）
         schema: Optional[Dict[str, Any]] = None
+        tool_metadata: Optional[Dict[str, Any]] = None
+        raw_data: Optional[Dict[str, Any]] = None
+        tool_examples: Optional[List[Dict[str, Any]]] = None
+        
         try:
             tool_name = req.tool_name
             tool_type = req.tool_type
             server = req.server
 
-            target_name = tool_name
-            if tool_type == "mcp" and server and tool_name and not tool_name.startswith("mcp_"):
-                target_name = f"mcp_{server}_{tool_name}"
+            # 解析 MCP 工具名称：如果 tool_name 是 mcp_{server}_{tool} 格式，自动解析
+            actual_tool_name = tool_name
+            actual_server = server
+            if tool_name.startswith("mcp_"):
+                parts = tool_name.split("_", 2)
+                if len(parts) >= 3:
+                    actual_server = parts[1]  # 服务器名称
+                    actual_tool_name = parts[2]  # 实际工具名称
+                    logger.info(f"从工具名称 {tool_name} 解析出服务器: {actual_server}, 工具名: {actual_tool_name}")
+                elif len(parts) == 2:
+                    # 可能是 mcp_toolname 格式，尝试作为工具名
+                    actual_tool_name = parts[1]
+            elif tool_type == "mcp" and server and tool_name and not tool_name.startswith("mcp_"):
+                # 如果提供了 server 但没有 mcp_ 前缀，构建完整名称
+                tool_name = f"mcp_{server}_{tool_name}"
 
+            target_name = tool_name
             tool_obj = tool_manager.get_tool(target_name) if target_name else None
             if tool_obj and hasattr(tool_obj, "get_parameters_schema"):
                 schema = tool_obj.get_parameters_schema()
+            
+            # 如果是 MCP 工具，从数据库获取额外信息
+            # 优先使用解析出的 server，如果没有则使用请求中的 server
+            query_server = actual_server or server
+            query_tool_name = actual_tool_name if tool_name.startswith("mcp_") else tool_name
+            
+            if (tool_type == "mcp" or tool_name.startswith("mcp_")) and query_server and query_tool_name:
+                from models.database_models import MCPTool, MCPServer
+                # 通过服务器名称查找服务器ID
+                db_server = db.query(MCPServer).filter(MCPServer.name == query_server).first()
+                if db_server:
+                    mcp_tool = db.query(MCPTool).filter(
+                        MCPTool.server_id == db_server.id,
+                        MCPTool.name == query_tool_name,
+                        MCPTool.is_active == True
+                    ).first()
+                    if mcp_tool:
+                        tool_metadata = mcp_tool.tool_metadata
+                        raw_data = mcp_tool.raw_data
+                        tool_examples = mcp_tool.examples
+                        logger.info(f"从数据库获取 MCP 工具 {query_tool_name} (服务器: {query_server}) 的元数据信息")
+                        if tool_metadata:
+                            logger.info(f"  元数据: {json.dumps(tool_metadata, ensure_ascii=False)[:200]}...")
+                        if raw_data:
+                            logger.info(f"  原始数据: {json.dumps(raw_data, ensure_ascii=False)[:200]}...")
+                    else:
+                        logger.warning(f"未找到 MCP 工具: 服务器={query_server}, 工具名={query_tool_name}")
+                else:
+                    logger.warning(f"未找到 MCP 服务器: {query_server}")
         except Exception as exc:
-            logger.warning(f"获取工具 schema 失败: {exc}")
+            logger.warning(f"获取工具信息失败: {exc}")
 
-        # 过滤掉已废弃的参数（如 model），与自动推断节点保持一致
+        # 提取必填字段信息
+        required_fields = []
         if schema and isinstance(schema, dict):
-            schema = schema.copy()
-            if "properties" in schema and isinstance(schema["properties"], dict):
-                schema["properties"] = {
-                    k: v for k, v in schema["properties"].items() if k != "model"
-                }
-            if "required" in schema and isinstance(schema["required"], list):
-                schema["required"] = [r for r in schema["required"] if r != "model"]
-
-        # 构造提示词（与 AutoParamNode 中默认提示保持一致）
-        system_prompt = (
-            "你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。"
-            "必须输出 JSON，对每个必填字段给出合理值。"
-            "注意：不要生成 'model' 参数，该参数已废弃，由系统自动管理。"
-        )
-        user_prompt = (
-            "工具名称：{tool_name}\n"
-            "工具类型：{tool_type}\n"
-            "服务器：{server}\n"
-            "参数 Schema：\n{schema_json}\n\n"
-            "用户输入：{message}\n"
-            "如果需要上下文，可参考上一节点输出：{previous_output}\n\n"
-            "请输出 JSON，严格遵守 schema 格式。"
-            "重要：不要包含 'model' 参数（如果 schema 中有，请忽略它）。"
-        )
+            required = schema.get("required", [])
+            properties = schema.get("properties", {})
+            if isinstance(required, list) and required:
+                for field in required:
+                    field_info = properties.get(field, {})
+                    field_type = field_info.get("type", "string")
+                    field_desc = field_info.get("description", "无描述")
+                    required_fields.append(f"  - {field} ({field_type}): {field_desc}")
+        
+        required_fields_text = ""
+        if required_fields:
+            required_fields_text = "\n\n必填字段（必须全部提供）：\n" + "\n".join(required_fields)
+        
+        # 构建增强的上下文信息（包含工具元数据）
+        additional_context = ""
+        if tool_metadata:
+            metadata_parts = []
+            if tool_metadata.get("args_description"):
+                metadata_parts.append(f"参数说明：{tool_metadata['args_description']}")
+            if tool_metadata.get("usage_scenarios"):
+                scenarios = tool_metadata["usage_scenarios"]
+                if isinstance(scenarios, list) and scenarios:
+                    metadata_parts.append(f"使用场景：{', '.join(scenarios)}")
+            if tool_metadata.get("notes"):
+                metadata_parts.append(f"注意事项：{tool_metadata['notes']}")
+            if tool_metadata.get("best_practices"):
+                metadata_parts.append(f"最佳实践：{tool_metadata['best_practices']}")
+            if metadata_parts:
+                additional_context = "\n\n工具元数据信息：\n" + "\n".join(f"  - {part}" for part in metadata_parts)
+        
+        # 如果有原始数据中的 args 信息，也添加到上下文
+        if raw_data and isinstance(raw_data, dict):
+            raw_args = raw_data.get("args", {})
+            if raw_args:
+                additional_context += f"\n\n原始参数信息：\n{json.dumps(raw_args, ensure_ascii=False, indent=2)}"
+        
+        # 如果有示例，添加到上下文
+        if tool_examples:
+            additional_context += f"\n\n工具示例：\n{json.dumps(tool_examples, ensure_ascii=False, indent=2)}"
+        
+        # 从统一模板获取提示词
+        system_prompt = PromptTemplates.get_auto_infer_system_prompt()
 
         schema_json = json.dumps(schema, ensure_ascii=False, indent=2) if schema else "{}"
         # 如果没有提供用户输入，自动构造一段用于推断的说明
         message_text = req.message or (
             f"请为工具 {req.tool_name} 生成一组合理的示例参数，用于一次标准测试调用。"
+            "请确保包含所有必填字段。"
         )
-        prompt_variables = {
-            "message": message_text,
-            "tool_name": req.tool_name,
-            "tool_type": req.tool_type,
-            "server": req.server,
-            "schema_json": schema_json,
-            "previous_output": None,
-        }
-
-        system_text = system_prompt.format(**prompt_variables)
-        try:
-            user_text = user_prompt.format(**prompt_variables)
-        except Exception:
-            # 简单兜底：不做模板替换
-            user_text = user_prompt
+        
+        # 使用统一模板生成用户提示词，并添加额外上下文
+        user_text = PromptTemplates.get_auto_infer_user_prompt(
+            tool_name=req.tool_name or "",
+            tool_type=req.tool_type,
+            server=req.server,
+            schema_json=schema_json,
+            message=message_text,
+            previous_output=None,
+            required_fields_text=required_fields_text + additional_context,  # 添加元数据信息
+            use_simple=False  # 使用完整模板（包含 required_fields_text）
+        )
+        
+        system_text = system_prompt
 
         llm_helper = get_llm_helper()
         messages = [
@@ -247,6 +315,32 @@ async def infer_tool_params(
         if not params:
             params = _fallback_params(message_text, schema)
             return {"success": True, "params": params, "fallback": True}
+
+        # 验证必填字段是否都已提供
+        if schema and isinstance(schema, dict):
+            required = schema.get("required", [])
+            if isinstance(required, list) and required:
+                missing_fields = [f for f in required if f not in params or params[f] is None or params[f] == ""]
+                if missing_fields:
+                    logger.warning(f"AI 推断的参数缺少必填字段: {missing_fields}，尝试补充")
+                    # 尝试为缺失的必填字段生成默认值
+                    properties = schema.get("properties", {})
+                    for field in missing_fields:
+                        field_info = properties.get(field, {})
+                        field_type = field_info.get("type", "string")
+                        # 根据字段类型生成合理的默认值
+                        if field_type == "string":
+                            params[field] = message_text or f"示例{field}"
+                        elif field_type == "number" or field_type == "integer":
+                            params[field] = 0
+                        elif field_type == "boolean":
+                            params[field] = False
+                        elif field_type == "array":
+                            params[field] = []
+                        elif field_type == "object":
+                            params[field] = {}
+                        else:
+                            params[field] = message_text or f"示例{field}"
 
         return {"success": True, "params": params}
     except Exception as e:
@@ -273,6 +367,54 @@ async def reset_tool_score(
     except Exception as e:
         logger.error(f"重置工具评分失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"重置工具评分失败: {str(e)}")
+
+
+@router.get("/prompt-templates/auto-infer")
+async def get_auto_infer_prompt_templates():
+    """获取自动推理工具参数的提示词模板（返回模板字符串，不格式化）"""
+    # 从数据库获取模板内容（不格式化）
+    from database.database import SessionLocal
+    from models.database_models import PromptTemplate
+    
+    db = SessionLocal()
+    try:
+        system_template = db.query(PromptTemplate).filter(
+            PromptTemplate.name == "auto_infer_system",
+            PromptTemplate.template_type == "system",
+            PromptTemplate.is_active == True
+        ).first()
+        
+        user_template_simple = db.query(PromptTemplate).filter(
+            PromptTemplate.name == "auto_infer_user_simple",
+            PromptTemplate.template_type == "user",
+            PromptTemplate.is_active == True
+        ).first()
+        
+        user_template_full = db.query(PromptTemplate).filter(
+            PromptTemplate.name == "auto_infer_user_full",
+            PromptTemplate.template_type == "user",
+            PromptTemplate.is_active == True
+        ).first()
+        
+        # 如果数据库中没有，使用默认值
+        from utils.prompt_templates import _DEFAULT_SYSTEM_PROMPT, _DEFAULT_USER_PROMPT_SIMPLE_TEMPLATE, _DEFAULT_USER_PROMPT_TEMPLATE
+        
+        return {
+            "system_prompt": system_template.content if system_template else _DEFAULT_SYSTEM_PROMPT,
+            "user_prompt_template": user_template_simple.content if user_template_simple else _DEFAULT_USER_PROMPT_SIMPLE_TEMPLATE,
+            "user_prompt_template_full": user_template_full.content if user_template_full else _DEFAULT_USER_PROMPT_TEMPLATE
+        }
+    except Exception as e:
+        logger.error(f"获取提示词模板失败: {str(e)}")
+        # 返回默认值
+        from utils.prompt_templates import _DEFAULT_SYSTEM_PROMPT, _DEFAULT_USER_PROMPT_SIMPLE_TEMPLATE, _DEFAULT_USER_PROMPT_TEMPLATE
+        return {
+            "system_prompt": _DEFAULT_SYSTEM_PROMPT,
+            "user_prompt_template": _DEFAULT_USER_PROMPT_SIMPLE_TEMPLATE,
+            "user_prompt_template_full": _DEFAULT_USER_PROMPT_TEMPLATE
+        }
+    finally:
+        db.close()
 
 
 def _parse_params(text: str) -> Optional[Dict[str, Any]]:
@@ -503,22 +645,26 @@ async def update_tool_container(
                 db.refresh(temp_tool)
         elif tool_type == "mcp":
             # 更新MCP工具表
-            # 解析工具名称：mcp_{server_id}_{tool_name}
+            # 解析工具名称：mcp_{server_name}_{tool_name}
             parts = tool_name.split("_", 2)
             if len(parts) >= 3:
-                server_id = int(parts[1])
+                server_name = parts[1]
                 mcp_tool_name = parts[2]
-                mcp_tool = db.query(MCPTool).filter(
-                    MCPTool.server_id == server_id,
-                    MCPTool.name == mcp_tool_name
-                ).first()
-                if mcp_tool:
-                    if container_type is not None:
-                        mcp_tool.container_type = container_type
-                    if container_config is not None:
-                        mcp_tool.container_config = container_config
-                    db.commit()
-                    db.refresh(mcp_tool)
+                # 通过服务器名称查找服务器ID
+                from models.database_models import MCPServer
+                server = db.query(MCPServer).filter(MCPServer.name == server_name).first()
+                if server:
+                    mcp_tool = db.query(MCPTool).filter(
+                        MCPTool.server_id == server.id,
+                        MCPTool.name == mcp_tool_name
+                    ).first()
+                    if mcp_tool:
+                        if container_type is not None:
+                            mcp_tool.container_type = container_type
+                        if container_config is not None:
+                            mcp_tool.container_config = container_config
+                        db.commit()
+                        db.refresh(mcp_tool)
         elif tool_type == "builtin":
             # 更新工具配置表（用于内置工具）
             tool_config = db.query(ToolConfig).filter(
@@ -555,4 +701,269 @@ async def update_tool_container(
         db.rollback()
         logger.error(f"更新工具容器配置失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"更新工具容器配置失败: {str(e)}")
+
+
+# ==================== 提示词模板管理 API ====================
+
+class PromptTemplateCreate(BaseModel):
+    """创建提示词模板请求"""
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    template_type: str  # system, user
+    content: str
+    variables: Optional[List[str]] = None
+    is_default: bool = False
+    is_active: bool = True
+
+
+class PromptTemplateUpdate(BaseModel):
+    """更新提示词模板请求"""
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    content: Optional[str] = None
+    variables: Optional[List[str]] = None
+    is_default: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+class PromptTemplateResponse(BaseModel):
+    """提示词模板响应"""
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str]
+    template_type: str
+    content: str
+    variables: Optional[List[str]]
+    is_default: bool
+    is_active: bool
+    created_at: str
+    updated_at: str
+    
+    class Config:
+        from_attributes = True
+
+
+@router.get("/prompt-templates", response_model=List[PromptTemplateResponse])
+async def get_prompt_templates(
+    template_type: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    """获取所有提示词模板"""
+    try:
+        query = db.query(PromptTemplate)
+        
+        if template_type:
+            query = query.filter(PromptTemplate.template_type == template_type)
+        if is_active is not None:
+            query = query.filter(PromptTemplate.is_active == is_active)
+        
+        templates = query.order_by(PromptTemplate.template_type, PromptTemplate.name).all()
+        
+        return [
+            PromptTemplateResponse(
+                id=t.id,
+                name=t.name,
+                display_name=t.display_name,
+                description=t.description,
+                template_type=t.template_type,
+                content=t.content,
+                variables=t.variables,
+                is_default=t.is_default,
+                is_active=t.is_active,
+                created_at=t.created_at.isoformat() if t.created_at else "",
+                updated_at=t.updated_at.isoformat() if t.updated_at else ""
+            )
+            for t in templates
+        ]
+    except Exception as e:
+        logger.error(f"获取提示词模板列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取提示词模板列表失败: {str(e)}")
+
+
+@router.get("/prompt-templates/{template_id}", response_model=PromptTemplateResponse)
+async def get_prompt_template(
+    template_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取单个提示词模板"""
+    try:
+        template = db.query(PromptTemplate).filter(PromptTemplate.id == template_id).first()
+        if not template:
+            raise HTTPException(status_code=404, detail="提示词模板不存在")
+        
+        return PromptTemplateResponse(
+            id=template.id,
+            name=template.name,
+            display_name=template.display_name,
+            description=template.description,
+            template_type=template.template_type,
+            content=template.content,
+            variables=template.variables,
+            is_default=template.is_default,
+            is_active=template.is_active,
+            created_at=template.created_at.isoformat() if template.created_at else "",
+            updated_at=template.updated_at.isoformat() if template.updated_at else ""
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取提示词模板失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取提示词模板失败: {str(e)}")
+
+
+@router.post("/prompt-templates", response_model=PromptTemplateResponse)
+async def create_prompt_template(
+    template_data: PromptTemplateCreate,
+    db: Session = Depends(get_db)
+):
+    """创建提示词模板"""
+    try:
+        # 检查名称是否已存在
+        existing = db.query(PromptTemplate).filter(PromptTemplate.name == template_data.name).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="提示词模板名称已存在")
+        
+        # 如果设置为默认模板，需要取消同类型其他默认模板
+        if template_data.is_default:
+            existing_defaults = db.query(PromptTemplate).filter(
+                PromptTemplate.template_type == template_data.template_type,
+                PromptTemplate.is_default == True
+            ).all()
+            for existing in existing_defaults:
+                existing.is_default = False
+        
+        template = PromptTemplate(
+            name=template_data.name,
+            display_name=template_data.display_name,
+            description=template_data.description,
+            template_type=template_data.template_type,
+            content=template_data.content,
+            variables=template_data.variables,
+            is_default=template_data.is_default,
+            is_active=template_data.is_active
+        )
+        
+        db.add(template)
+        db.commit()
+        db.refresh(template)
+        
+        # 清除缓存
+        PromptTemplates.clear_cache()
+        
+        return PromptTemplateResponse(
+            id=template.id,
+            name=template.name,
+            display_name=template.display_name,
+            description=template.description,
+            template_type=template.template_type,
+            content=template.content,
+            variables=template.variables,
+            is_default=template.is_default,
+            is_active=template.is_active,
+            created_at=template.created_at.isoformat() if template.created_at else "",
+            updated_at=template.updated_at.isoformat() if template.updated_at else ""
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"创建提示词模板失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"创建提示词模板失败: {str(e)}")
+
+
+@router.put("/prompt-templates/{template_id}", response_model=PromptTemplateResponse)
+async def update_prompt_template(
+    template_id: int,
+    template_data: PromptTemplateUpdate,
+    db: Session = Depends(get_db)
+):
+    """更新提示词模板"""
+    try:
+        template = db.query(PromptTemplate).filter(PromptTemplate.id == template_id).first()
+        if not template:
+            raise HTTPException(status_code=404, detail="提示词模板不存在")
+        
+        # 更新字段
+        if template_data.display_name is not None:
+            template.display_name = template_data.display_name
+        if template_data.description is not None:
+            template.description = template_data.description
+        if template_data.content is not None:
+            template.content = template_data.content
+        if template_data.variables is not None:
+            template.variables = template_data.variables
+        if template_data.is_active is not None:
+            template.is_active = template_data.is_active
+        
+        # 如果设置为默认模板，需要取消同类型其他默认模板
+        if template_data.is_default is not None and template_data.is_default:
+            existing_defaults = db.query(PromptTemplate).filter(
+                PromptTemplate.template_type == template.template_type,
+                PromptTemplate.is_default == True,
+                PromptTemplate.id != template_id
+            ).all()
+            for existing in existing_defaults:
+                existing.is_default = False
+            template.is_default = True
+        elif template_data.is_default is not None:
+            template.is_default = False
+        
+        db.commit()
+        db.refresh(template)
+        
+        # 清除缓存
+        PromptTemplates.clear_cache()
+        
+        return PromptTemplateResponse(
+            id=template.id,
+            name=template.name,
+            display_name=template.display_name,
+            description=template.description,
+            template_type=template.template_type,
+            content=template.content,
+            variables=template.variables,
+            is_default=template.is_default,
+            is_active=template.is_active,
+            created_at=template.created_at.isoformat() if template.created_at else "",
+            updated_at=template.updated_at.isoformat() if template.updated_at else ""
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"更新提示词模板失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"更新提示词模板失败: {str(e)}")
+
+
+@router.delete("/prompt-templates/{template_id}")
+async def delete_prompt_template(
+    template_id: int,
+    db: Session = Depends(get_db)
+):
+    """删除提示词模板"""
+    try:
+        template = db.query(PromptTemplate).filter(PromptTemplate.id == template_id).first()
+        if not template:
+            raise HTTPException(status_code=404, detail="提示词模板不存在")
+        
+        # 不允许删除默认模板
+        if template.is_default:
+            raise HTTPException(status_code=400, detail="不能删除默认模板，请先设置其他模板为默认")
+        
+        db.delete(template)
+        db.commit()
+        
+        # 清除缓存
+        PromptTemplates.clear_cache()
+        
+        return {"message": "提示词模板删除成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"删除提示词模板失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"删除提示词模板失败: {str(e)}")
 

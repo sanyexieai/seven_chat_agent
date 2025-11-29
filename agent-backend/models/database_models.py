@@ -205,6 +205,8 @@ class MCPTool(Base):
     output_schema = Column(JSON, nullable=True)  # 输出schema
     examples = Column(JSON, nullable=True)  # 示例
     tool_schema = Column(JSON, nullable=True)  # 工具schema（兼容性）
+    raw_data = Column(JSON, nullable=True)  # 原始工具数据（完整信息）
+    tool_metadata = Column(JSON, nullable=True)  # LLM整理后的元数据（args、使用场景、注意事项等）
     score = Column(Float, default=3.0)  # 工具评分：范围[1,5]，默认取中间值3.0
     is_available = Column(Boolean, default=True)  # 是否可用（由评分阈值计算并持久化）
     container_type = Column(String(50), nullable=True, default="none")  # 容器类型：browser, file, none
@@ -216,6 +218,24 @@ class MCPTool(Base):
     
     # 关联关系
     server = relationship("MCPServer", back_populates="tools")
+
+class PromptTemplate(Base):
+    """提示词模板表"""
+    __tablename__ = "prompt_templates"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True, nullable=False)  # 模板名称，如 "auto_infer"
+    display_name = Column(String(200), nullable=False)  # 显示名称
+    description = Column(Text, nullable=True)  # 描述
+    template_type = Column(String(50), nullable=False)  # 模板类型：system, user
+    content = Column(Text, nullable=False)  # 模板内容
+    variables = Column(JSON, nullable=True)  # 支持的变量列表
+    is_default = Column(Boolean, default=False)  # 是否为默认模板
+    is_active = Column(Boolean, default=True)  # 是否激活
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class TemporaryTool(Base):
     """临时工具表（通过代码编辑器生成）"""
@@ -373,6 +393,8 @@ class MCPToolResponse(BaseModel):
     output_schema: Optional[Dict[str, Any]] = None
     examples: Optional[List[Dict[str, Any]]] = None
     tool_schema: Optional[Dict[str, Any]] = None
+    raw_data: Optional[Dict[str, Any]] = None  # 原始工具数据（完整信息）
+    tool_metadata: Optional[Dict[str, Any]] = None  # LLM整理后的元数据
     container_type: Optional[str] = "none"
     container_config: Optional[Dict[str, Any]] = None
     is_active: bool

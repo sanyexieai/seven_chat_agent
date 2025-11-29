@@ -27,6 +27,8 @@ interface MCPTool {
   input_schema?: any;
   output_schema?: any;
   examples?: any[];
+  raw_data?: any;  // 原始工具数据（完整信息，包括 args 等）
+  tool_metadata?: any;  // LLM整理后的元数据（使用场景、注意事项等）
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -56,6 +58,8 @@ const MCPPage: React.FC = () => {
   const [success, setSuccess] = useState<string>('');
   const [showImportModal, setShowImportModal] = useState(false);
   const [importJson, setImportJson] = useState<string>('');
+  const [showToolDetailModal, setShowToolDetailModal] = useState(false);
+  const [selectedTool, setSelectedTool] = useState<MCPTool | null>(null);
 
   const [serverForm, setServerForm] = useState<MCPFormData>({
     name: '',
@@ -526,6 +530,15 @@ const MCPPage: React.FC = () => {
                   </div>
                   <div className="tool-actions">
                     <button 
+                      className="btn btn-small"
+                      onClick={() => {
+                        setSelectedTool(tool);
+                        setShowToolDetailModal(true);
+                      }}
+                    >
+                      详情
+                    </button>
+                    <button 
                       className="btn btn-small btn-danger"
                       onClick={() => deleteTool(tool.id)}
                     >
@@ -627,6 +640,165 @@ const MCPPage: React.FC = () => {
                 disabled={loading}
               >
                 {editingServer ? '更新' : '创建'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MCP工具详情模态框 */}
+      {showToolDetailModal && selectedTool && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: '800px', maxHeight: '90vh', overflow: 'auto' }}>
+            <div className="modal-header">
+              <h3>工具详情 - {selectedTool.display_name || selectedTool.name}</h3>
+              <button onClick={() => setShowToolDetailModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div style={{ marginBottom: '20px' }}>
+                <h4>基本信息</h4>
+                <p><strong>名称：</strong>{selectedTool.name}</p>
+                <p><strong>显示名称：</strong>{selectedTool.display_name || '—'}</p>
+                <p><strong>描述：</strong>{selectedTool.description || '—'}</p>
+                <p><strong>类型：</strong>{selectedTool.tool_type}</p>
+              </div>
+
+              {selectedTool.input_schema && (
+                <div style={{ marginBottom: '20px' }}>
+                  <h4>输入 Schema</h4>
+                  <pre style={{ 
+                    background: '#f5f5f5', 
+                    padding: '10px', 
+                    borderRadius: '4px',
+                    overflow: 'auto',
+                    maxHeight: '200px'
+                  }}>
+                    {JSON.stringify(selectedTool.input_schema, null, 2)}
+                  </pre>
+                </div>
+              )}
+
+              {selectedTool.output_schema && (
+                <div style={{ marginBottom: '20px' }}>
+                  <h4>输出 Schema</h4>
+                  <pre style={{ 
+                    background: '#f5f5f5', 
+                    padding: '10px', 
+                    borderRadius: '4px',
+                    overflow: 'auto',
+                    maxHeight: '200px'
+                  }}>
+                    {JSON.stringify(selectedTool.output_schema, null, 2)}
+                  </pre>
+                </div>
+              )}
+
+              {selectedTool.raw_data && (
+                <div style={{ marginBottom: '20px' }}>
+                  <h4>原始数据（包含参数信息）</h4>
+                  <pre style={{ 
+                    background: '#f5f5f5', 
+                    padding: '10px', 
+                    borderRadius: '4px',
+                    overflow: 'auto',
+                    maxHeight: '300px'
+                  }}>
+                    {JSON.stringify(selectedTool.raw_data, null, 2)}
+                  </pre>
+                </div>
+              )}
+
+              {selectedTool.tool_metadata && (
+                <div style={{ marginBottom: '20px' }}>
+                  <h4>LLM 整理的元数据</h4>
+                  {selectedTool.tool_metadata.args_description && (
+                    <div style={{ marginBottom: '10px' }}>
+                      <strong>参数说明：</strong>
+                      <p>{selectedTool.tool_metadata.args_description}</p>
+                    </div>
+                  )}
+                  {selectedTool.tool_metadata.usage_scenarios && selectedTool.tool_metadata.usage_scenarios.length > 0 && (
+                    <div style={{ marginBottom: '10px' }}>
+                      <strong>使用场景：</strong>
+                      <ul>
+                        {selectedTool.tool_metadata.usage_scenarios.map((scenario: string, idx: number) => (
+                          <li key={idx}>{scenario}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {selectedTool.tool_metadata.notes && (
+                    <div style={{ marginBottom: '10px' }}>
+                      <strong>注意事项：</strong>
+                      <p>{selectedTool.tool_metadata.notes}</p>
+                    </div>
+                  )}
+                  {selectedTool.tool_metadata.best_practices && (
+                    <div style={{ marginBottom: '10px' }}>
+                      <strong>最佳实践：</strong>
+                      <p>{selectedTool.tool_metadata.best_practices}</p>
+                    </div>
+                  )}
+                  {selectedTool.tool_metadata.category && (
+                    <div style={{ marginBottom: '10px' }}>
+                      <strong>类别：</strong>
+                      <span>{selectedTool.tool_metadata.category}</span>
+                    </div>
+                  )}
+                  {selectedTool.tool_metadata.tags && selectedTool.tool_metadata.tags.length > 0 && (
+                    <div style={{ marginBottom: '10px' }}>
+                      <strong>标签：</strong>
+                      {selectedTool.tool_metadata.tags.map((tag: string, idx: number) => (
+                        <span key={idx} style={{ 
+                          display: 'inline-block',
+                          background: '#e6f7ff',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          marginRight: '8px',
+                          marginBottom: '4px'
+                        }}>
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <details style={{ marginTop: '10px' }}>
+                    <summary style={{ cursor: 'pointer', color: '#1890ff' }}>查看完整元数据</summary>
+                    <pre style={{ 
+                      background: '#f5f5f5', 
+                      padding: '10px', 
+                      borderRadius: '4px',
+                      overflow: 'auto',
+                      maxHeight: '200px',
+                      marginTop: '10px'
+                    }}>
+                      {JSON.stringify(selectedTool.tool_metadata, null, 2)}
+                    </pre>
+                  </details>
+                </div>
+              )}
+
+              {selectedTool.examples && selectedTool.examples.length > 0 && (
+                <div style={{ marginBottom: '20px' }}>
+                  <h4>示例</h4>
+                  <pre style={{ 
+                    background: '#f5f5f5', 
+                    padding: '10px', 
+                    borderRadius: '4px',
+                    overflow: 'auto',
+                    maxHeight: '200px'
+                  }}>
+                    {JSON.stringify(selectedTool.examples, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button 
+                className="btn btn-secondary"
+                onClick={() => setShowToolDetailModal(false)}
+              >
+                关闭
               </button>
             </div>
           </div>

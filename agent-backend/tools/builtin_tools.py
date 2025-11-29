@@ -61,8 +61,18 @@ class CodeInterpreterTool(BaseTool):
     
     async def execute(self, parameters: Dict[str, Any]) -> Any:
         """执行代码解释器"""
-        if not CODE_INTERPRETER_AVAILABLE:
-            raise RuntimeError("代码解释器工具不可用")
+        # 动态检查工具是否可用，而不是依赖模块级别的标志
+        # 这样即使服务器在安装依赖前启动，也能在依赖安装后正常工作
+        try:
+            from tools.code_interpreter import code_interpreter_agent
+        except ImportError:
+            try:
+                from genie_tool.tool.code_interpreter import code_interpreter_agent
+            except ImportError:
+                raise RuntimeError(
+                    "代码解释器工具不可用：缺少依赖。"
+                    "请确保已安装 smolagents 和相关依赖，或安装 genie_tool 包。"
+                )
         
         task = parameters.get("task", "")
         file_names = parameters.get("file_names", [])
@@ -394,8 +404,18 @@ class ReportTool(BaseTool):
     
     async def execute(self, parameters: Dict[str, Any]) -> Any:
         """执行报告生成"""
-        if not REPORT_AVAILABLE:
-            raise RuntimeError("报告生成工具不可用")
+        # 动态检查工具是否可用，而不是依赖模块级别的标志
+        # 这样即使服务器在安装依赖前启动，也能在依赖安装后正常工作
+        try:
+            from tools.report import report
+        except ImportError:
+            try:
+                from genie_tool.tool.report import report
+            except ImportError:
+                raise RuntimeError(
+                    "报告生成工具不可用：缺少依赖。"
+                    "请确保已安装相关依赖，或安装 genie_tool 包。"
+                )
         
         task = parameters.get("task", "")
         file_names = parameters.get("file_names", [])

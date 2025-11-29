@@ -39,8 +39,19 @@ class MCPToolWrapper(BaseTool):
                 container_type = BaseTool.CONTAINER_TYPE_FILE
                 container_config = {"workspace_dir": "mcp_tools"}
         
+        # 获取服务器名称（用于工具名称）
+        db = SessionLocal()
+        try:
+            from models.database_models import MCPServer
+            server = db.query(MCPServer).filter(MCPServer.id == mcp_tool.server_id).first()
+            if not server:
+                raise ValueError(f"MCP服务器 {mcp_tool.server_id} 不存在")
+            server_name = server.name
+        finally:
+            db.close()
+        
         super().__init__(
-            name=f"mcp_{mcp_tool.server_id}_{mcp_tool.name}",
+            name=f"mcp_{server_name}_{mcp_tool.name}",
             description=mcp_tool.description or mcp_tool.display_name,
             container_type=container_type,
             container_config=container_config
@@ -64,26 +75,201 @@ class MCPToolWrapper(BaseTool):
         finally:
             db.close()
         
+        # 在调用前验证必需参数（提供更友好的错误信息）
+        schema = self.get_parameters_schema()
+        required_params = schema.get("required", [])
+        missing_params = [p for p in required_params if p not in parameters or parameters[p] is None]
+        if missing_params:
+            param_descriptions = []
+            properties = schema.get("properties", {})
+            for param in missing_params:
+                param_info = properties.get(param, {})
+                desc = param_info.get("description", "无描述")
+                param_descriptions.append(f"  - {param}: {desc}")
+            
+            error_msg = (
+                f"缺少必需参数: {', '.join(missing_params)}\n"
+                f"参数说明:\n" + "\n".join(param_descriptions)
+            )
+            raise ValueError(error_msg)
+        
         # 调用MCP工具
-        result = await self.agent_manager.mcp_helper.call_tool(
-            server_name=server_name,
-            tool_name=self.mcp_tool.name,
-            **parameters
-        )
-        return result
+        try:
+            result = await self.agent_manager.mcp_helper.call_tool(
+                server_name=server_name,
+                tool_name=self.mcp_tool.name,
+                **parameters
+            )
+            return result
+        except Exception as e:
+            # 如果错误信息包含 "Input validation error"，提供更友好的提示
+            error_str = str(e)
+            if "Input validation error" in error_str or "required property" in error_str:
+                # 提取缺失的参数名
+                import re
+                match = re.search(r"'(\w+)' is a required property", error_str)
+                if match:
+                    missing_param = match.group(1)
+                    param_info = schema.get("properties", {}).get(missing_param, {})
+                    param_desc = param_info.get("description", "无描述")
+                    raise ValueError(
+                        f"缺少必需参数 '{missing_param}': {param_desc}\n"
+                        f"请提供此参数后重试。"
+                    )
+            raise
     
     def get_parameters_schema(self) -> Dict[str, Any]:
-        """获取参数模式"""
+        """获取参数模式
+        
+        从数据库读取 schema，并增强参数描述（如果缺失）。
+        注意：数据库中的 schema 应该通过 sync_mcp_tools 从 MCP 服务器同步更新。
+        """
+        # 优先使用 input_schema（这是从 MCP 服务器同步的最新 schema）
+        schema = None
         if self.mcp_tool.input_schema:
-            return self.mcp_tool.input_schema
+            schema = self.mcp_tool.input_schema
+        # 回退到 tool_schema.input
         elif self.mcp_tool.tool_schema:
-            return self.mcp_tool.tool_schema.get("input", {})
+            schema = self.mcp_tool.tool_schema.get("input", {})
+        
+        # 规范化 schema 格式
+        if schema:
+            if isinstance(schema, dict):
+                # 如果 schema 是完整的 JSON Schema，直接使用
+                if "type" in schema or "properties" in schema:
+                    normalized_schema = schema.copy()
+                # 如果 schema 只是 properties，包装成完整的 JSON Schema
+                else:
+                    normalized_schema = {
+                        "type": "object",
+                        "properties": schema,
+                        "required": []
+                    }
+            else:
+                normalized_schema = {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
         else:
-            return {
+            normalized_schema = {
                 "type": "object",
                 "properties": {},
                 "required": []
             }
+        
+        # 增强参数描述：如果 schema 中的参数缺少 description，尝试补充
+        if "properties" in normalized_schema:
+            properties = normalized_schema.get("properties", {})
+            tool_description = self.mcp_tool.description or ""
+            examples = self.mcp_tool.examples or []
+            
+            for param_name, param_info in properties.items():
+                if not isinstance(param_info, dict):
+                    continue
+                
+                # 如果参数没有 description，尝试补充
+                if "description" not in param_info or not param_info.get("description"):
+                    # 方法1：从工具描述中提取相关信息
+                    if tool_description:
+                        # 尝试在工具描述中查找参数相关的描述
+                        param_desc = self._extract_param_description_from_text(
+                            param_name, tool_description
+                        )
+                        if param_desc:
+                            param_info["description"] = param_desc
+                    
+                    # 方法2：从示例中推断参数含义
+                    if "description" not in param_info or not param_info.get("description"):
+                        param_desc = self._infer_param_description_from_examples(
+                            param_name, examples
+                        )
+                        if param_desc:
+                            param_info["description"] = param_desc
+                    
+                    # 方法3：根据参数名称智能推断
+                    if "description" not in param_info or not param_info.get("description"):
+                        param_info["description"] = self._infer_param_description_from_name(param_name)
+        
+        return normalized_schema
+    
+    def _extract_param_description_from_text(self, param_name: str, text: str) -> Optional[str]:
+        """从文本中提取参数相关的描述"""
+        if not text:
+            return None
+        
+        # 简单的关键词匹配：查找包含参数名的句子
+        sentences = text.split('。')
+        for sentence in sentences:
+            if param_name.lower() in sentence.lower():
+                # 清理句子，移除参数名本身
+                cleaned = sentence.replace(param_name, "").strip()
+                if cleaned:
+                    return cleaned[:100]  # 限制长度
+        
+        return None
+    
+    def _infer_param_description_from_examples(self, param_name: str, examples: List[Any]) -> Optional[str]:
+        """从示例中推断参数含义"""
+        if not examples:
+            return None
+        
+        # 查找示例中该参数的值，推断其含义
+        for example in examples:
+            if isinstance(example, dict) and param_name in example:
+                value = example[param_name]
+                if isinstance(value, str) and len(value) > 0:
+                    # 如果值是 URL，说明是 URL 参数
+                    if value.startswith("http"):
+                        return "URL地址"
+                    # 如果值看起来像查询字符串
+                    elif len(value) > 10 and " " in value:
+                        return "查询内容"
+                    # 其他情况，返回值的类型提示
+                    elif isinstance(value, str):
+                        return f"字符串值（示例：{value[:20]}...）"
+        
+        return None
+    
+    def _infer_param_description_from_name(self, param_name: str) -> str:
+        """根据参数名称智能推断描述"""
+        param_lower = param_name.lower()
+        
+        # 常见参数名称映射
+        name_mappings = {
+            "url": "URL地址",
+            "query": "查询内容",
+            "text": "文本内容",
+            "content": "内容",
+            "message": "消息内容",
+            "input": "输入内容",
+            "output": "输出内容",
+            "file": "文件路径或名称",
+            "path": "路径",
+            "name": "名称",
+            "title": "标题",
+            "description": "描述",
+            "id": "标识符",
+            "key": "键值",
+            "value": "值",
+            "data": "数据",
+            "options": "选项",
+            "config": "配置",
+            "params": "参数",
+            "args": "参数列表",
+        }
+        
+        # 直接匹配
+        if param_lower in name_mappings:
+            return name_mappings[param_lower]
+        
+        # 部分匹配
+        for key, desc in name_mappings.items():
+            if key in param_lower:
+                return desc
+        
+        # 默认描述
+        return f"{param_name}参数"
 
 
 class TemporaryToolWrapper(BaseTool):
@@ -500,33 +686,38 @@ class ToolManager:
                 is_available = score >= self.min_available_score
 
                 if tool_type == "mcp":
-                    # mcp 工具在 DB 中的唯一标识：server_id + name
-                    # runtime 名称为 mcp_{server_id}_{name}
+                    # mcp 工具在 DB 中的唯一标识：server_name + name
+                    # runtime 名称为 mcp_{server_name}_{name}
                     if tool_name.startswith("mcp_"):
                         parts = tool_name.split("_", 2)
-                        # 期望格式：["mcp", "{server_id}", "{name}"]
+                        # 期望格式：["mcp", "{server_name}", "{name}"]
                         if len(parts) == 3:
-                            server_id_str, mcp_name = parts[1], parts[2]
+                            server_name, mcp_name = parts[1], parts[2]
                             try:
-                                server_id = int(server_id_str)
-                                mcp_row = (
-                                    db.query(MCPTool)
-                                    .filter(
-                                        MCPTool.server_id == server_id,
-                                        MCPTool.name == mcp_name,
+                                # 通过服务器名称查找服务器ID
+                                from models.database_models import MCPServer
+                                server = db.query(MCPServer).filter(MCPServer.name == server_name).first()
+                                if not server:
+                                    logger.warning(f"找不到服务器名称 {server_name}，tool_name={tool_name}")
+                                else:
+                                    mcp_row = (
+                                        db.query(MCPTool)
+                                        .filter(
+                                            MCPTool.server_id == server.id,
+                                            MCPTool.name == mcp_name,
+                                        )
+                                        .first()
                                     )
-                                    .first()
-                                )
-                                if mcp_row:
-                                    mcp_row.score = score
-                                    # 同步可用状态
-                                    if hasattr(mcp_row, "is_available"):
-                                        mcp_row.is_available = is_available
-                                    db.add(mcp_row)
-                            except ValueError:
-                                # server_id 解析失败时忽略持久化，但不影响内存
+                                    if mcp_row:
+                                        mcp_row.score = score
+                                        # 同步可用状态
+                                        if hasattr(mcp_row, "is_available"):
+                                            mcp_row.is_available = is_available
+                                        db.add(mcp_row)
+                            except Exception as e:
+                                # 解析失败时忽略持久化，但不影响内存
                                 logger.warning(
-                                    f"解析 MCP 工具 server_id 失败，tool_name={tool_name}"
+                                    f"解析 MCP 工具 server_name 失败，tool_name={tool_name}, error={e}"
                                 )
 
                 elif tool_type == "temporary":
@@ -786,11 +977,26 @@ class ToolManager:
         for name in tools_to_remove:
             if name in self.tools:
                 del self.tools[name]
+            if name in self.tool_types:
                 del self.tool_types[name]
+            if name in self.tool_scores:
+                del self.tool_scores[name]
+        # 清理工具类别中的MCP工具
+        for category in list(self.tool_categories.keys()):
+            self.tool_categories[category] = [
+                tool_name for tool_name in self.tool_categories[category]
+                if tool_name not in tools_to_remove
+            ]
+            # 如果类别为空，删除该类别
+            if not self.tool_categories[category]:
+                del self.tool_categories[category]
         # 重新注册MCP工具
         await self._register_mcp_tools()
+        # 重新组织工具类别
+        self._organize_tools_by_category()
         # 重新加载评分
         self._load_tool_scores_from_db()
+        logger.info(f"MCP工具重新加载完成，当前共有 {len([n for n, t in self.tool_types.items() if t == 'mcp'])} 个MCP工具")
     
     async def reload_temporary_tools(self):
         """重新加载临时工具"""
@@ -811,11 +1017,15 @@ class ToolManager:
         try:
             db = SessionLocal()
             # MCP 工具评分
+            from models.database_models import MCPServer
             mcp_tools = db.query(MCPTool).all()
             for t in mcp_tools:
                 if t.score is not None:
-                    tool_name = f"mcp_{t.server_id}_{t.name}"
-                    self.tool_scores[tool_name] = float(t.score)
+                    # 获取服务器名称
+                    server = db.query(MCPServer).filter(MCPServer.id == t.server_id).first()
+                    if server:
+                        tool_name = f"mcp_{server.name}_{t.name}"
+                        self.tool_scores[tool_name] = float(t.score)
             # 临时工具评分
             temp_tools = db.query(TemporaryTool).all()
             for t in temp_tools:

@@ -57,8 +57,9 @@ const { Option } = Select;
 const { TabPane } = Tabs;
 const { Sider } = Layout;
 
+// 提示词模板将从后端 API 获取，这里提供默认值作为后备
 const AUTO_INFER_DEFAULT_SYSTEM_PROMPT =
-  '你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。必须输出 JSON，对每个必填字段给出合理值。注意：不要生成 \'model\' 参数，该参数已废弃，由系统自动管理。';
+  '你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。必须输出 JSON，对每个必填字段给出合理值。';
 const AUTO_INFER_DEFAULT_USER_PROMPT = [
   '工具名称：{tool_name}',
   '工具类型：{tool_type}',
@@ -69,8 +70,7 @@ const AUTO_INFER_DEFAULT_USER_PROMPT = [
   '用户输入：{message}',
   '如果需要上下文，可参考上一节点输出：{previous_output}',
   '',
-  '请输出 JSON，严格遵守 schema 格式。',
-  '重要：不要包含 \'model\' 参数（如果 schema 中有，请忽略它）。'
+  '请输出 JSON，严格遵守 schema 格式。'
 ].join('\n');
 
 const normalizeAutoInferPrompt = (value: string | undefined, fallback: string) =>
@@ -624,6 +624,10 @@ const FlowEditorPage: React.FC = () => {
   const [availableTools, setAvailableTools] = useState<any[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
   
+  // 提示词模板状态（从后端获取）
+  const [autoInferSystemPrompt, setAutoInferSystemPrompt] = useState(AUTO_INFER_DEFAULT_SYSTEM_PROMPT);
+  const [autoInferUserPrompt, setAutoInferUserPrompt] = useState(AUTO_INFER_DEFAULT_USER_PROMPT);
+  
   // 设置侧边栏相关状态（参考通用智能体，除提示词外）
   const [settingsCollapsed, setSettingsCollapsed] = useState(true);
   const [settingsLoading, setSettingsLoading] = useState(false);
@@ -770,6 +774,21 @@ const FlowEditorPage: React.FC = () => {
     fetchAgents();
     fetchFlows(); // 组件加载时获取已保存的流程图
     fetchTemplates(); // 获取预制节点
+    
+    // 从后端获取提示词模板
+    fetch(API_PATHS.TOOLS_PROMPT_TEMPLATES_AUTO_INFER)
+      .then(res => res.json())
+      .then(data => {
+        if (data.system_prompt) {
+          setAutoInferSystemPrompt(data.system_prompt);
+        }
+        if (data.user_prompt_template) {
+          setAutoInferUserPrompt(data.user_prompt_template);
+        }
+      })
+      .catch(error => {
+        console.warn('加载提示词模板失败，使用默认值:', error);
+      });
     
     // 初始化时加载知识库列表，确保知识库节点配置时可用
     fetchKnowledgeBases().then(kbs => {
@@ -1313,8 +1332,8 @@ const FlowEditorPage: React.FC = () => {
         {
           target_tool_node_id: nodeId,
           auto_param_key: autoParamKey,
-          system_prompt: AUTO_INFER_DEFAULT_SYSTEM_PROMPT,
-          user_prompt: AUTO_INFER_DEFAULT_USER_PROMPT
+          system_prompt: autoInferSystemPrompt,
+          user_prompt: autoInferUserPrompt
         },
         { x: position.x, y: position.y }
       );
@@ -1401,14 +1420,14 @@ const FlowEditorPage: React.FC = () => {
       system_prompt: node.data.nodeType === 'llm'
         ? (node.data.config?.system_prompt || '')
         : node.data.nodeType === 'auto_infer'
-          ? normalizeAutoInferPrompt(node.data.config?.system_prompt, AUTO_INFER_DEFAULT_SYSTEM_PROMPT)
+          ? normalizeAutoInferPrompt(node.data.config?.system_prompt, autoInferSystemPrompt)
           : node.data.nodeType === 'planner'
             ? (node.data.config?.system_prompt || '')
             : (node.data.nodeType === 'judge' ? (node.data.config?.system_prompt || '') : undefined),
       user_prompt: node.data.nodeType === 'llm'
         ? (node.data.config?.user_prompt || '')
         : node.data.nodeType === 'auto_infer'
-          ? normalizeAutoInferPrompt(node.data.config?.user_prompt, AUTO_INFER_DEFAULT_USER_PROMPT)
+          ? normalizeAutoInferPrompt(node.data.config?.user_prompt, autoInferUserPrompt)
           : node.data.nodeType === 'planner'
             ? (node.data.config?.user_prompt || '')
             : (node.data.nodeType === 'judge' ? (node.data.config?.user_prompt || '') : undefined),

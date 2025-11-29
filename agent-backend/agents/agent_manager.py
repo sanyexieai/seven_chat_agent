@@ -7,7 +7,9 @@ from utils.log_helper import get_logger
 from database.database import SessionLocal
 from models.database_models import Agent as DBAgent, MCPServer, MCPTool as DBMCPTool
 from utils.mcp_helper import get_mcp_helper
+from utils.tool_info_llm import extract_tool_metadata_with_llm
 from sqlalchemy import text
+import json
 
 # 获取logger实例
 logger = get_logger("agent_manager")
@@ -728,13 +730,23 @@ class AgentManager:
             # 获取服务器配置
             server_config = self.mcp_configs.get(server_name)
             if not server_config:
-                logger.error(f"MCP服务器 {server_name} 配置不存在")
-                return False
+                logger.warning(f"MCP服务器 {server_name} 配置不存在，尝试重新加载配置...")
+                # 尝试重新加载配置
+                await self._load_mcp_configs()
+                server_config = self.mcp_configs.get(server_name)
+                if not server_config:
+                    logger.error(f"MCP服务器 {server_name} 配置重新加载后仍不存在")
+                    return False
+                # 重新初始化MCPHelper以包含新配置
+                await self._ensure_mcp_helper_initialized()
             
             # 真正连接到MCP服务器获取工具
             if not self.mcp_helper:
-                logger.error("MCP助手未初始化，无法同步工具")
-                return False
+                logger.error("MCP助手未初始化，尝试重新初始化...")
+                await self._ensure_mcp_helper_initialized()
+                if not self.mcp_helper:
+                    logger.error("MCP助手重新初始化失败，无法同步工具")
+                    return False
             
             try:
                 logger.info(f"正在从MCP服务器 {server_name} 获取工具...")
@@ -776,6 +788,44 @@ class AgentManager:
             # 清除现有工具
             db.query(DBMCPTool).filter(DBMCPTool.server_id == db_server.id).delete()
             
+            # 清理函数，用于移除不可序列化的对象
+            def clean_for_json(obj):
+                """递归清理对象，移除不可序列化的部分"""
+                if isinstance(obj, dict):
+                    result = {}
+                    for k, v in obj.items():
+                        # 跳过 Pydantic FieldInfo 等特殊对象
+                        if hasattr(v, '__class__') and 'FieldInfo' in str(type(v)):
+                            continue
+                        if hasattr(v, '__class__') and 'ModelField' in str(type(v)):
+                            continue
+                        try:
+                            # 尝试序列化以检查是否可序列化
+                            json.dumps(v)
+                            result[k] = clean_for_json(v)
+                        except (TypeError, ValueError):
+                            # 如果不可序列化，尝试转换为字符串
+                            try:
+                                result[k] = str(v)
+                            except:
+                                result[k] = f"<{type(v).__name__}>"
+                    return result
+                elif isinstance(obj, list):
+                    return [clean_for_json(item) for item in obj]
+                elif isinstance(obj, (str, int, float, bool, type(None))):
+                    return obj
+                else:
+                    # 尝试序列化
+                    try:
+                        json.dumps(obj)
+                        return obj
+                    except (TypeError, ValueError):
+                        # 如果不可序列化，转换为字符串
+                        try:
+                            return str(obj)
+                        except:
+                            return f"<{type(obj).__name__}>"
+            
             # 添加新工具
             for tool in tools:
                 # 处理不同类型的工具对象
@@ -784,9 +834,9 @@ class AgentManager:
                     tool_display_name = tool.get('displayName', '')
                     tool_description = tool.get('description', '')
                     tool_type = tool.get('type', 'tool')
-                    input_schema = tool.get('inputSchema', {})
-                    output_schema = tool.get('outputSchema', {})
-                    examples = tool.get('examples', [])
+                    input_schema = clean_for_json(tool.get('inputSchema', {}))
+                    output_schema = clean_for_json(tool.get('outputSchema', {}))
+                    examples = clean_for_json(tool.get('examples', []))
                 # 如果是StructuredTool对象
                 elif hasattr(tool, 'name'):
                     tool_name = getattr(tool, 'name', '')
@@ -831,21 +881,21 @@ class AgentManager:
                         # 如果是类对象，尝试获取其schema
                         if hasattr(input_schema_raw, 'schema'):
                             try:
-                                input_schema = input_schema_raw.schema()
+                                input_schema = clean_for_json(input_schema_raw.schema())
                             except:
                                 input_schema = {}
                         else:
-                            input_schema = input_schema_raw
+                            input_schema = clean_for_json(input_schema_raw)
                         
                         if hasattr(output_schema_raw, 'schema'):
                             try:
-                                output_schema = output_schema_raw.schema()
+                                output_schema = clean_for_json(output_schema_raw.schema())
                             except:
                                 output_schema = {}
                         else:
-                            output_schema = output_schema_raw
+                            output_schema = clean_for_json(output_schema_raw)
                         
-                        examples = getattr(tool, 'examples', [])
+                        examples = clean_for_json(getattr(tool, 'examples', []))
                     except Exception as e:
                         logger.warning(f"无法解析工具对象: {str(e)}")
                         continue
@@ -854,6 +904,38 @@ class AgentManager:
                 if not tool_name:
                     logger.warning(f"跳过没有名称的工具: {tool}")
                     continue
+                
+                # 获取工具的原始数据，并清理不可序列化的对象
+                if isinstance(tool, dict):
+                    raw_data = clean_for_json(tool)
+                else:
+                    # 序列化工具对象
+                    raw_data = {}
+                    for attr in dir(tool):
+                        if attr.startswith('_'):
+                            continue
+                        try:
+                            value = getattr(tool, attr)
+                            if callable(value):
+                                continue
+                            # 跳过 Pydantic FieldInfo 等特殊对象
+                            if hasattr(value, '__class__') and 'FieldInfo' in str(type(value)):
+                                continue
+                            if hasattr(value, '__class__') and 'ModelField' in str(type(value)):
+                                continue
+                            raw_data[attr] = clean_for_json(value)
+                        except:
+                            continue
+                
+                # 使用 LLM 整理工具信息
+                metadata = None
+                try:
+                    logger.info(f"使用 LLM 整理工具 {tool_name} 的信息...")
+                    metadata = await extract_tool_metadata_with_llm(raw_data)
+                    logger.info(f"工具 {tool_name} 的元数据整理完成")
+                except Exception as e:
+                    logger.warning(f"使用 LLM 整理工具 {tool_name} 信息失败: {str(e)}，将使用空元数据")
+                    metadata = {}
                 
                 mcp_tool = DBMCPTool(
                     server_id=db_server.id,
@@ -864,6 +946,8 @@ class AgentManager:
                     input_schema=input_schema,
                     output_schema=output_schema,
                     examples=examples,
+                    raw_data=raw_data,  # 保存原始数据
+                    tool_metadata=metadata,  # 保存 LLM 整理的元数据
                     is_active=True
                 )
                 db.add(mcp_tool)

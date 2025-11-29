@@ -30,7 +30,41 @@ class MCPHelper:
             self._client = None
             self._config = {}
             self._tools_cache = {}  # {server_name: [tools]}
+            self._tools_metadata_cache = {}  # {server_name: [{tool_name: metadata}]}
             self._initialized = True
+    
+    def _serialize_tool_object(self, tool_obj) -> Dict[str, Any]:
+        """序列化工具对象为字典"""
+        try:
+            if isinstance(tool_obj, dict):
+                return tool_obj
+            result = {}
+            # 尝试获取所有属性
+            for attr in dir(tool_obj):
+                if attr.startswith('_'):
+                    continue
+                try:
+                    value = getattr(tool_obj, attr)
+                    # 跳过方法
+                    if callable(value):
+                        continue
+                    # 尝试序列化
+                    if isinstance(value, (str, int, float, bool, type(None))):
+                        result[attr] = value
+                    elif isinstance(value, (list, dict)):
+                        result[attr] = value
+                    else:
+                        # 尝试转换为字符串
+                        try:
+                            result[attr] = str(value)
+                        except:
+                            result[attr] = f"<{type(value).__name__}>"
+                except:
+                    continue
+            return result
+        except Exception as e:
+            logger.warning(f"序列化工具对象失败: {str(e)}")
+            return {"error": str(e), "type": type(tool_obj).__name__}
 
     @staticmethod
     def auto_infer_transport(mcp_config):
@@ -178,19 +212,63 @@ class MCPHelper:
                 return self._tools_cache[server_name]
             
             try:
+                available_servers = list(self._config.get('mcpServers', {}).keys())
                 logger.info(f"从服务器 {server_name} 获取工具，配置: {self._config['mcpServers'].get(server_name, 'not found')}")
+                logger.info(f"当前可用的MCP服务器列表: {available_servers}")
+                
+                if server_name not in self._config.get('mcpServers', {}):
+                    error_msg = (
+                        f"服务器 '{server_name}' 不在MCP配置中。"
+                        f"当前可用的服务器: {available_servers}。"
+                        f"请检查服务器配置是否正确加载。"
+                    )
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                
                 tools = await self._client.get_tools(server_name=server_name)
                 logger.info(f"从服务器 {server_name} 获取到 {len(tools)} 个工具")
                 
-                # 详细记录工具信息
+                # 详细记录工具信息（包括完整原始数据）
+                if server_name not in self._tools_metadata_cache:
+                    self._tools_metadata_cache[server_name] = []
+                
                 for i, tool in enumerate(tools):
                     if isinstance(tool, dict):
                         tool_name = tool.get('name', 'unknown')
                         tool_desc = tool.get('description', 'no description')
+                        tool_metadata = {
+                            'name': tool_name,
+                            'description': tool_desc,
+                            'args': tool.get('args', {}),
+                            'inputSchema': tool.get('inputSchema', {}),
+                            'outputSchema': tool.get('outputSchema', {}),
+                            'examples': tool.get('examples', []),
+                            'type': tool.get('type', 'tool'),
+                            'displayName': tool.get('displayName', ''),
+                            'full_data': tool  # 保存完整原始数据
+                        }
                     else:
                         tool_name = getattr(tool, 'name', 'unknown')
                         tool_desc = getattr(tool, 'description', 'no description')
+                        tool_metadata = {
+                            'name': tool_name,
+                            'description': tool_desc,
+                            'args': getattr(tool, 'args', {}),
+                            'inputSchema': getattr(tool, 'input_schema', {}),
+                            'outputSchema': getattr(tool, 'output_schema', {}),
+                            'examples': getattr(tool, 'examples', []),
+                            'type': getattr(tool, 'type', 'tool'),
+                            'displayName': getattr(tool, 'display_name', ''),
+                            'full_data': self._serialize_tool_object(tool)  # 序列化完整对象
+                        }
+                    
                     logger.info(f"  工具 {i+1}: {tool_name} - {tool_desc}")
+                    if tool_metadata.get('args'):
+                        logger.debug(f"    参数: {tool_metadata['args']}")
+                    if tool_metadata.get('inputSchema'):
+                        logger.debug(f"    输入Schema: {tool_metadata['inputSchema']}")
+                    
+                    self._tools_metadata_cache[server_name].append(tool_metadata)
                 
                 self._tools_cache[server_name] = tools
                 return tools

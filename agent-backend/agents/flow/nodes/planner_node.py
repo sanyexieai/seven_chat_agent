@@ -87,7 +87,7 @@ PLANNER_USER_PROMPT_TEMPLATE = """请为以下任务生成一个流程图配置�
 
 工具使用规则：
 1. **内置工具**：tool_type 为 "builtin"，tool_name 直接使用工具名称（如 "report", "deep_search"），不需要 server 参数
-2. **MCP工具**：tool_type 为 "mcp"，tool_name 格式为 "mcp_{{server}}_{{tool_name}}"（如 "mcp_1_search"），server 为服务器编号（字符串格式，如 "1"）
+2. **MCP工具**：tool_type 为 "mcp"，tool_name 格式为 "mcp_{{server_name}}_{{tool_name}}"（如 "mcp_ddg_search"），server_name 为服务器名称（如 "ddg"）
 3. **临时工具**：tool_type 为 "temporary"，tool_name 格式为 "temp_{{tool_name}}"，不需要 server 参数
 4. 使用工具时，**必须**在前面添加 auto_infer 节点来自动生成参数
 5. auto_infer 节点的 target_tool_node_id 应该指向对应的 tool 节点 ID

@@ -242,7 +242,7 @@ class ToolNode(BaseFlowNode):
 					if not saved_file_path and isinstance(result_text, str) and result_text:
 						# 检测是否是搜索工具
 						is_search_tool = (
-							tool_name in ["deepsearch", "mcp_1_search", "mcp_ddg_search"] or
+							tool_name in ["deepsearch", "mcp_ddg_search"] or
 							"search" in tool_name.lower() or
 							(tool_type == "mcp" and tool and "search" in tool.lower())
 						)

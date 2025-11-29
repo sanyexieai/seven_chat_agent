@@ -4,6 +4,7 @@ from typing import Dict, Any, AsyncGenerator, Optional
 from models.chat_models import AgentMessage, StreamChunk
 from utils.log_helper import get_logger
 from utils.llm_helper import get_llm_helper
+from utils.prompt_templates import PromptTemplates
 
 from ..base_node import BaseFlowNode, NodeCategory
 
@@ -58,22 +59,63 @@ class AutoParamNode(BaseFlowNode):
 		user_prompt = self.config.get('user_prompt') or self._default_user_prompt()
 		
 		inputs = self.prepare_inputs(message, context)
-		prompt_variables = {
-			'message': message,
-			'tool_name': tool_name,
-			'tool_type': tool_type,
-			'server': server,
-			'schema_json': json.dumps(schema, ensure_ascii=False, indent=2) if schema else "{}",
-			'previous_output': inputs.get('last_output'),
-			'target_tool_node_id': target_node_id
-		}
+		schema_json = json.dumps(schema, ensure_ascii=False, indent=2) if schema else "{}"
+		previous_output = inputs.get('last_output')
 		
-		system_text = system_prompt.format(**prompt_variables)
-		try:
-			user_text = user_prompt.format(**prompt_variables)
-		except Exception:
-			# 兼容旧版 {{ }} 模板写法
-			user_text = self._render_template_value(user_prompt, prompt_variables)
+		# 如果使用默认提示词模板，使用统一模板生成
+		if system_prompt == self._default_system_prompt(tool_name):
+			system_text = system_prompt  # 系统提示词不需要格式化
+		else:
+			# 自定义系统提示词，尝试格式化
+			try:
+				system_text = system_prompt.format(
+					message=message,
+					tool_name=tool_name or "",
+					tool_type=tool_type or "",
+					server=server or "",
+					schema_json=schema_json,
+					previous_output=previous_output or "",
+					target_tool_node_id=target_node_id or ""
+				)
+			except Exception:
+				system_text = system_prompt
+		
+		# 如果使用默认用户提示词模板，使用统一模板生成
+		if user_prompt == self._default_user_prompt():
+			user_text = PromptTemplates.get_auto_infer_user_prompt(
+				tool_name=tool_name or "",
+				tool_type=tool_type,
+				server=server,
+				schema_json=schema_json,
+				message=message,
+				previous_output=previous_output,
+				required_fields_text="",  # auto_param_node 不单独列出必填字段
+				use_simple=True  # 使用简化模板
+			)
+		else:
+			# 自定义用户提示词，尝试格式化
+			try:
+				user_text = user_prompt.format(
+					message=message,
+					tool_name=tool_name or "",
+					tool_type=tool_type or "",
+					server=server or "",
+					schema_json=schema_json,
+					previous_output=previous_output or "",
+					target_tool_node_id=target_node_id or "",
+					required_fields_text=""  # 兼容旧模板
+				)
+			except Exception:
+				# 兼容旧版 {{ }} 模板写法
+				user_text = self._render_template_value(user_prompt, {
+					'message': message,
+					'tool_name': tool_name or "",
+					'tool_type': tool_type or "",
+					'server': server or "",
+					'schema_json': schema_json,
+					'previous_output': previous_output or "",
+					'target_tool_node_id': target_node_id or ""
+				})
 		
 		llm_helper = get_llm_helper()
 		messages = [
@@ -152,23 +194,13 @@ class AutoParamNode(BaseFlowNode):
 		return params
 	
 	def _default_system_prompt(self, tool_name: Optional[str]) -> str:
-		return (
-			"你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。"
-			"必须输出 JSON，对每个必填字段给出合理值。"
-			"注意：不要生成 'model' 参数，该参数已废弃，由系统自动管理。"
-		)
+		"""获取默认系统提示词（从统一模板获取）"""
+		return PromptTemplates.get_auto_infer_system_prompt()
 	
 	def _default_user_prompt(self) -> str:
-		return (
-			"工具名称：{tool_name}\n"
-			"工具类型：{tool_type}\n"
-			"服务器：{server}\n"
-			"参数 Schema：\n{schema_json}\n\n"
-			"用户输入：{message}\n"
-			"如果需要上下文，可参考上一节点输出：{previous_output}\n\n"
-			"请输出 JSON，严格遵守 schema 格式。"
-			"重要：不要包含 'model' 参数（如果 schema 中有，请忽略它）。"
-		)
+		"""获取默认用户提示词模板（从统一模板获取）"""
+		# 使用简化模板（不包含 required_fields_text），因为这里会在运行时填充
+		return PromptTemplates.AUTO_INFER_USER_PROMPT_SIMPLE_TEMPLATE
 	
 	def _get_auto_param_key(self) -> str:
 		return self.config.get('auto_param_key') or f"auto_params_{self.config.get('target_tool_node_id') or self.id}"

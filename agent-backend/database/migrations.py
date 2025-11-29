@@ -99,6 +99,9 @@ def run_migrations():
         # 运行知识库相关表迁移
         run_knowledge_base_migrations()
         
+        # 运行提示词模板表迁移
+        run_prompt_template_migrations()
+        
         # 运行知识图谱相关表迁移
         run_knowledge_graph_migrations()
         
@@ -179,6 +182,10 @@ def run_mcp_migrations():
                     missing_tool_columns.append('examples')
                 if not check_column_exists('mcp_tools', 'tool_schema'):
                     missing_tool_columns.append('tool_schema')
+                if not check_column_exists('mcp_tools', 'raw_data'):
+                    missing_tool_columns.append('raw_data')
+                if not check_column_exists('mcp_tools', 'tool_metadata'):
+                    missing_tool_columns.append('tool_metadata')
                 
                 if missing_tool_columns:
                     logger.info(f"发现缺失字段: {missing_tool_columns}")
@@ -198,6 +205,12 @@ def run_mcp_migrations():
                         elif column == 'tool_schema':
                             conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN tool_schema JSON;"))
                             logger.info("添加 tool_schema 字段")
+                        elif column == 'raw_data':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN raw_data JSON;"))
+                            logger.info("添加 raw_data 字段")
+                        elif column == 'tool_metadata':
+                            conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN tool_metadata JSON;"))
+                            logger.info("添加 tool_metadata 字段")
                         elif column == 'container_type':
                             conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN container_type VARCHAR(50) DEFAULT 'none';"))
                             logger.info("添加 container_type 字段")
@@ -218,6 +231,14 @@ def run_mcp_migrations():
                         logger.info("添加 container_config 字段到 mcp_tools 表...")
                         conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN container_config JSON;"))
                         logger.info("成功添加 container_config 字段")
+                    if not check_column_exists('mcp_tools', 'raw_data'):
+                        logger.info("添加 raw_data 字段到 mcp_tools 表...")
+                        conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN raw_data JSON;"))
+                        logger.info("成功添加 raw_data 字段")
+                    if not check_column_exists('mcp_tools', 'tool_metadata'):
+                        logger.info("添加 tool_metadata 字段到 mcp_tools 表...")
+                        conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN tool_metadata JSON;"))
+                        logger.info("成功添加 tool_metadata 字段")
             
             conn.commit()
                 
@@ -849,6 +870,113 @@ def create_default_agents():
     finally:
         db.close()
 
+def run_prompt_template_migrations():
+    """运行提示词模板相关的数据库迁移"""
+    logger.info("开始检查提示词模板相关表迁移...")
+    
+    try:
+        if not check_table_exists('prompt_templates'):
+            logger.info("创建 prompt_templates 表...")
+            Base.metadata.create_all(bind=engine, tables=[Base.metadata.tables['prompt_templates']])
+            logger.info("prompt_templates 表创建完成")
+        else:
+            logger.info("prompt_templates 表已存在")
+            
+            # 检查必要的字段
+            missing_columns = []
+            if not check_column_exists('prompt_templates', 'is_default'):
+                missing_columns.append('is_default')
+            if not check_column_exists('prompt_templates', 'is_active'):
+                missing_columns.append('is_active')
+            if not check_column_exists('prompt_templates', 'variables'):
+                missing_columns.append('variables')
+            
+            if missing_columns:
+                logger.info(f"发现缺失字段: {missing_columns}")
+                with engine.connect() as conn:
+                    for column in missing_columns:
+                        if column == 'is_default':
+                            conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN is_default BOOLEAN DEFAULT 0;"))
+                        elif column == 'is_active':
+                            conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
+                        elif column == 'variables':
+                            conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN variables JSON;"))
+                    conn.commit()
+                    logger.info("prompt_templates 表迁移完成")
+        
+        # 初始化默认提示词模板
+        create_default_prompt_templates()
+        
+    except Exception as e:
+        logger.error(f"提示词模板表迁移失败: {str(e)}")
+        raise
+
+
+def create_default_prompt_templates():
+    """创建默认提示词模板"""
+    from models.database_models import PromptTemplate
+    
+    db = SessionLocal()
+    try:
+        # 检查是否已有默认模板
+        existing = db.query(PromptTemplate).filter(
+            PromptTemplate.name == "auto_infer_system"
+        ).first()
+        
+        if existing:
+            logger.info("默认提示词模板已存在，跳过创建")
+            return
+        
+        # 默认系统提示词
+        system_template = PromptTemplate(
+            name="auto_infer_system",
+            display_name="自动推理系统提示词",
+            description="用于AI参数推理的系统提示词",
+            template_type="system",
+            content="你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。\n必须输出 JSON，对每个必填字段给出合理值。",
+            variables=["tool_name", "tool_type", "server", "schema_json", "message", "previous_output"],
+            is_default=True,
+            is_active=True
+        )
+        db.add(system_template)
+        
+        # 默认用户提示词（完整版）
+        user_template_full = PromptTemplate(
+            name="auto_infer_user_full",
+            display_name="自动推理用户提示词（完整版）",
+            description="用于AI参数推理的用户提示词，包含必填字段说明",
+            template_type="user",
+            content="工具名称：{tool_name}\n工具类型：{tool_type}\n服务器：{server}\n参数 Schema：\n{schema_json}\n{required_fields_text}\n用户输入：{message}\n如果需要上下文，可参考上一节点输出：{previous_output}\n\n请输出 JSON，严格遵守 schema 格式。\n重要：\n1. 必须包含所有必填字段（如果上面列出了必填字段）\n2. 根据字段类型和描述，为每个必填字段生成合理的值",
+            variables=["tool_name", "tool_type", "server", "schema_json", "required_fields_text", "message", "previous_output"],
+            is_default=True,
+            is_active=True
+        )
+        db.add(user_template_full)
+        
+        # 默认用户提示词（简化版）
+        user_template_simple = PromptTemplate(
+            name="auto_infer_user_simple",
+            display_name="自动推理用户提示词（简化版）",
+            description="用于AI参数推理的用户提示词，不包含必填字段说明（向后兼容）",
+            template_type="user",
+            content="工具名称：{tool_name}\n工具类型：{tool_type}\n服务器：{server}\n参数 Schema：\n{schema_json}\n\n用户输入：{message}\n如果需要上下文，可参考上一节点输出：{previous_output}\n\n请输出 JSON，严格遵守 schema 格式。",
+            variables=["tool_name", "tool_type", "server", "schema_json", "message", "previous_output"],
+            is_default=False,
+            is_active=True
+        )
+        db.add(user_template_simple)
+        
+        db.commit()
+        logger.info("默认提示词模板创建完成")
+        
+    except Exception as e:
+        logger.error(f"创建默认提示词模板失败: {str(e)}")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def run_tool_config_migrations():
     """运行工具配置表的数据库迁移"""
     logger.info("开始检查工具配置表迁移...")
@@ -967,6 +1095,9 @@ def init_database():
     # 创建默认LLM配置
     from database.database import create_default_llm_configs
     create_default_llm_configs()
+    
+    # 创建默认提示词模板
+    create_default_prompt_templates()
     
     logger.info("数据库初始化完成")
 

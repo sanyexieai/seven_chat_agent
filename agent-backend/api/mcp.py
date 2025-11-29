@@ -150,6 +150,14 @@ async def delete_mcp_server(
         if not server:
             raise HTTPException(status_code=404, detail="MCP服务器不存在")
         
+        # 先删除所有相关的工具记录（避免外键约束错误）
+        related_tools = db.query(MCPTool).filter(MCPTool.server_id == server_id).all()
+        if related_tools:
+            logger.info(f"删除服务器 {server_id} 的 {len(related_tools)} 个相关工具")
+            for tool in related_tools:
+                db.delete(tool)
+        
+        # 删除服务器
         db.delete(server)
         db.commit()
         
@@ -161,7 +169,8 @@ async def delete_mcp_server(
         raise
     except Exception as e:
         logger.error(f"删除MCP服务器失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="删除MCP服务器失败")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"删除MCP服务器失败: {str(e)}")
 
 @router.get("/tools", response_model=List[MCPToolResponse])
 async def get_all_mcp_tools(
@@ -291,7 +300,8 @@ async def update_mcp_tool(
 @router.delete("/tools/{tool_id}")
 async def delete_mcp_tool(
     tool_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    agent_manager: AgentManager = Depends(get_agent_manager)
 ):
     """删除MCP工具"""
     try:
@@ -299,15 +309,32 @@ async def delete_mcp_tool(
         if not tool:
             raise HTTPException(status_code=404, detail="MCP工具不存在")
         
+        # 记录工具名称用于日志
+        tool_name = tool.name
+        server_id = tool.server_id
+        
         db.delete(tool)
         db.commit()
+        logger.info(f"已从数据库删除MCP工具: {tool_name} (ID: {tool_id}, Server ID: {server_id})")
+        
+        # 重新加载MCP工具到工具管理器
+        if agent_manager and agent_manager.tool_manager:
+            try:
+                await agent_manager.tool_manager.reload_mcp_tools()
+                logger.info(f"MCP工具 {tool_id} ({tool_name}) 删除成功，工具管理器已重新加载")
+            except Exception as e:
+                logger.error(f"重新加载MCP工具失败: {str(e)}")
+                # 不抛出异常，因为数据库删除已经成功
+        else:
+            logger.warning("AgentManager 或 ToolManager 未初始化，无法重新加载工具")
         
         return {"message": "MCP工具删除成功"}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"删除MCP工具失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="删除MCP工具失败")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"删除MCP工具失败: {str(e)}")
 
 @router.post("/servers/{server_name}/sync")
 async def sync_mcp_tools(

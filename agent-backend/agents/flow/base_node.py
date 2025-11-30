@@ -390,6 +390,50 @@ class BaseFlowNode(ABC):
 		if save_as:
 			self._save_to_flow_state(context, save_as, output, also_save_as_last_output=False)
 	
+	# ===== Pipeline 管道操作（统一数据管理） =====
+	def get_pipeline(self, context: Dict[str, Any]):
+		"""获取 Pipeline 实例（便捷方法）
+		
+		Args:
+			context: 流程上下文字典
+			
+		Returns:
+			Pipeline 实例
+		"""
+		from .pipeline import get_pipeline
+		return get_pipeline(context)
+	
+	def pipeline_put(self, context: Dict[str, Any], key: str, value: Any, namespace: str = 'global') -> None:
+		"""向管道写入数据（便捷方法）"""
+		pipeline = self.get_pipeline(context)
+		pipeline.put(key, value, namespace=namespace)
+	
+	def pipeline_get(self, context: Dict[str, Any], key: str, default: Any = None, namespace: str = 'global') -> Any:
+		"""从管道读取数据（便捷方法）"""
+		pipeline = self.get_pipeline(context)
+		return pipeline.get(key, default, namespace=namespace)
+	
+	def pipeline_put_node(self, context: Dict[str, Any], key: str, value: Any) -> None:
+		"""向当前节点的命名空间写入数据（便捷方法）"""
+		pipeline = self.get_pipeline(context)
+		pipeline.put_node(self.id, key, value)
+	
+	def pipeline_get_node(self, context: Dict[str, Any], key: str, default: Any = None) -> Any:
+		"""从当前节点的命名空间读取数据（便捷方法）"""
+		pipeline = self.get_pipeline(context)
+		return pipeline.get_node(self.id, key, default)
+	
+	def pipeline_put_file(self, context: Dict[str, Any], file_key: str, file_path: str, 
+	                     file_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> None:
+		"""向管道注册文件（便捷方法）"""
+		pipeline = self.get_pipeline(context)
+		pipeline.put_file(file_key, file_path, file_type, metadata)
+	
+	def pipeline_get_file(self, context: Dict[str, Any], file_key: str) -> Optional[Dict[str, Any]]:
+		"""从管道获取文件信息（便捷方法）"""
+		pipeline = self.get_pipeline(context)
+		return pipeline.get_file(file_key)
+	
 	# ===== 挂载容器（可选） =====
 	def get_mount_spec(self) -> Optional[Dict[str, Any]]:
 		"""返回挂载容器规范，例如:

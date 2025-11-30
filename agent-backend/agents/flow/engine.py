@@ -217,6 +217,12 @@ class FlowEngine:
 		agent_name: Optional[str] = None
 	) -> List[AgentMessage]:
 		context = context or {}
+		
+		# 初始化 Pipeline（如果尚未初始化）
+		from .pipeline import get_pipeline
+		pipeline = get_pipeline(context)
+		pipeline.sync_to_flow_state(context)
+		
 		results: List[AgentMessage] = []
 		
 		current_id = self.get_start_node_id(start_node_id)

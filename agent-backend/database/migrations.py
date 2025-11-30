@@ -884,23 +884,87 @@ def run_prompt_template_migrations():
             
             # 检查必要的字段
             missing_columns = []
-            if not check_column_exists('prompt_templates', 'is_default'):
-                missing_columns.append('is_default')
+            if not check_column_exists('prompt_templates', 'is_builtin'):
+                missing_columns.append('is_builtin')
+            if not check_column_exists('prompt_templates', 'version'):
+                missing_columns.append('version')
+            if not check_column_exists('prompt_templates', 'usage_count'):
+                missing_columns.append('usage_count')
+            if not check_column_exists('prompt_templates', 'source_file'):
+                missing_columns.append('source_file')
             if not check_column_exists('prompt_templates', 'is_active'):
                 missing_columns.append('is_active')
             if not check_column_exists('prompt_templates', 'variables'):
                 missing_columns.append('variables')
             
+            # 检查是否需要移除 is_default 字段（如果存在）
+            if check_column_exists('prompt_templates', 'is_default'):
+                logger.info("检测到旧字段 is_default，将在迁移中移除...")
+                missing_columns.append('_remove_is_default')
+            
             if missing_columns:
-                logger.info(f"发现缺失字段: {missing_columns}")
+                logger.info(f"发现需要迁移的字段: {missing_columns}")
                 with engine.connect() as conn:
                     for column in missing_columns:
-                        if column == 'is_default':
-                            conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN is_default BOOLEAN DEFAULT 0;"))
+                        if column == 'is_builtin':
+                            conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN is_builtin BOOLEAN DEFAULT 0;"))
+                            logger.info("添加 is_builtin 字段")
+                        elif column == 'version':
+                            conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN version VARCHAR(50);"))
+                            logger.info("添加 version 字段")
+                        elif column == 'usage_count':
+                            conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN usage_count INTEGER DEFAULT 0;"))
+                            logger.info("添加 usage_count 字段")
+                        elif column == 'source_file':
+                            conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN source_file VARCHAR(500);"))
+                            logger.info("添加 source_file 字段")
                         elif column == 'is_active':
                             conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
+                            logger.info("添加 is_active 字段")
                         elif column == 'variables':
                             conn.execute(text("ALTER TABLE prompt_templates ADD COLUMN variables JSON;"))
+                            logger.info("添加 variables 字段")
+                        elif column == '_remove_is_default':
+                            # SQLite 不支持直接删除列，需要重建表
+                            logger.info("移除 is_default 字段（SQLite需要重建表）...")
+                            try:
+                                # 创建新表（不包含 is_default）
+                                conn.execute(text("""
+                                    CREATE TABLE prompt_templates_new (
+                                        id INTEGER PRIMARY KEY,
+                                        name VARCHAR(100) UNIQUE NOT NULL,
+                                        display_name VARCHAR(200) NOT NULL,
+                                        description TEXT,
+                                        template_type VARCHAR(50) NOT NULL,
+                                        content TEXT NOT NULL,
+                                        variables JSON,
+                                        is_builtin BOOLEAN DEFAULT 0,
+                                        version VARCHAR(50),
+                                        usage_count INTEGER DEFAULT 0,
+                                        source_file VARCHAR(500),
+                                        is_active BOOLEAN DEFAULT 1,
+                                        created_at DATETIME,
+                                        updated_at DATETIME
+                                    );
+                                """))
+                                # 复制数据（排除 is_default）
+                                conn.execute(text("""
+                                    INSERT INTO prompt_templates_new 
+                                    (id, name, display_name, description, template_type, content, variables, 
+                                     is_builtin, version, usage_count, source_file, is_active, created_at, updated_at)
+                                    SELECT id, name, display_name, description, template_type, content, variables,
+                                           COALESCE(is_builtin, 0), COALESCE(version, '1.0.0'), 
+                                           COALESCE(usage_count, 0), source_file, 
+                                           COALESCE(is_active, 1), created_at, updated_at
+                                    FROM prompt_templates;
+                                """))
+                                # 删除旧表
+                                conn.execute(text("DROP TABLE prompt_templates;"))
+                                # 重命名新表
+                                conn.execute(text("ALTER TABLE prompt_templates_new RENAME TO prompt_templates;"))
+                                logger.info("成功移除 is_default 字段")
+                            except Exception as e:
+                                logger.warning(f"移除 is_default 字段失败（可能已不存在）: {str(e)}")
                     conn.commit()
                     logger.info("prompt_templates 表迁移完成")
         
@@ -918,15 +982,53 @@ def create_default_prompt_templates():
     
     db = SessionLocal()
     try:
-        # 检查是否已有默认模板
-        existing = db.query(PromptTemplate).filter(
-            PromptTemplate.name == "auto_infer_system"
-        ).first()
+        # 检查是否已有提示词模板
+        existing_count = db.query(PromptTemplate).count()
         
-        if existing:
-            logger.info("默认提示词模板已存在，跳过创建")
-            return
+        # 总是调用提取脚本，因为它会检查并更新/创建缺失的提示词
+        logger.info(f"当前数据库中有 {existing_count} 个提示词模板，开始同步所有提示词...")
+        db.close()
         
+        # 调用提取脚本，将所有提示词提取到数据库（会自动创建缺失的，更新已存在的）
+        try:
+            import sys
+            import os
+            # 确保可以导入 scripts 模块
+            # 获取 agent-backend 目录路径
+            backend_dir = os.path.dirname(os.path.dirname(__file__))
+            scripts_path = os.path.join(backend_dir, 'scripts')
+            # 将 scripts 目录添加到 sys.path
+            if scripts_path not in sys.path:
+                sys.path.insert(0, scripts_path)
+            # 同时将 backend_dir 添加到 sys.path，确保可以导入其他模块
+            if backend_dir not in sys.path:
+                sys.path.insert(0, backend_dir)
+            
+            from extract_prompts_to_db import extract_prompts_to_database
+            extract_prompts_to_database()
+            logger.info("所有提示词已成功同步到数据库")
+        except Exception as e:
+            logger.error(f"提取提示词失败: {str(e)}", exc_info=True)
+            if existing_count == 0:
+                logger.info("回退到创建基础默认提示词模板...")
+                # 如果提取失败且数据库为空，至少创建基础的3个默认模板
+                _create_basic_default_prompt_templates()
+            else:
+                logger.warning("提取提示词失败，但数据库中已有部分提示词，跳过后备方案")
+        
+    except Exception as e:
+        logger.error(f"创建默认提示词模板失败: {str(e)}")
+        db.rollback()
+        db.close()
+        raise
+
+
+def _create_basic_default_prompt_templates():
+    """创建基础的默认提示词模板（作为后备方案）"""
+    from models.database_models import PromptTemplate
+    
+    db = SessionLocal()
+    try:
         # 默认系统提示词
         system_template = PromptTemplate(
             name="auto_infer_system",
@@ -935,7 +1037,10 @@ def create_default_prompt_templates():
             template_type="system",
             content="你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。\n必须输出 JSON，对每个必填字段给出合理值。",
             variables=["tool_name", "tool_type", "server", "schema_json", "message", "previous_output"],
-            is_default=True,
+            is_builtin=True,
+            version="1.0.0",
+            usage_count=0,
+            source_file="utils/prompt_templates.py",
             is_active=True
         )
         db.add(system_template)
@@ -948,7 +1053,10 @@ def create_default_prompt_templates():
             template_type="user",
             content="工具名称：{tool_name}\n工具类型：{tool_type}\n服务器：{server}\n参数 Schema：\n{schema_json}\n{required_fields_text}\n用户输入：{message}\n如果需要上下文，可参考上一节点输出：{previous_output}\n\n请输出 JSON，严格遵守 schema 格式。\n重要：\n1. 必须包含所有必填字段（如果上面列出了必填字段）\n2. 根据字段类型和描述，为每个必填字段生成合理的值",
             variables=["tool_name", "tool_type", "server", "schema_json", "required_fields_text", "message", "previous_output"],
-            is_default=True,
+            is_builtin=True,
+            version="1.0.0",
+            usage_count=0,
+            source_file="utils/prompt_templates.py",
             is_active=True
         )
         db.add(user_template_full)
@@ -961,16 +1069,19 @@ def create_default_prompt_templates():
             template_type="user",
             content="工具名称：{tool_name}\n工具类型：{tool_type}\n服务器：{server}\n参数 Schema：\n{schema_json}\n\n用户输入：{message}\n如果需要上下文，可参考上一节点输出：{previous_output}\n\n请输出 JSON，严格遵守 schema 格式。",
             variables=["tool_name", "tool_type", "server", "schema_json", "message", "previous_output"],
-            is_default=False,
+            is_builtin=True,
+            version="1.0.0",
+            usage_count=0,
+            source_file="utils/prompt_templates.py",
             is_active=True
         )
         db.add(user_template_simple)
         
         db.commit()
-        logger.info("默认提示词模板创建完成")
+        logger.info("基础默认提示词模板创建完成（后备方案）")
         
     except Exception as e:
-        logger.error(f"创建默认提示词模板失败: {str(e)}")
+        logger.error(f"创建基础默认提示词模板失败: {str(e)}")
         db.rollback()
         raise
     finally:

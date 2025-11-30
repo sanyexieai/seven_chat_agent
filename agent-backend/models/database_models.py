@@ -230,8 +230,11 @@ class PromptTemplate(Base):
     template_type = Column(String(50), nullable=False)  # 模板类型：system, user
     content = Column(Text, nullable=False)  # 模板内容
     variables = Column(JSON, nullable=True)  # 支持的变量列表
-    is_default = Column(Boolean, default=False)  # 是否为默认模板
+    is_builtin = Column(Boolean, default=False)  # 是否为内置模板（从代码中提取的）
+    version = Column(String(50), nullable=True)  # 版本号，如 "1.0.0"
+    usage_count = Column(Integer, default=0)  # 引用次数
     is_active = Column(Boolean, default=True)  # 是否激活
+    source_file = Column(String(500), nullable=True)  # 来源文件路径
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

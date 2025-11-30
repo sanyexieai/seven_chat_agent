@@ -1,0 +1,20 @@
+.prompt-templates-layout {
+  min-height: 100vh;
+  background: #f0f2f5;
+}
+
+.prompt-templates-container {
+  padding: 24px;
+}
+
+.prompt-templates-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.prompt-templates-header h2 {
+  margin: 0;
+}
+

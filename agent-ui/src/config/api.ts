@@ -65,6 +65,10 @@ export const API_PATHS = {
         TOOLS_TEMPORARY_BY_ID: (id: number | string) => `/api/tools/temporary/${id}`,
         TOOLS_CONTAINER: (toolName: string) => `/api/tools/${encodeURIComponent(toolName)}/container`,
   
+  // 提示词模板相关
+  PROMPT_TEMPLATES: '/api/tools/prompt-templates',
+  PROMPT_TEMPLATE_BY_ID: (id: number | string) => `/api/tools/prompt-templates/${id}`,
+  
   // 健康检查
   HEALTH: '/api/health',
   HEALTH_ROOT: '/health',

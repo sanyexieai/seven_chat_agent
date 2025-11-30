@@ -14,6 +14,7 @@ import LLMConfigPage from './pages/LLMConfigPage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
 import KnowledgeQueryPage from './pages/KnowledgeQueryPage';
 import ToolsPage from './pages/ToolsPage';
+import PromptTemplatesPage from './pages/PromptTemplatesPage';
 
 import SettingsPage from './pages/SettingsPage';
 
@@ -37,6 +38,7 @@ const App: React.FC = () => {
             <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
             <Route path="/knowledge-query" element={<KnowledgeQueryPage />} />
             <Route path="/tools" element={<ToolsPage />} />
+            <Route path="/prompt-templates" element={<PromptTemplatesPage />} />
 
             <Route path="/settings" element={<SettingsPage />} />
 

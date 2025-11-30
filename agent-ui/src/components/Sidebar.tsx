@@ -28,6 +28,7 @@ import {
   ApiOutlined,
   ToolOutlined,
   BranchesOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -261,6 +262,12 @@ const Sidebar: React.FC = () => {
                     label: '',
                     title: '工具管理',
                   },
+                  {
+                    key: '/prompt-templates',
+                    icon: <FileTextOutlined />,
+                    label: '',
+                    title: '提示词模板',
+                  },
                 ]}
               />
             </div>
@@ -318,6 +325,11 @@ const Sidebar: React.FC = () => {
                     key: '/tools',
                     icon: <ToolOutlined />,
                     label: '工具管理',
+                  },
+                  {
+                    key: '/prompt-templates',
+                    icon: <FileTextOutlined />,
+                    label: '提示词模板',
                   },
                 ]}
               />

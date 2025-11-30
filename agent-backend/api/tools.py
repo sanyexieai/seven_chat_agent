@@ -713,7 +713,7 @@ class PromptTemplateCreate(BaseModel):
     template_type: str  # system, user
     content: str
     variables: Optional[List[str]] = None
-    is_default: bool = False
+    version: Optional[str] = None  # 版本号，如 "1.0.0"
     is_active: bool = True
 
 
@@ -723,7 +723,7 @@ class PromptTemplateUpdate(BaseModel):
     description: Optional[str] = None
     content: Optional[str] = None
     variables: Optional[List[str]] = None
-    is_default: Optional[bool] = None
+    version: Optional[str] = None
     is_active: Optional[bool] = None
 
 
@@ -736,7 +736,10 @@ class PromptTemplateResponse(BaseModel):
     template_type: str
     content: str
     variables: Optional[List[str]]
-    is_default: bool
+    is_builtin: bool
+    version: Optional[str]
+    usage_count: int
+    source_file: Optional[str]
     is_active: bool
     created_at: str
     updated_at: str
@@ -771,7 +774,10 @@ async def get_prompt_templates(
                 template_type=t.template_type,
                 content=t.content,
                 variables=t.variables,
-                is_default=t.is_default,
+                is_builtin=t.is_builtin if hasattr(t, 'is_builtin') else False,
+                version=t.version if hasattr(t, 'version') else None,
+                usage_count=t.usage_count if hasattr(t, 'usage_count') else 0,
+                source_file=t.source_file if hasattr(t, 'source_file') else None,
                 is_active=t.is_active,
                 created_at=t.created_at.isoformat() if t.created_at else "",
                 updated_at=t.updated_at.isoformat() if t.updated_at else ""
@@ -802,7 +808,10 @@ async def get_prompt_template(
             template_type=template.template_type,
             content=template.content,
             variables=template.variables,
-            is_default=template.is_default,
+            is_builtin=template.is_builtin if hasattr(template, 'is_builtin') else False,
+            version=template.version if hasattr(template, 'version') else None,
+            usage_count=template.usage_count if hasattr(template, 'usage_count') else 0,
+            source_file=template.source_file if hasattr(template, 'source_file') else None,
             is_active=template.is_active,
             created_at=template.created_at.isoformat() if template.created_at else "",
             updated_at=template.updated_at.isoformat() if template.updated_at else ""
@@ -826,15 +835,6 @@ async def create_prompt_template(
         if existing:
             raise HTTPException(status_code=400, detail="提示词模板名称已存在")
         
-        # 如果设置为默认模板，需要取消同类型其他默认模板
-        if template_data.is_default:
-            existing_defaults = db.query(PromptTemplate).filter(
-                PromptTemplate.template_type == template_data.template_type,
-                PromptTemplate.is_default == True
-            ).all()
-            for existing in existing_defaults:
-                existing.is_default = False
-        
         template = PromptTemplate(
             name=template_data.name,
             display_name=template_data.display_name,
@@ -842,7 +842,9 @@ async def create_prompt_template(
             template_type=template_data.template_type,
             content=template_data.content,
             variables=template_data.variables,
-            is_default=template_data.is_default,
+            version=template_data.version or "1.0.0",
+            is_builtin=False,  # 用户创建的模板不是内置的
+            usage_count=0,
             is_active=template_data.is_active
         )
         
@@ -861,7 +863,10 @@ async def create_prompt_template(
             template_type=template.template_type,
             content=template.content,
             variables=template.variables,
-            is_default=template.is_default,
+            is_builtin=template.is_builtin if hasattr(template, 'is_builtin') else False,
+            version=template.version if hasattr(template, 'version') else None,
+            usage_count=template.usage_count if hasattr(template, 'usage_count') else 0,
+            source_file=template.source_file if hasattr(template, 'source_file') else None,
             is_active=template.is_active,
             created_at=template.created_at.isoformat() if template.created_at else "",
             updated_at=template.updated_at.isoformat() if template.updated_at else ""
@@ -895,21 +900,10 @@ async def update_prompt_template(
             template.content = template_data.content
         if template_data.variables is not None:
             template.variables = template_data.variables
+        if template_data.version is not None:
+            template.version = template_data.version
         if template_data.is_active is not None:
             template.is_active = template_data.is_active
-        
-        # 如果设置为默认模板，需要取消同类型其他默认模板
-        if template_data.is_default is not None and template_data.is_default:
-            existing_defaults = db.query(PromptTemplate).filter(
-                PromptTemplate.template_type == template.template_type,
-                PromptTemplate.is_default == True,
-                PromptTemplate.id != template_id
-            ).all()
-            for existing in existing_defaults:
-                existing.is_default = False
-            template.is_default = True
-        elif template_data.is_default is not None:
-            template.is_default = False
         
         db.commit()
         db.refresh(template)
@@ -925,7 +919,10 @@ async def update_prompt_template(
             template_type=template.template_type,
             content=template.content,
             variables=template.variables,
-            is_default=template.is_default,
+            is_builtin=template.is_builtin if hasattr(template, 'is_builtin') else False,
+            version=template.version if hasattr(template, 'version') else None,
+            usage_count=template.usage_count if hasattr(template, 'usage_count') else 0,
+            source_file=template.source_file if hasattr(template, 'source_file') else None,
             is_active=template.is_active,
             created_at=template.created_at.isoformat() if template.created_at else "",
             updated_at=template.updated_at.isoformat() if template.updated_at else ""
@@ -949,9 +946,9 @@ async def delete_prompt_template(
         if not template:
             raise HTTPException(status_code=404, detail="提示词模板不存在")
         
-        # 不允许删除默认模板
-        if template.is_default:
-            raise HTTPException(status_code=400, detail="不能删除默认模板，请先设置其他模板为默认")
+        # 不允许删除内置模板
+        if hasattr(template, 'is_builtin') and template.is_builtin:
+            raise HTTPException(status_code=400, detail="不能删除内置模板")
         
         db.delete(template)
         db.commit()

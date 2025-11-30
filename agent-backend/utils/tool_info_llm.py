@@ -64,16 +64,22 @@ async def extract_tool_metadata_with_llm(tool_raw_data: Dict[str, Any]) -> Dict[
 请确保输出是有效的 JSON 格式。"""
 
         # 调用 LLM
-        response = await llm_helper.chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        response = await llm_helper.call(
+            messages=messages,
             temperature=0.3  # 使用较低的温度以确保输出稳定
         )
         
-        # 解析响应
-        content = response.get('content', '{}')
+        # 解析响应 - call 方法直接返回字符串内容
+        if isinstance(response, str):
+            content = response
+        elif isinstance(response, dict):
+            content = response.get('content', str(response))
+        else:
+            content = str(response)
         
         # 尝试提取 JSON（可能被代码块包裹）
         if '```json' in content:

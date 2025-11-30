@@ -345,7 +345,7 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
 
 
 
-@router.post("/sessions")
+@router.post("/sessions", name="create_chat_session")
 async def create_chat_session(request: dict, db: Session = Depends(get_db)):
     """创建新的聊天会话"""
     try:
@@ -383,7 +383,7 @@ async def create_chat_session(request: dict, db: Session = Depends(get_db)):
             detail=f"创建聊天会话失败: {str(e)}"
         )
 
-@router.get("/sessions/{user_id}")
+@router.get("/sessions/{user_id}", name="get_user_sessions_chat")
 async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
     """获取用户的所有聊天会话"""
     try:
@@ -483,19 +483,6 @@ async def create_chat_message(message: MessageCreate, db: Session = Depends(get_
             detail=f"创建聊天消息失败: {str(e)}"
         )
 
-@router.get("/sessions/{user_id}")
-async def get_user_sessions_legacy(user_id: str, db: Session = Depends(get_db)):
-    """获取用户的会话列表（兼容性端点）"""
-    try:
-        sessions = SessionService.get_user_sessions(db, user_id)
-        logger.info(f"获取用户 {user_id} 的会话，共 {len(sessions)} 个")
-        return sessions
-    except Exception as e:
-        logger.error(f"获取用户会话失败: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"获取用户会话失败: {str(e)}"
-        )
 
 @router.post("/sessions")
 async def create_session(user_id: str, agent_id: int, db: Session = Depends(get_db)):

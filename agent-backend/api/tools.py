@@ -63,6 +63,20 @@ async def get_all_tools(
         raise HTTPException(status_code=500, detail=f"获取工具列表失败: {str(e)}")
 
 
+# 兼容无尾斜杠路径：/api/tools
+@router.get("", response_model=Dict[str, Any])
+async def get_all_tools_no_slash(
+    tool_type: Optional[str] = None,
+    category: Optional[str] = None,
+    tool_manager: ToolManager = Depends(get_tool_manager)
+):
+    """
+    兼容 /api/tools（无尾斜杠） 的访问方式。
+    实际逻辑复用 get_all_tools，避免在生产环境被 SPA 通配符路由拦截成 404。
+    """
+    return await get_all_tools(tool_type=tool_type, category=category, tool_manager=tool_manager)
+
+
 @router.get("/types/{tool_type}", response_model=List[Dict[str, Any]])
 async def get_tools_by_type(
     tool_type: str,

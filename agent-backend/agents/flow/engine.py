@@ -509,12 +509,17 @@ class FlowEngine:
 		if not final_chunk:
 			final_content = context.get('flow_state', {}).get('last_output', '')
 			logger.info(f"未找到 final chunk，创建新的 final chunk，content length={len(final_content) if final_content else 0}")
+			# 在最终响应中包含 flow_state（包含 pipeline 数据）
+			flow_state = context.get('flow_state', {})
 			final_chunk = StreamChunk(
 				chunk_id=str(uuid.uuid4()),
 				session_id=session_id,
 				type="final",
 				content=final_content,
 				agent_name=agent_name or "FlowEngine",
+				metadata={
+					'flow_state': flow_state  # 包含 pipeline_data, pipeline_files, pipeline_history
+				},
 				is_end=True
 			)
 		else:
@@ -545,6 +550,14 @@ class FlowEngine:
 			logger.warning("on_final 钩子未设置，无法保存助手消息")
 		
 		# 发送最终块（在on_final之后发送，确保消息已保存）
+		# 确保 final_chunk 包含 flow_state（如果还没有）
+		if final_chunk and not final_chunk.metadata.get('flow_state'):
+			flow_state = context.get('flow_state', {})
+			if final_chunk.metadata:
+				final_chunk.metadata['flow_state'] = flow_state
+			else:
+				final_chunk.metadata = {'flow_state': flow_state}
+		
 		if self.on_chunk:
 			final_chunk = self.on_chunk(final_chunk) or final_chunk
 		if final_chunk:

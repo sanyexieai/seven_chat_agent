@@ -1,0 +1,127 @@
+.flow-context-panel {
+  height: 100%;
+}
+
+.flow-context-panel .ant-card-body {
+  height: calc(100% - 57px);
+  overflow: auto;
+}
+
+.context-panel-content {
+  padding: 8px 0;
+}
+
+.context-namespace {
+  margin-bottom: 16px;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  padding: 8px;
+  background: #fafafa;
+}
+
+.context-namespace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.context-namespace-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.context-item {
+  padding: 8px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #e8e8e8;
+  transition: all 0.2s;
+}
+
+.context-item:hover {
+  border-color: #1890ff;
+  box-shadow: 0 2px 4px rgba(24, 144, 255, 0.1);
+}
+
+.context-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.context-item-value {
+  padding: 4px 0;
+  word-break: break-all;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  color: #595959;
+  background: #f5f5f5;
+  padding: 8px;
+  border-radius: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.context-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.context-history-item {
+  padding: 8px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #e8e8e8;
+  border-left: 3px solid #1890ff;
+}
+
+.context-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.context-history-value {
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: #f5f5f5;
+  border-radius: 2px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 11px;
+  color: #595959;
+  word-break: break-all;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+/* 折叠面板样式优化 */
+.flow-context-panel .ant-collapse {
+  background: transparent;
+}
+
+.flow-context-panel .ant-collapse-item {
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  background: white;
+}
+
+.flow-context-panel .ant-collapse-header {
+  padding: 8px 12px;
+}
+
+.flow-context-panel .ant-collapse-content {
+  border-top: 1px solid #e8e8e8;
+}
+
+.flow-context-panel .ant-collapse-content-box {
+  padding: 12px;
+}
+

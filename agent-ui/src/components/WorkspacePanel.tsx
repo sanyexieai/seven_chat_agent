@@ -16,6 +16,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { RobotOutlined, SettingOutlined, BranchesOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import FlowContextPanel, { PipelineData } from './FlowContextPanel';
 
 const { Text } = Typography;
 
@@ -145,6 +146,21 @@ const RouterNode = ({ data }: { data: any }) => {
   );
 };
 
+// Info 节点组件（用于显示提示信息）
+const InfoNode = ({ data }: { data: any }) => {
+  const colors = getNodeColors(data.status, '#1890ff', '#e6f7ff');
+  return (
+    <div style={{ padding: '10px', border: `2px solid ${colors.border}`, borderRadius: '8px', background: colors.background, minWidth: '80px' }}>
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '16px', color: colors.iconColor, marginBottom: '4px' }}>ℹ️</div>
+        <div style={{ fontWeight: 'bold', fontSize: '12px' }}>{data.label}</div>
+      </div>
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  );
+};
+
 // 节点类型映射
 const nodeTypes: NodeTypes = {
   start: StartNode,
@@ -153,6 +169,7 @@ const nodeTypes: NodeTypes = {
   agent: AgentNode,
   end: EndNode,
   router: RouterNode,
+  info: InfoNode, // 添加 info 节点类型
   default: LlmNode // 默认使用LLM节点样式
 };
 
@@ -219,6 +236,8 @@ interface WorkspacePanelProps {
 			failedNodes: string[];
 		};
 	};
+	// 新增：Pipeline 上下文数据
+	pipelineContext?: PipelineData | null;
 }
 
 const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
@@ -228,7 +247,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 	onClose,
 	onClear,
 	onCollapse,
-	flowData
+	flowData,
+	pipelineContext
 }) => {
 	const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -582,6 +602,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 												</div>
 											)}
 										</Card>
+									</div>
+								) : tab.key === 'context' ? (
+									// 上下文容器
+									<div style={{ height: '100%' }}>
+										<FlowContextPanel
+											contextData={pipelineContext || undefined}
+											onRefresh={() => {
+												// 可以在这里实现刷新逻辑
+												console.log('刷新上下文数据');
+											}}
+										/>
 									</div>
 								) : (
 									// 其他标签页的原有内容

@@ -7,6 +7,7 @@ import asyncio
 import json
 import uuid
 from typing import List
+from datetime import datetime
 
 logger = get_logger("general_agent")
 
@@ -624,19 +625,19 @@ class GeneralAgent(BaseAgent):
             
             # 更新对话历史
             agent_context.messages.append(AgentMessage(
-                message_id=str(uuid.uuid4()),
-                user_id=user_id,
+                id=str(uuid.uuid4()),
                 type=MessageType.USER,
                 content=message,
-                timestamp=asyncio.get_event_loop().time()
+                agent_name=self.name,
+                timestamp=datetime.now()
             ))
             
             agent_context.messages.append(AgentMessage(
-                message_id=str(uuid.uuid4()),
-                user_id=user_id,
+                id=str(uuid.uuid4()),
                 type=MessageType.AGENT,
                 content=full_response,
-                timestamp=asyncio.get_event_loop().time(),
+                agent_name=self.name,
+                timestamp=datetime.now(),
                 metadata={"tools_used": tools_used}
             ))
             

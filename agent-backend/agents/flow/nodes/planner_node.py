@@ -1026,20 +1026,67 @@ class PlannerNode(BaseFlowNode):
 			logger.error(f"获取可用工具列表失败: {str(e)}", exc_info=True)
 			return f"获取工具列表失败: {str(e)}"
 	
-	def _format_parameters_schema(self, params_schema: Dict[str, Any]) -> str:
-		"""格式化参数 schema 为易读的字符串"""
-		if not params_schema or not isinstance(params_schema, dict):
+	def _format_parameters_schema(self, params_schema: Any) -> str:
+		"""格式化参数 schema 为易读的字符串
+		
+		支持多种格式：
+		- 字典格式（标准 JSON Schema）：{"type": "object", "properties": {...}, "required": [...]}
+		- 列表格式：可能是参数列表或其他格式
+		"""
+		if not params_schema:
 			return ""
 		
 		try:
+			# 处理列表格式
+			if isinstance(params_schema, list):
+				if not params_schema:
+					return ""
+				# 如果是空列表或第一个元素不是字典，返回简单描述
+				if len(params_schema) == 0:
+					return ""
+				# 尝试将列表格式转换为描述
+				if isinstance(params_schema[0], dict):
+					# 可能是参数定义列表
+					param_descs = []
+					for item in params_schema:
+						if isinstance(item, dict):
+							name = item.get('name', item.get('key', 'unknown'))
+							param_type = item.get('type', 'string')
+							param_desc = item.get('description', '')
+							is_required = item.get('required', False)
+							required_mark = "(必填)" if is_required else "(可选)"
+							desc = f"{name}: {param_type} {required_mark}"
+							if param_desc:
+								desc += f" - {param_desc}"
+							param_descs.append(desc)
+					return ", ".join(param_descs) if param_descs else ""
+				else:
+					# 简单列表，返回类型描述
+					return f"列表（{len(params_schema)} 项）"
+			
+			# 处理字典格式（标准 JSON Schema）
+			if not isinstance(params_schema, dict):
+				return ""
+			
 			properties = params_schema.get('properties', {})
 			required = params_schema.get('required', [])
 			
 			if not properties:
+				# 如果没有 properties，可能是其他格式的 schema
+				# 检查是否是简单的类型定义
+				if 'type' in params_schema:
+					schema_type = params_schema.get('type', 'unknown')
+					description = params_schema.get('description', '')
+					desc = f"类型: {schema_type}"
+					if description:
+						desc += f" - {description}"
+					return desc
 				return ""
 			
 			param_descs = []
 			for param_name, param_info in properties.items():
+				if not isinstance(param_info, dict):
+					continue
 				param_type = param_info.get('type', 'string')
 				param_desc = param_info.get('description', '')
 				is_required = param_name in required
@@ -1049,8 +1096,11 @@ class PlannerNode(BaseFlowNode):
 					param_descs.append(f"{param_name}: 对象 {required_mark}")
 				elif param_type == 'array':
 					items = param_info.get('items', {})
-					item_type = items.get('type', 'string')
-					param_descs.append(f"{param_name}: {item_type}数组 {required_mark}")
+					if isinstance(items, dict):
+						item_type = items.get('type', 'string')
+						param_descs.append(f"{param_name}: {item_type}数组 {required_mark}")
+					else:
+						param_descs.append(f"{param_name}: 数组 {required_mark}")
 				else:
 					param_descs.append(f"{param_name}: {param_type} {required_mark}")
 				if param_desc:

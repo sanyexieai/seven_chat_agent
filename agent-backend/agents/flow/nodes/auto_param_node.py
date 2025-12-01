@@ -80,8 +80,28 @@ class AutoParamNode(BaseFlowNode):
 			except Exception:
 				system_text = system_prompt
 		
-		# 如果使用默认用户提示词模板，使用统一模板生成
+		# 如果使用默认用户提示词模板，使用统一模板生成（带“全局视角”）
 		if user_prompt == self._default_user_prompt():
+			# 根据 schema 提取必填字段信息，帮助 LLM 正确理解工具能力
+			required_fields_text = ""
+			if isinstance(schema, dict):
+				properties = schema.get('properties') or {}
+				required_fields = schema.get('required') or []
+				if isinstance(required_fields, list) and required_fields:
+					lines = ["必填字段："]
+					for field in required_fields:
+						info = properties.get(field, {}) if isinstance(properties, dict) else {}
+						field_type = info.get('type', '')
+						desc = info.get('description', '')
+						line = f"- {field}"
+						if field_type:
+							line += f" ({field_type})"
+						if desc:
+							line += f": {desc}"
+						lines.append(line)
+					required_fields_text = "\n".join(lines)
+			
+			# 使用完整模板：包含工具 schema、必填字段、用户输入和上一节点输出
 			user_text = PromptTemplates.get_auto_infer_user_prompt(
 				tool_name=tool_name or "",
 				tool_type=tool_type,
@@ -89,8 +109,8 @@ class AutoParamNode(BaseFlowNode):
 				schema_json=schema_json,
 				message=message,
 				previous_output=previous_output,
-				required_fields_text="",  # auto_param_node 不单独列出必填字段
-				use_simple=True  # 使用简化模板
+				required_fields_text=required_fields_text,
+				use_simple=False  # 使用完整模板，提供更强的“全局观念”
 			)
 		else:
 			# 自定义用户提示词，尝试格式化
@@ -127,10 +147,14 @@ class AutoParamNode(BaseFlowNode):
 			params = self._parse_params(response)
 			if not params:
 				params = self._fallback_params(message, schema)
+			
+			# 根据 schema 对参数做一次规范化处理（例如 query -> url）
+			params = self._normalize_params(params, schema)
 			return params
 		except Exception as exc:
 			logger.error(f"自动推理节点 {self.id} 调用 LLM 失败: {exc}")
-			return self._fallback_params(message, schema)
+			params = self._fallback_params(message, schema)
+			return self._normalize_params(params, schema)
 	
 	async def _get_tool_schema(self, tool_name: Optional[str], tool_type: Optional[str], server: Optional[str]) -> Optional[Dict[str, Any]]:
 		try:
@@ -182,6 +206,27 @@ class AutoParamNode(BaseFlowNode):
 			return json.loads(clean)
 		except Exception:
 			return None
+	
+	def _normalize_params(self, params: Dict[str, Any], schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+		"""
+		根据工具参数 schema 规范化字段名。
+		
+		典型场景：
+		- 工具要求字段为 url，但 LLM 生成了 query 字段，则自动将 query 映射到 url。
+		"""
+		if not isinstance(params, dict):
+			return params
+		
+		if not isinstance(schema, dict):
+			return params
+		
+		required = schema.get('required') or []
+		if isinstance(required, list):
+			# 如果必填字段包含 url，但当前参数只有 query，则自动映射
+			if 'url' in required and 'url' not in params and 'query' in params:
+				params = params.copy()
+				params['url'] = params.get('query')
+		return params
 	
 	def _fallback_params(self, message: str, schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 		params: Dict[str, Any] = {}

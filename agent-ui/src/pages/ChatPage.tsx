@@ -128,6 +128,7 @@ const ChatPage: React.FC = () => {
   // 右侧工作空间：用于展示每次工具执行的结果
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTabItem[]>([
     { key: 'live_follow', title: '实时跟随', content: '', createdAt: new Date(), closable: false },
+    { key: 'context', title: '上下文', content: '', createdAt: new Date(), closable: false },
     { key: 'browser', title: '浏览器', content: '这里可展示网页预览或抓取结果', createdAt: new Date(), closable: false },
     { key: 'files', title: '文件', content: '这里显示相关文件/下载链接', createdAt: new Date(), closable: false },
     { key: 'todolist', title: '待办', content: '', createdAt: new Date(), closable: false },
@@ -189,6 +190,14 @@ const ChatPage: React.FC = () => {
       failedNodes: []
     }
   });
+
+  // Pipeline 上下文数据状态
+  const [pipelineContext, setPipelineContext] = useState<{
+    pipeline_data?: Record<string, Record<string, any>>;
+    pipeline_files?: Record<string, Record<string, any>>;
+    pipeline_history?: Array<any>;
+    flow_state?: Record<string, any>;
+  } | null>(null);
 
   // 从智能体配置生成流程图数据
   const generateFlowDataFromAgent = (agent: any): FlowData => {
@@ -1349,6 +1358,17 @@ const ChatPage: React.FC = () => {
                     // 最终响应：直接替换内容，不累加
                     fullContent = data.content; // 直接替换，不累加
                     
+                    // 提取 pipeline 上下文数据
+                    if (data.metadata?.flow_state) {
+                      const flowState = data.metadata.flow_state;
+                      setPipelineContext({
+                        pipeline_data: flowState.pipeline_data,
+                        pipeline_files: flowState.pipeline_files,
+                        pipeline_history: flowState.pipeline_history,
+                        flow_state: flowState
+                      });
+                    }
+                    
                     // 如果有节点信息，将最终内容添加到对应节点（通常是结束节点）
                     if (data.metadata?.node_id) {
                       setMessages(prev => {
@@ -1964,7 +1984,7 @@ const ChatPage: React.FC = () => {
                             <div className="message-header">
                               <Text className="message-name">AI助手</Text>
                             </div>
-                              <div className="message-text"> 
+                            <div className="message-text"> 
                               {/* 如果有节点，显示节点执行过程的详细信息 */}
                               {msg.nodes && msg.nodes.length > 0 && (
                                 <div style={{ marginTop: msg.content ? '16px' : '0' }}>
@@ -2049,6 +2069,13 @@ const ChatPage: React.FC = () => {
                                       </div>
                                     </div>
                                   ))}
+                                </div>
+                              )}
+                              
+                              {/* 显示消息内容（对于普通智能体，没有节点但有内容的情况） */}
+                              {msg.content && (
+                                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                  {msg.content}
                                 </div>
                               )}
                               
@@ -2280,6 +2307,7 @@ const ChatPage: React.FC = () => {
             }}
             onCollapse={() => setWorkspaceCollapsed(true)}
             flowData={flowData}
+            pipelineContext={pipelineContext}
           />
         )}
       </div>

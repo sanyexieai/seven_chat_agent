@@ -11,7 +11,8 @@ from pydantic import BaseModel
 from models.database_models import (
     TemporaryTool, TemporaryToolCreate, TemporaryToolUpdate, TemporaryToolResponse,
     ToolConfig, ToolConfigCreate, ToolConfigUpdate, ToolConfigResponse,
-    PromptTemplate
+    PromptTemplate,
+    ToolPromptLink, ToolPromptLinkCreate, ToolPromptLinkUpdate, ToolPromptLinkResponse,
 )
 from utils.log_helper import get_logger
 from utils.llm_helper import get_llm_helper
@@ -173,6 +174,11 @@ class ResetToolScoreRequest(BaseModel):
     tool_name: str
 
 
+class ToolPromptLinkQuery(BaseModel):
+    """查询某个工具与提示词的关联"""
+    scene: Optional[str] = None
+
+
 @router.post("/infer-params")
 async def infer_tool_params(
     req: InferParamsRequest,
@@ -287,8 +293,32 @@ async def infer_tool_params(
         if tool_examples:
             additional_context += f"\n\n工具示例：\n{json.dumps(tool_examples, ensure_ascii=False, indent=2)}"
         
-        # 从统一模板获取提示词
-        system_prompt = PromptTemplates.get_auto_infer_system_prompt()
+        # 从工具-提示词关联表优先获取 scene=auto_param 的模板
+        system_prompt: Optional[str] = None
+        user_prompt: Optional[str] = None
+        try:
+            if req.tool_name:
+                link = db.query(ToolPromptLink).filter(
+                    ToolPromptLink.tool_name == req.tool_name,
+                    ToolPromptLink.scene == "auto_param",
+                    ToolPromptLink.is_active == True,
+                ).first()
+                if link:
+                    prompt = db.query(PromptTemplate).filter(
+                        PromptTemplate.id == link.prompt_id,
+                        PromptTemplate.is_active == True,
+                    ).first()
+                    if prompt:
+                        if prompt.template_type == "system":
+                            system_prompt = prompt.content
+                        else:
+                            user_prompt = prompt.content
+        except Exception as exc:
+            logger.warning(f"infer-params 加载工具提示词关联失败: {exc}")
+        
+        # 如果没有绑定系统提示词，使用统一默认模板
+        if not system_prompt:
+            system_prompt = PromptTemplates.get_auto_infer_system_prompt()
 
         schema_json = json.dumps(schema, ensure_ascii=False, indent=2) if schema else "{}"
         # 如果没有提供用户输入，自动构造一段用于推断的说明
@@ -297,17 +327,31 @@ async def infer_tool_params(
             "请确保包含所有必填字段。"
         )
         
-        # 使用统一模板生成用户提示词，并添加额外上下文
-        user_text = PromptTemplates.get_auto_infer_user_prompt(
-            tool_name=req.tool_name or "",
-            tool_type=req.tool_type,
-            server=req.server,
-            schema_json=schema_json,
-            message=message_text,
-            previous_output=None,
-            required_fields_text=required_fields_text + additional_context,  # 添加元数据信息
-            use_simple=False  # 使用完整模板（包含 required_fields_text）
-        )
+        # 使用绑定模板或统一模板生成用户提示词，并添加额外上下文
+        if user_prompt:
+            try:
+                user_text = user_prompt.format(
+                    tool_name=req.tool_name or "",
+                    tool_type=req.tool_type or "",
+                    server=req.server or "",
+                    schema_json=schema_json,
+                    message=message_text,
+                    previous_output=None,
+                    required_fields_text=required_fields_text + additional_context,
+                )
+            except Exception:
+                user_text = user_prompt
+        else:
+            user_text = PromptTemplates.get_auto_infer_user_prompt(
+                tool_name=req.tool_name or "",
+                tool_type=req.tool_type,
+                server=req.server,
+                schema_json=schema_json,
+                message=message_text,
+                previous_output=None,
+                required_fields_text=required_fields_text + additional_context,  # 添加元数据信息
+                use_simple=False  # 使用完整模板（包含 required_fields_text）
+            )
         
         system_text = system_prompt
 
@@ -381,6 +425,110 @@ async def reset_tool_score(
     except Exception as e:
         logger.error(f"重置工具评分失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"重置工具评分失败: {str(e)}")
+
+
+@router.get("/{tool_name}/prompts", response_model=List[ToolPromptLinkResponse])
+async def get_tool_prompts(
+    tool_name: str,
+    scene: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """获取某个工具绑定的提示词列表（可按 scene 过滤）"""
+    try:
+        query = db.query(ToolPromptLink).filter(
+            ToolPromptLink.tool_name == tool_name
+        )
+        if scene:
+            query = query.filter(ToolPromptLink.scene == scene)
+        
+        links = query.all()
+        return links
+    except Exception as e:
+        logger.error(f"获取工具提示词关联失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取工具提示词关联失败")
+
+
+@router.post("/{tool_name}/prompts", response_model=ToolPromptLinkResponse)
+async def create_or_update_tool_prompt(
+    tool_name: str,
+    data: ToolPromptLinkCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    为某个工具创建或更新提示词关联
+    
+    约定：同一 tool_name + scene 只保留一条记录，重复调用会更新原记录的 prompt_id / is_active。
+    """
+    try:
+        # 如果 path 中未传 tool_name，则使用 body 中的
+        if not tool_name:
+            tool_name = data.tool_name
+        
+        # 校验提示词是否存在且激活
+        prompt = db.query(PromptTemplate).filter(
+            PromptTemplate.id == data.prompt_id,
+            PromptTemplate.is_active == True,
+        ).first()
+        if not prompt:
+            raise HTTPException(status_code=404, detail="提示词模板不存在或未激活")
+        
+        scene = data.scene or "auto_param"
+        
+        # 查找是否已有同一 tool_name + scene 的记录
+        existing = db.query(ToolPromptLink).filter(
+            ToolPromptLink.tool_name == tool_name,
+            ToolPromptLink.scene == scene,
+        ).first()
+        
+        if existing:
+            existing.tool_type = data.tool_type or existing.tool_type
+            existing.prompt_id = data.prompt_id
+            if data.is_active is not None:
+                existing.is_active = data.is_active
+            db.commit()
+            db.refresh(existing)
+            return existing
+        
+        # 创建新记录
+        link = ToolPromptLink(
+            tool_name=tool_name,
+            tool_type=data.tool_type,
+            scene=scene,
+            prompt_id=data.prompt_id,
+            is_active=data.is_active if data.is_active is not None else True,
+        )
+        db.add(link)
+        db.commit()
+        db.refresh(link)
+        return link
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"创建/更新工具提示词关联失败: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="创建/更新工具提示词关联失败")
+
+
+@router.delete("/prompts/{link_id}")
+async def delete_tool_prompt_link(
+    link_id: int,
+    db: Session = Depends(get_db),
+):
+    """删除某条工具-提示词关联"""
+    try:
+        link = db.query(ToolPromptLink).filter(ToolPromptLink.id == link_id).first()
+        if not link:
+            raise HTTPException(status_code=404, detail="关联记录不存在")
+        
+        db.delete(link)
+        db.commit()
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除工具提示词关联失败: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="删除工具提示词关联失败")
 
 
 @router.get("/prompt-templates/auto-infer")

@@ -5,6 +5,8 @@ from models.chat_models import AgentMessage, StreamChunk
 from utils.log_helper import get_logger
 from utils.llm_helper import get_llm_helper
 from utils.prompt_templates import PromptTemplates
+from database.database import SessionLocal
+from models.database_models import ToolPromptLink, PromptTemplate
 
 from ..base_node import BaseFlowNode, NodeCategory
 
@@ -55,8 +57,38 @@ class AutoParamNode(BaseFlowNode):
 		server = self.config.get('server')
 		target_node_id = self.config.get('target_tool_node_id')
 		schema = await self._get_tool_schema(tool_name, tool_type, server)
-		system_prompt = self.config.get('system_prompt') or self._default_system_prompt(tool_name)
-		user_prompt = self.config.get('user_prompt') or self._default_user_prompt()
+		
+		# 从工具-提示词关联表中按 scene=auto_param 查找绑定的模板
+		system_prompt = self.config.get('system_prompt')
+		user_prompt = self.config.get('user_prompt')
+		if not system_prompt or not user_prompt:
+			db = SessionLocal()
+			try:
+				if tool_name:
+					link = db.query(ToolPromptLink).filter(
+						ToolPromptLink.tool_name == tool_name,
+						ToolPromptLink.scene == "auto_param",
+						ToolPromptLink.is_active == True,
+					).first()
+					if link:
+						prompt = db.query(PromptTemplate).filter(
+							PromptTemplate.id == link.prompt_id,
+							PromptTemplate.is_active == True,
+						).first()
+						if prompt:
+							# system 类型模板放到 system_prompt，其它放到 user_prompt
+							if prompt.template_type == "system":
+								system_prompt = prompt.content
+							else:
+								user_prompt = prompt.content
+			except Exception as exc:
+				logger.warning(f"自动推理节点 {self.id} 加载工具提示词关联失败: {exc}")
+			finally:
+				db.close()
+		
+		# 仍然缺失时使用全局默认模板
+		system_prompt = system_prompt or self._default_system_prompt(tool_name)
+		user_prompt = user_prompt or self._default_user_prompt()
 		
 		inputs = self.prepare_inputs(message, context)
 		schema_json = json.dumps(schema, ensure_ascii=False, indent=2) if schema else "{}"

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message, Select, Modal, Tag } from 'antd';
+import { Layout, Input, Button, Avatar, Typography, Space, Card, Empty, Spin, message, Select, Modal, Tag, Collapse } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined, SettingOutlined, PictureOutlined, BulbOutlined, EyeOutlined, EyeInvisibleOutlined, MenuUnfoldOutlined, MenuFoldOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useChat } from '../hooks/useChat';
@@ -2013,6 +2013,121 @@ const ChatPage: React.FC = () => {
                                       
                                       {/* 节点内容 - 支持两种格式 */}
                                       <div className="node-content" style={{ padding: '0 16px 16px 16px' }}>
+                                        {/* 工具节点：展示工具信息 & 参数信息（默认收起，可展开） */}
+                                        {(['tool', 'auto_param', 'auto_infer'].includes(node.node_type)) && (() => {
+                                          const nodeMetadata = (node as any).node_metadata || node.metadata || {};
+                                          
+                                          // 提取工具名称（与 NodeInfoTag 中保持一致的解析方式）
+                                          const rawToolName =
+                                            nodeMetadata.tool_name ||
+                                            nodeMetadata.toolName ||
+                                            nodeMetadata.config?.tool_name ||
+                                            nodeMetadata.config?.tool;
+
+                                          let displayToolName: string | undefined = undefined;
+                                          if (typeof rawToolName === 'string' && rawToolName.trim()) {
+                                            displayToolName = rawToolName.trim();
+                                            if (displayToolName.startsWith('mcp_')) {
+                                              const parts = displayToolName.split('_');
+                                              if (parts.length >= 3) {
+                                                displayToolName = parts.slice(2).join('_');
+                                              } else if (parts.length === 2) {
+                                                displayToolName = parts[1];
+                                              }
+                                            }
+                                            if (displayToolName.startsWith('temp_')) {
+                                              displayToolName = displayToolName.substring('temp_'.length);
+                                            }
+                                          }
+
+                                          // 提取参数信息（来自 auto_param 节点或工具元数据）
+                                          const params =
+                                            nodeMetadata.params ||
+                                            nodeMetadata.parameters ||
+                                            nodeMetadata.tool_params ||
+                                            nodeMetadata.config?.params ||
+                                            null;
+
+                                          const hasToolInfo =
+                                            displayToolName ||
+                                            nodeMetadata.tool_type ||
+                                            nodeMetadata.server ||
+                                            nodeMetadata.category;
+
+                                          const hasParamsInfo = !!params;
+
+                                          if (!hasToolInfo && !hasParamsInfo) {
+                                            return null;
+                                          }
+
+                                          return (
+                                            <div style={{ marginBottom: 12 }}>
+                                              <Collapse
+                                                bordered={false}
+                                                size="small"
+                                                style={{ background: 'transparent' }}
+                                              >
+                                                {hasToolInfo && (
+                                                  <Collapse.Panel header="1. 工具信息" key="tool-info">
+                                                    <div style={{ fontSize: 12, color: '#595959' }}>
+                                                      {displayToolName && (
+                                                        <div>
+                                                          <Text strong>工具名称：</Text>
+                                                          <Text>{displayToolName}</Text>
+                                                        </div>
+                                                      )}
+                                                      {nodeMetadata.tool_type && (
+                                                        <div>
+                                                          <Text strong>工具类型：</Text>
+                                                          <Text>{nodeMetadata.tool_type}</Text>
+                                                        </div>
+                                                      )}
+                                                      {nodeMetadata.server && (
+                                                        <div>
+                                                          <Text strong>服务器：</Text>
+                                                          <Text>{nodeMetadata.server}</Text>
+                                                        </div>
+                                                      )}
+                                                      {nodeMetadata.category && (
+                                                        <div>
+                                                          <Text strong>类别：</Text>
+                                                          <Text>{nodeMetadata.category}</Text>
+                                                        </div>
+                                                      )}
+                                                      {nodeMetadata.tool_score !== undefined && (
+                                                        <div>
+                                                          <Text strong>当前评分：</Text>
+                                                          <Text>{Number(nodeMetadata.tool_score).toFixed(2)}</Text>
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                  </Collapse.Panel>
+                                                )}
+
+                                                {hasParamsInfo && (
+                                                  <Collapse.Panel header="2. 参数信息" key="tool-params">
+                                                    <div style={{ fontSize: 12, color: '#595959' }}>
+                                                      <pre
+                                                        style={{
+                                                          margin: 0,
+                                                          whiteSpace: 'pre-wrap',
+                                                          wordBreak: 'break-all',
+                                                          fontFamily:
+                                                            '"Monaco", "Menlo", "Ubuntu Mono", monospace',
+                                                        }}
+                                                      >
+                                                        {typeof params === 'string'
+                                                          ? params
+                                                          : JSON.stringify(params, null, 2)}
+                                                      </pre>
+                                                    </div>
+                                                  </Collapse.Panel>
+                                                )}
+                                              </Collapse>
+                                            </div>
+                                          );
+                                        })()}
+
                                         <div className="combined-content" style={{
                                           padding: '12px',
                                           backgroundColor: '#fafafa',

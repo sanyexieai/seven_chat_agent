@@ -9,7 +9,7 @@ import tempfile
 from agents.agent_manager import AgentManager
 from config.settings import get_settings
 from database.database import get_db, SessionLocal
-from models.database_models import MCPTool, TemporaryTool, ToolConfig
+from models.database_models import MCPTool, TemporaryTool, ToolConfig, MCPServer
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from tools.base_tool import BaseTool
@@ -272,6 +272,118 @@ class MCPToolWrapper(BaseTool):
         return f"{param_name}参数"
 
 
+class MCPServerToolWrapper(BaseTool):
+    """
+    MCP 服务器级工具包装器：每个 MCP 服务器注册为一个工具，例如：
+    - mcp_ddg
+    - mcp_jupyter
+    
+    通过参数中的 action 字段选择具体方法，其余参数通过 params 或扁平字段传入。
+    """
+    
+    def __init__(self, server: MCPServer, agent_manager: Optional[AgentManager] = None):
+        super().__init__(
+            name=f"mcp_{server.name}",
+            description=server.description or server.display_name,
+            container_type=BaseTool.CONTAINER_TYPE_NONE,
+            container_config={}
+        )
+        self.server = server
+        self.agent_manager = agent_manager
+    
+    async def execute(self, parameters: Dict[str, Any]) -> Any:
+        """
+        执行 MCP 服务器上的具体方法。
+        
+        参数约定：
+        - action: 必填，方法名（即远程工具名）
+        - params: 可选，传给该方法的参数对象（dict）
+        - 其余顶层字段也会合并进 params，便于直接传简单参数
+        """
+        if not self.agent_manager or not self.agent_manager.mcp_helper:
+            raise RuntimeError("MCP助手未初始化")
+        
+        if not isinstance(parameters, dict):
+            raise ValueError("MCP 工具参数必须是 JSON 对象")
+        
+        action = (
+            parameters.get("action")
+            or parameters.get("method")
+            or parameters.get("tool")
+        )
+        if not action or not isinstance(action, str):
+            raise ValueError("MCP 工具缺少必需字段 'action'（要调用的远程方法名）")
+        
+        # 提取 params 对象，并合并顶层非控制字段
+        base_params = parameters.get("params")
+        if base_params is None or not isinstance(base_params, dict):
+            base_params = {}
+        flat_params = {
+            k: v
+            for k, v in parameters.items()
+            if k not in ("action", "method", "tool", "params")
+        }
+        call_params: Dict[str, Any] = {**flat_params, **base_params}
+        
+        logger.info(
+            f"执行 MCP 服务器工具: {self.server.name}.{action}，参数: {call_params}"
+        )
+        
+        try:
+            result = await self.agent_manager.mcp_helper.call_tool(
+                server_name=self.server.name,
+                tool_name=action,
+                **call_params,
+            )
+            logger.info(f"MCP 服务器 {self.server.name}.{action} 执行成功")
+            return result
+        except Exception as e:
+            logger.error(
+                f"MCP 服务器 {self.server.name}.{action} 执行失败: {e}"
+            )
+            raise
+    
+    def get_parameters_schema(self) -> Dict[str, Any]:
+        """
+        返回聚合后的参数 schema：
+        - action: 可选方法名枚举
+        - params: 具体方法的参数对象（暂不细分字段，由 LLM 根据描述自行推理）
+        """
+        db = SessionLocal()
+        actions: List[str] = []
+        try:
+            methods = db.query(MCPTool).filter(
+                MCPTool.server_id == self.server.id,
+                MCPTool.is_active == True,
+            ).all()
+            actions = [m.name for m in methods]
+        except Exception as e:
+            logger.warning(f"获取 MCP 服务器 {self.server.name} 方法列表失败: {e}")
+        finally:
+            db.close()
+        
+        properties: Dict[str, Any] = {
+            "action": {
+                "type": "string",
+                "description": "要调用的 MCP 方法名（远程工具名）",
+            },
+            "params": {
+                "type": "object",
+                "description": "传给该方法的参数对象（JSON 格式）",
+                "additionalProperties": True,
+            },
+        }
+        if actions:
+            properties["action"]["enum"] = actions
+        
+        schema: Dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+            "required": ["action"],
+        }
+        return schema
+
+
 class TemporaryToolWrapper(BaseTool):
     """临时工具包装器"""
     
@@ -448,29 +560,34 @@ class ToolManager:
             logger.error(f"扫描注册内置工具失败: {e}")
     
     async def _register_mcp_tools(self):
-        """从数据库注册MCP工具"""
+        """从数据库注册MCP工具（按服务器聚合：每个MCP服务器一个工具）"""
         try:
             db = SessionLocal()
             try:
                 try:
-                    mcp_tools = db.query(MCPTool).filter(MCPTool.is_active == True).all()
+                    servers = db.query(MCPServer).filter(MCPServer.is_active == True).all()
                 except OperationalError as e:
-                    # 自动迁移：为 mcp_tools 表添加 score 字段（如果不存在）
                     msg = str(e)
-                    if "no such column" in msg and "mcp_tools.score" in msg:
-                        logger.warning("检测到 mcp_tools.score 缺失，尝试自动迁移添加 score 字段")
-                        self._auto_migrate_score_columns()
-                        mcp_tools = db.query(MCPTool).filter(MCPTool.is_active == True).all()
+                    if "no such table" in msg and "mcp_servers" in msg:
+                        logger.warning("检测到 mcp_servers 表缺失，跳过 MCP 服务器工具注册")
+                        servers = []
                     else:
                         raise
-                for mcp_tool in mcp_tools:
-                    tool = MCPToolWrapper(mcp_tool, self.agent_manager)
-                    self.register_tool(tool, tool_type="mcp")
-                logger.info(f"注册了 {len(mcp_tools)} 个MCP工具")
+                
+                registered_count = 0
+                for server in servers:
+                    try:
+                        tool = MCPServerToolWrapper(server, self.agent_manager)
+                        self.register_tool(tool, tool_type="mcp")
+                        registered_count += 1
+                    except Exception as inst_err:
+                        logger.warning(f"注册 MCP 服务器工具 {server.name} 失败: {inst_err}")
+                
+                logger.info(f"注册了 {registered_count} 个 MCP 服务器级工具")
             finally:
                 db.close()
         except Exception as e:
-            logger.error(f"注册MCP工具失败: {e}")
+            logger.error(f"注册MCP服务器工具失败: {e}")
     
     async def _register_temporary_tools(self):
         """从数据库注册临时工具"""

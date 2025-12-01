@@ -45,6 +45,24 @@ interface Tool {
   is_available?: boolean;   // 是否可用（由评分阈值计算并从后端返回）
 }
 
+interface PromptTemplate {
+  id: number;
+  name: string;
+  display_name: string;
+  description?: string;
+  template_type: 'system' | 'user';
+}
+
+interface ToolPromptLink {
+  id: number;
+  tool_name: string;
+  tool_type?: string;
+  scene?: string;
+  prompt_id: number;
+  is_active: boolean;
+  prompt_template?: PromptTemplate;
+}
+
 interface TemporaryTool {
   id: number;
   name: string;
@@ -88,6 +106,14 @@ const ToolsPage: React.FC = () => {
   const [testResult, setTestResult] = useState<any>(null);
   const [testing, setTesting] = useState(false);
   const [inferLoading, setInferLoading] = useState(false);
+
+  // 工具-提示词绑定相关状态
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
+  const [bindingTool, setBindingTool] = useState<Tool | null>(null);
+  const [bindingScene, setBindingScene] = useState<string>('auto_param');
+  const [bindingPromptId, setBindingPromptId] = useState<number | undefined>(undefined);
+  const [bindingLinks, setBindingLinks] = useState<ToolPromptLink[]>([]);
+  const [showPromptModal, setShowPromptModal] = useState(false);
 
   // 加载工具列表
   const loadTools = async () => {
@@ -463,6 +489,18 @@ const ToolsPage: React.FC = () => {
   useEffect(() => {
     loadTools();
     loadTemporaryTools();
+    // 加载所有提示词模板（供工具绑定使用）
+    (async () => {
+      try {
+        const res = await fetch(API_PATHS.PROMPT_TEMPLATES);
+        if (res.ok) {
+          const data = await res.json();
+          setPromptTemplates(data || []);
+        }
+      } catch (e) {
+        // 静默失败，不影响其它功能
+      }
+    })();
   }, []);
 
   // 当筛选条件变化时重新加载
@@ -597,6 +635,12 @@ const ToolsPage: React.FC = () => {
           >
             测试
           </Button>
+          <Button
+            type="link"
+            onClick={() => openPromptBinding(record)}
+          >
+            提示词
+          </Button>
         </Space>
       ),
     },
@@ -690,6 +734,60 @@ const ToolsPage: React.FC = () => {
     },
   ];
 
+  // 打开工具提示词绑定弹窗
+  const openPromptBinding = async (tool: Tool) => {
+    setBindingTool(tool);
+    setBindingScene('auto_param');
+    setBindingPromptId(undefined);
+    setBindingLinks([]);
+    setShowPromptModal(true);
+
+    try {
+      const res = await fetch(API_PATHS.TOOLS_PROMPTS(tool.name));
+      if (res.ok) {
+        const data: ToolPromptLink[] = await res.json();
+        setBindingLinks(data || []);
+        const current = data.find((l) => l.scene === 'auto_param' && l.is_active);
+        if (current) {
+          setBindingScene(current.scene || 'auto_param');
+          setBindingPromptId(current.prompt_id);
+        }
+      }
+    } catch (e) {
+      // 忽略错误
+    }
+  };
+
+  // 保存工具提示词绑定
+  const savePromptBinding = async () => {
+    if (!bindingTool || !bindingPromptId) {
+      message.error('请选择提示词模板');
+      return;
+    }
+    try {
+      const res = await fetch(API_PATHS.TOOLS_PROMPTS(bindingTool.name), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tool_name: bindingTool.name,
+          tool_type: bindingTool.type,
+          scene: bindingScene,
+          prompt_id: bindingPromptId,
+          is_active: true,
+        }),
+      });
+      if (res.ok) {
+        message.success('提示词绑定已保存');
+        setShowPromptModal(false);
+      } else {
+        const err = await res.json();
+        message.error(err.detail || '保存提示词绑定失败');
+      }
+    } catch (e: any) {
+      message.error(e?.message || '保存提示词绑定失败');
+    }
+  };
+
   return (
     <div style={{ padding: '24px' }}>
       <Card>
@@ -775,6 +873,53 @@ const ToolsPage: React.FC = () => {
               loading={loading}
               pagination={{ pageSize: 20 }}
             />
+
+            {/* 工具提示词绑定模态框 */}
+            <Modal
+              open={showPromptModal}
+              title={bindingTool ? `绑定提示词：${bindingTool.name}` : '绑定提示词'}
+              onCancel={() => setShowPromptModal(false)}
+              onOk={savePromptBinding}
+              okText="保存"
+            >
+              <Form layout="vertical">
+                <Form.Item label="场景">
+                  <Select
+                    value={bindingScene}
+                    onChange={(val) => setBindingScene(val)}
+                    options={[
+                      { label: '参数推断（auto_param）', value: 'auto_param' },
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item label="提示词模板">
+                  <Select
+                    showSearch
+                    placeholder="选择提示词模板"
+                    value={bindingPromptId}
+                    onChange={(val) => setBindingPromptId(val)}
+                    optionFilterProp="label"
+                    options={promptTemplates.map((pt) => ({
+                      label: `${pt.display_name} (${pt.template_type})`,
+                      value: pt.id,
+                    }))}
+                  />
+                </Form.Item>
+                {bindingLinks.length > 0 && (
+                  <Form.Item label="当前绑定概览">
+                    <ul style={{ paddingLeft: 16, marginBottom: 0 }}>
+                      {bindingLinks.map((link) => (
+                        <li key={link.id} style={{ fontSize: 12 }}>
+                          场景: {link.scene || 'auto_param'}，
+                          模板: {link.prompt_template?.display_name || link.prompt_id}，
+                          类型: {link.prompt_template?.template_type || '-'}
+                        </li>
+                      ))}
+                    </ul>
+                  </Form.Item>
+                )}
+              </Form>
+            </Modal>
           </TabPane>
           <TabPane tab="临时工具" key="temporary">
             <Table

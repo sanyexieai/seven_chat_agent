@@ -1190,6 +1190,27 @@ def create_default_mcp_servers():
     finally:
         db.close()
 
+
+def migrate_tool_prompt_links_table():
+    """创建或迁移工具-提示词关联表 tool_prompt_links"""
+    logger.info("检查/迁移 tool_prompt_links 表结构...")
+    try:
+        inspector = inspect(engine)
+        table_name = "tool_prompt_links"
+        
+        with engine.begin() as conn:
+            if table_name not in inspector.get_table_names():
+                logger.info("tool_prompt_links 表不存在，创建新表...")
+                from models.database_models import Base  # type: ignore
+                # 让 SQLAlchemy 知道只创建这一张表
+                Base.metadata.tables[table_name].create(bind=engine, checkfirst=True)
+                logger.info("tool_prompt_links 表创建完成")
+            else:
+                logger.info("tool_prompt_links 表已存在，目前不做字段级迁移")
+    except Exception as e:
+        logger.error(f"tool_prompt_links 表迁移失败: {str(e)}")
+        raise
+
 def init_database():
     """初始化数据库"""
     logger.info("开始初始化数据库...")
@@ -1209,6 +1230,9 @@ def init_database():
     
     # 创建默认提示词模板
     create_default_prompt_templates()
+    
+    # 创建/迁移工具-提示词关联表
+    migrate_tool_prompt_links_table()
     
     logger.info("数据库初始化完成")
 

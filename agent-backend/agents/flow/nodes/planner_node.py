@@ -9,121 +9,14 @@ from utils.log_helper import get_logger
 from utils.llm_helper import get_llm_helper
 from ..base_node import BaseFlowNode
 from ..engine import FlowEngine
+from database.database import SessionLocal
+from models.database_models import PromptTemplate
 
 logger = get_logger("flow_planner_node")
 
-# 规划节点的默认提示词
-PLANNER_SYSTEM_PROMPT = """你是一个流程图规划专家。根据用户任务，生成一个可执行的流程图配置。
-
-流程图配置格式（JSON）：
-{
-  "nodes": [
-    {
-      "id": "节点唯一ID",
-      "type": "节点类型（start/end/llm/tool/router/auto_infer等）",
-      "category": "节点类别（start/end/processor/router）",
-      "implementation": "节点实现（start/end/llm/tool/router_llm/auto_infer等）",
-      "position": {"x": 数字, "y": 数字},
-      "data": {
-        "label": "节点显示名称",
-        "nodeType": "节点类型（与type相同）",
-        "config": {
-          // 节点特定配置
-          // 对于 tool 节点：tool_name, tool_type, server, params 等
-          // 对于 llm 节点：system_prompt, user_prompt 等
-          // 对于 auto_infer 节点：target_tool_node_id, auto_param_key 等
-        },
-        "isStartNode": true/false,
-        "isEndNode": true/false
-      }
-    }
-  ],
-  "edges": [
-    {
-      "id": "边唯一ID",
-      "source": "源节点ID",
-      "target": "目标节点ID",
-      "type": "default"
-    }
-  ],
-  "metadata": {
-    "name": "流程图名称",
-    "description": "流程图描述",
-    "version": "1.0.0"
-  }
-}
-
-可用节点类型：
-- start: 开始节点（必须有且只有一个）
-- end: 结束节点（必须有且只有一个）
-- llm: LLM调用节点
-- tool: 工具调用节点（需要配置 tool_name, tool_type, server）
-- auto_infer: 自动推理节点（用于工具参数推理）
-- router: 路由节点（条件判断）
-
-重要规则：
-1. **不要包含 start 和 end 节点**（这些节点会在执行时自动添加）
-2. **所有节点必须串行连接**（一个接一个，形成一条链，不能有分支或并行）
-3. **所有节点都必须在从开始到结束的路径上**（不能有游离节点）
-4. 如果使用 tool 节点，建议在前面添加 auto_infer 节点来自动生成参数
-5. 节点 ID 必须唯一
-6. 只输出 JSON，不要包含其他文字说明"""
-
-PLANNER_USER_PROMPT_TEMPLATE = """请为以下任务生成一个流程图配置：
-
-任务：{task}
-
-上下文信息：
-{context}
-
-{error_context}
-
-当前规划信息：
-- 规划节点ID：{planner_id}
-- 本次规划序号（0表示首次规划，>=1表示第几次重试）：{retry_index}
-
-可用工具列表：
-{available_tools}
-
-工具使用规则：
-1. **内置工具**：tool_type 为 "builtin"，tool_name 直接使用工具名称（如 "report", "deep_search"），不需要 server 参数
-2. **MCP工具**：tool_type 为 "mcp"，tool_name 格式为 "mcp_{{server_name}}_{{tool_name}}"（如 "mcp_ddg_search"），server_name 为服务器名称（如 "ddg"）
-3. **临时工具**：tool_type 为 "temporary"，tool_name 格式为 "temp_{{tool_name}}"，不需要 server 参数
-4. 使用工具时，**必须**在前面添加 auto_infer 节点来自动生成参数
-5. auto_infer 节点的 target_tool_node_id 应该指向对应的 tool 节点 ID
-
-ID 与连线规则（必须严格遵守）：
-1. 所有节点 id 必须使用格式：`{planner_id}_retry_{retry_index}_N`
-   - 其中 `N` 从 1 开始递增（1, 2, 3, ...），不要跳号也不要复用旧的 N
-2. 重新规划（retry_index >= 1）时：
-   - 本次生成的所有节点 id 必须是全新的，**不得与历史节点 id 相同**
-   - 禁止复用之前规划产生的任何节点 id
-3. 所有边（edges）也必须由你显式生成，且满足以下要求：
-   - 每条边对象必须包含：`id`, `source`, `target`, `type`
-   - `source` 和 `target` 必须全部来自本次 `nodes` 数组中定义的 id
-   - 边的 id 必须使用格式：`edge_{{source}}_{{target}}`（例如：`edge_{{planner_id}}_retry_{{retry_index}}_1_{{planner_id}}_retry_{{retry_index}}_2`）
-   - 禁止省略 `edges`，也不要依赖系统自动补全连线
-4. **严禁**在 edges 中连接到历史节点或系统自动创建的节点（例如开始、结束或之前规划产生的节点）
-5. 不要在本次输出中包含任何 start / end 节点，也不要连接到这些节点
-
-请生成一个完整的流程图配置 JSON，确保：
-1. **不要包含 start 和 end 节点**（这些节点会在执行时自动添加）
-2. **所有节点必须串行连接**（节点1 -> 节点2 -> 节点3 -> ...，形成一条链，不能有分支）
-3. **所有节点都必须在路径上**（每个节点都有且仅有一个前驱和一个后继，除了第一个节点没有前驱，最后一个节点没有后继）
-4. 节点配置完整：
-   - tool 节点：必须包含 tool_name, tool_type, server（MCP工具需要）
-   - auto_infer 节点：必须包含 target_tool_node_id（指向对应的 tool 节点）
-5. 如果使用工具，**必须**在前面添加 auto_infer 节点
-6. 流程图逻辑清晰，能够完成任务
-7. 优先使用系统提供的工具，根据任务需求选择合适的工具
-
-**重要**：edges 数组应该按照节点顺序连接，例如：
-- 如果有3个节点 [node1, node2, node3]，edges 应该是 [{{"source": "node1", "target": "node2"}}, {{"source": "node2", "target": "node3"}}]
-- 不能有多个节点指向同一个节点，也不能有一个节点指向多个节点
-- 所有 edges 的 source/target 必须来自本次 nodes 数组中定义的 id，**禁止连接到历史节点或系统自动创建的节点**（例如开始、结束或之前规划产生的节点）
-- 当上文中包含错误信息（说明这是重新规划）时：本次生成的所有节点 id **必须是全新的，不得与历史节点 id 重复**，不要复用之前的节点 id
-
-只输出 JSON 配置，不要包含任何其他文字。"""
+# 规划节点的默认提示词占位（真实内容由数据库中的 planner_system / planner_user 管理）
+PLANNER_SYSTEM_PROMPT = ""
+PLANNER_USER_PROMPT_TEMPLATE = ""
 
 
 class PlannerNode(BaseFlowNode):
@@ -133,6 +26,59 @@ class PlannerNode(BaseFlowNode):
 		super().__init__(*args, **kwargs)
 		self._generated_flow_config: Optional[Dict[str, Any]] = None
 		self._subflow_engine: Optional[FlowEngine] = None
+		# 缓存从数据库读取的 planner 提示词，避免每次都查库
+		self._planner_system_prompt_cache: Optional[str] = None
+		self._planner_user_template_cache: Optional[str] = None
+	
+	def _get_planner_system_prompt(self) -> str:
+		"""从数据库获取规划节点系统提示词，不存在时回退到内置默认值"""
+		if self._planner_system_prompt_cache is not None:
+			return self._planner_system_prompt_cache
+		
+		db = SessionLocal()
+		try:
+			template = db.query(PromptTemplate).filter(
+				PromptTemplate.name == "planner_system",
+				PromptTemplate.template_type == "system",
+				PromptTemplate.is_active == True,
+			).first()
+			if template:
+				self._planner_system_prompt_cache = template.content
+			else:
+				# 真正的兜底内容只在 extract_prompts_to_db.py 中维护，这里只给出技术性占位文本
+				self._planner_system_prompt_cache = "planner_system 提示词未在数据库中配置，请在 prompt_templates 表中添加或通过提示词管理界面配置。"
+		except Exception as exc:
+			logger.warning(f"从数据库获取 planner_system 提示词失败: {exc}")
+			self._planner_system_prompt_cache = "planner_system 提示词获取失败，请检查数据库配置。"
+		finally:
+			db.close()
+		
+		return self._planner_system_prompt_cache
+	
+	def _get_planner_user_template(self) -> str:
+		"""从数据库获取规划节点用户提示词模板，不存在时回退到内置默认值"""
+		if self._planner_user_template_cache is not None:
+			return self._planner_user_template_cache
+		
+		db = SessionLocal()
+		try:
+			template = db.query(PromptTemplate).filter(
+				PromptTemplate.name == "planner_user",
+				PromptTemplate.template_type == "user",
+				PromptTemplate.is_active == True,
+			).first()
+			if template:
+				self._planner_user_template_cache = template.content
+			else:
+				# 真正的兜底内容只在 extract_prompts_to_db.py 中维护，这里只给出技术性占位文本
+				self._planner_user_template_cache = "planner_user 提示词未在数据库中配置，请在 prompt_templates 表中添加或通过提示词管理界面配置。"
+		except Exception as exc:
+			logger.warning(f"从数据库获取 planner_user 提示词失败: {exc}")
+			self._planner_user_template_cache = "planner_user 提示词获取失败，请检查数据库配置。"
+		finally:
+			db.close()
+		
+		return self._planner_user_template_cache
 	
 	async def execute(self, user_id: str, message: str, context: Dict[str, Any], agent_name: str = None) -> AgentMessage:
 		"""执行规划节点（同步）"""
@@ -277,9 +223,9 @@ class PlannerNode(BaseFlowNode):
 4. 如果工具调用失败，尝试使用其他工具或调整参数
 """
 			
-			# 构建提示词
-			system_prompt = self.config.get('system_prompt') or PLANNER_SYSTEM_PROMPT
-			user_prompt_template = self.config.get('user_prompt') or PLANNER_USER_PROMPT_TEMPLATE
+			# 构建提示词（优先从数据库获取 planner_* 模板）
+			system_prompt = self.config.get('system_prompt') or self._get_planner_system_prompt()
+			user_prompt_template = self.config.get('user_prompt') or self._get_planner_user_template()
 			user_prompt = user_prompt_template.format(
 				task=task,
 				context=context_info,
@@ -617,9 +563,9 @@ class PlannerNode(BaseFlowNode):
 			# 准备上下文信息
 			context_info = self._format_context_info(context)
 			
-			# 构建提示词
-			system_prompt = self.config.get('system_prompt') or PLANNER_SYSTEM_PROMPT
-			user_prompt_template = self.config.get('user_prompt') or PLANNER_USER_PROMPT_TEMPLATE
+			# 构建提示词（优先从数据库获取 planner_* 模板）
+			system_prompt = self.config.get('system_prompt') or self._get_planner_system_prompt()
+			user_prompt_template = self.config.get('user_prompt') or self._get_planner_user_template()
 			user_prompt = user_prompt_template.format(
 				task=task,
 				context=context_info,
@@ -1286,10 +1232,23 @@ class PlannerNode(BaseFlowNode):
 				node_error = None
 				node_start_sent = False
 				node_complete_sent = False
+				# 节点显示名称（优先使用 config.label，其次使用节点自身的 name）
 				node_label = node.config.get('label') if hasattr(node, 'config') else None
+				
+				# 节点类型：
+				# 1. 优先使用 config.nodeType（与前端保持一致，例如 auto_infer）
+				# 2. 其次使用 implementation（后端实际实现类型，例如 auto_param、tool 等）
+				# 3. 最后回退到 NodeType 枚举或 'unknown'
+				config_node_type = None
+				if hasattr(node, 'config') and isinstance(getattr(node, 'config', None), dict):
+					config_node_type = node.config.get('nodeType')
+				implementation = getattr(node, 'implementation', None)
+				fallback_type = getattr(getattr(node, 'type', None), 'value', getattr(node, 'type', 'unknown'))
+				node_type_str = config_node_type or implementation or fallback_type
+				
 				node_metadata = {
 					'node_id': node.id,
-					'node_type': getattr(getattr(node, 'type', None), 'value', getattr(node, 'type', 'unknown')),
+					'node_type': node_type_str,
 					'node_name': getattr(node, 'name', node.id),
 					'node_label': node_label or getattr(node, 'name', node.id)
 				}
@@ -1432,7 +1391,7 @@ class PlannerNode(BaseFlowNode):
 					},
 				)
 			
-			# 如果检测到失败节点，立即停止流程，并在规划节点下新增“重新规划”子节点挂载新子流程
+			# 如果检测到失败节点，立即停止流程，并在失败节点下新增“重新规划”子节点挂载新子流程
 			if failed_nodes:
 				logger.warning(f"规划节点 {self.id} 检测到 {len(failed_nodes)} 个失败节点，停止当前流程，重新规划新线路")
 
@@ -1469,6 +1428,9 @@ class PlannerNode(BaseFlowNode):
 				
 				# 收集错误信息
 				error_summary = self._format_failed_nodes_summary(failed_nodes)
+				# 记录最后一个失败节点，作为重新规划子流程的挂载父节点
+				last_failed_node = failed_nodes[-1] if failed_nodes else None
+				last_failed_node_id = last_failed_node.get("node_id") if last_failed_node else None
 				
 				# 重新生成流程图配置（包含错误信息）
 				retry_flow_config = await self._generate_flow_config_with_errors(
@@ -1510,7 +1472,8 @@ class PlannerNode(BaseFlowNode):
 						content="",
 						agent_name=agent_name,
 						metadata={
-							'planner_node_id': self.id,                 # 原始规划节点ID（用于从原规划节点连到 retry 节点）
+							# 挂载点：从“最后一个失败节点”往下继续，而不是从原规划节点重新开始
+							'planner_node_id': last_failed_node_id or self.id,
 							'planner_next_node_id': planner_next_node_id,
 							'remove_planner_edge': False,               # 不移除原有连接，保留失败路径
 							'replace_existing_nodes': False,           # 追加模式，保留旧节点
@@ -1520,6 +1483,7 @@ class PlannerNode(BaseFlowNode):
 							'node_count': len(display_retry_nodes),
 							'is_retry': True,                          # 标记为重新规划
 							'root_planner_node_id': self.id,
+							'failed_node_id': last_failed_node_id,
 							'retry_planner_node_id': retry_planner_node_id,
 							'retry_index': next_retry_index
 						}

@@ -61,6 +61,8 @@ export const API_PATHS = {
   TOOLS_RESET_SCORE: '/api/tools/reset-score',
   TOOLS_PROMPT_TEMPLATES_AUTO_INFER: '/api/tools/prompt-templates/auto-infer',
   TOOLS_RELOAD: (type?: string) => type ? `/api/tools/reload?tool_type=${type}` : '/api/tools/reload',
+  TOOLS_PROMPTS: (toolName: string) => `/api/tools/${encodeURIComponent(toolName)}/prompts`,
+  TOOLS_PROMPT_LINK_BY_ID: (id: number | string) => `/api/tools/prompts/${id}`,
         TOOLS_TEMPORARY: '/api/tools/temporary',
         TOOLS_TEMPORARY_BY_ID: (id: number | string) => `/api/tools/temporary/${id}`,
         TOOLS_CONTAINER: (toolName: string) => `/api/tools/${encodeURIComponent(toolName)}/container`,

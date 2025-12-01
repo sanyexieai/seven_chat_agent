@@ -98,12 +98,20 @@ class ToolNode(BaseFlowNode):
 					
 					result_text = self._format_tool_result(result)
 					
+					# 获取当前工具评分
+					try:
+						from tools.tool_manager import ToolManager as _TM  # type: ignore
+						tool_score = tool_manager.tool_scores.get(tool_name)  # type: ignore[attr-defined]
+					except Exception:
+						tool_score = None
+					
 					# 保存输出
 					self.save_output(context, result_text)
 					
 					return self._create_agent_message(result_text, agent_name, metadata={
 						'tool_name': tool_name,
 						'tool_type': tool_type,
+						'tool_score': tool_score,
 						'tool_result': result
 					})
 			
@@ -452,6 +460,9 @@ class ToolNode(BaseFlowNode):
 				agent_name=agent_name,
 				metadata={
 					'tool_name': f"{actual_server}_{actual_tool}",
+					'tool_type': tool_type or 'mcp',
+					'server': actual_server,
+					'params': params,
 					'tool_result': result
 				}
 			)
@@ -460,7 +471,9 @@ class ToolNode(BaseFlowNode):
 				content=result_text,
 				agent_name=agent_name,
 				metadata={
-					'tool_name': f"{actual_server}_{actual_tool}"
+					'tool_name': f"{actual_server}_{actual_tool}",
+					'tool_type': tool_type or 'mcp',
+					'server': actual_server
 				}
 			)
 			
@@ -472,6 +485,9 @@ class ToolNode(BaseFlowNode):
 				metadata={
 					'is_final': True,
 					'tool_name': f"{actual_server}_{actual_tool}",
+					'tool_type': tool_type or 'mcp',
+					'server': actual_server,
+					'params': params,
 					'tool_result': result
 				}
 			)

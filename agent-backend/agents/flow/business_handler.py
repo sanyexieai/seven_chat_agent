@@ -86,7 +86,7 @@ class FlowBusinessHandler:
 					self.collected_nodes.append(node_info)
 					logger.info(f"📝 收集节点信息：node_id={node_id}, node_type={node_type}, node_name={chunk.metadata.get('node_name')}, 当前已收集 {len(self.collected_nodes)} 个节点")
 		
-		# 统计 content chunk 数量（属于当前节点的 content chunk）
+		# 统计 content chunk 数量（属于当前节点的 content chunk），并合并工具元数据
 		if chunk.type == "content" and chunk.metadata:
 			node_id = chunk.metadata.get('node_id')
 			if node_id:
@@ -97,6 +97,17 @@ class FlowBusinessHandler:
 				if existing_node:
 					# 增加该节点的 chunk 计数
 					existing_node['chunk_count'] = existing_node.get('chunk_count', 0) + 1
+					
+					# 如果是工具相关的 content（包含 tool_name / tool_type / server 等），合并到 node_metadata 中
+					tool_name = chunk.metadata.get('tool_name')
+					if tool_name:
+						if 'node_metadata' not in existing_node or existing_node['node_metadata'] is None:
+							existing_node['node_metadata'] = {}
+						existing_node['node_metadata']['tool_name'] = tool_name
+						if 'tool_type' in chunk.metadata:
+							existing_node['node_metadata']['tool_type'] = chunk.metadata.get('tool_type')
+						if 'server' in chunk.metadata:
+							existing_node['node_metadata']['server'] = chunk.metadata.get('server')
 		
 		# 处理节点错误事件
 		if chunk.type == "node_error" and chunk.metadata:
@@ -158,21 +169,40 @@ class FlowBusinessHandler:
 				else:
 					logger.warning(f"⚠️ 节点 {node_id} 的 node_complete 事件，但未找到已收集的节点信息")
 		
-		# 收集工具使用信息
+		# 收集工具使用信息 & 合并参数到节点元数据
 		if chunk.type == "tool_result" and chunk.metadata:
 			tool_name = chunk.metadata.get('tool_name', '')
 			if tool_name and tool_name not in self.tools_used:
 				self.tools_used.append(tool_name)
+			
+			# 将工具信息和参数合并到对应节点的 node_metadata 中，方便前端展示
+			node_id = chunk.metadata.get('node_id')
+			if node_id:
+				existing_node = next(
+					(node for node in self.collected_nodes if node['node_id'] == node_id),
+					None
+				)
+				if existing_node is not None:
+					if 'node_metadata' not in existing_node or existing_node['node_metadata'] is None:
+						existing_node['node_metadata'] = {}
+					node_meta = existing_node['node_metadata']
+					node_meta['tool_name'] = tool_name
+					if 'tool_type' in chunk.metadata:
+						node_meta['tool_type'] = chunk.metadata.get('tool_type')
+					if 'server' in chunk.metadata:
+						node_meta['server'] = chunk.metadata.get('server')
+					if 'params' in chunk.metadata:
+						node_meta['params'] = chunk.metadata.get('params')
 			
 			# 收集实时跟随片段
 			try:
 				content_str = chunk.content if isinstance(chunk.content, str) else json.dumps(chunk.content, ensure_ascii=False)
 				self.live_follow_segments.append(f"[{tool_name}]\n{content_str}")
 			except Exception:
-				pass
+				content_str = ""
 			
 			# 保存工具执行结果到数据库
-			if self.session_id and self.db:
+			if self.session_id and self.db and content_str:
 				try:
 					from models.database_models import MessageCreate
 					from services.session_service import MessageService

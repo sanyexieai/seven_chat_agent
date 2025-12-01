@@ -277,6 +277,31 @@ class ToolConfig(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
+class ToolPromptLink(Base):
+    """工具与提示词模板关联表
+    
+    作用：
+    - 支持为每个工具绑定一个或多个提示词模板
+    - 通过 scene 字段区分不同使用场景（如 auto_param, system, summary 等）
+    - 方便在工具管理页面直接修改某个工具在特定场景下使用的提示词
+    """
+    __tablename__ = "tool_prompt_links"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    tool_name = Column(String(100), nullable=False, index=True)  # 对应 ToolManager 中的工具名称
+    tool_type = Column(String(50), nullable=True)  # builtin, mcp, temporary
+    scene = Column(String(50), nullable=True, default="auto_param")  # 使用场景
+    prompt_id = Column(Integer, ForeignKey("prompt_templates.id"), nullable=False)
+    is_active = Column(Boolean, default=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # 关联关系
+    prompt_template = relationship("PromptTemplate")
+
+
 # Pydantic响应模型
 class AgentResponse(BaseModel):
     id: int
@@ -447,6 +472,38 @@ class TemporaryToolResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class ToolPromptLinkResponse(BaseModel):
+    """工具与提示词关联响应模型"""
+    id: int
+    tool_name: str
+    tool_type: Optional[str] = None
+    scene: Optional[str] = None
+    prompt_id: int
+    is_active: bool
+    prompt_template: Optional["PromptTemplateResponse"] = None  # 方便前端直接渲染
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class ToolPromptLinkCreate(BaseModel):
+    """创建 / 更新 工具与提示词关联"""
+    tool_name: str
+    tool_type: Optional[str] = None
+    scene: Optional[str] = "auto_param"
+    prompt_id: int
+    is_active: Optional[bool] = True
+
+
+class ToolPromptLinkUpdate(BaseModel):
+    """更新工具与提示词关联"""
+    scene: Optional[str] = None
+    prompt_id: Optional[int] = None
+    is_active: Optional[bool] = None
 
 class TemporaryToolCreate(BaseModel):
     name: str

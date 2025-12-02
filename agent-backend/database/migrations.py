@@ -766,14 +766,6 @@ def create_default_agents():
         # 创建默认智能体
         default_agents = [
             {
-                "name": "general_agent",
-                "display_name": "通用智能体",
-                "description": "可配置提示词、工具和LLM的通用智能体",
-                "agent_type": "general",
-                "system_prompt": "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。请用简洁、准确、友好的方式回应用户的问题。",
-                "is_active": True
-            },
-            {
                 "name": "flow_agent",
                 "display_name": "流程图智能体",
                 "description": "可配置各种节点的流程图智能体",
@@ -1024,18 +1016,23 @@ def create_default_prompt_templates():
 
 
 def _create_basic_default_prompt_templates():
-    """创建基础的默认提示词模板（作为后备方案）"""
+    """创建基础的默认提示词模板（作为后备方案）
+    
+    注意：此函数仅作为最后的兜底，真正的提示词内容都在 extract_prompts_to_db.py 中管理。
+    如果 extract_prompts_to_db.py 执行失败，此函数会创建空的占位模板，提醒用户需要手动运行提取脚本。
+    """
     from models.database_models import PromptTemplate
     
     db = SessionLocal()
     try:
-        # 默认系统提示词
+        # 只创建技术性占位模板，真正的提示词内容必须通过 extract_prompts_to_db.py 导入
+        # 默认系统提示词（占位）
         system_template = PromptTemplate(
             name="auto_infer_system",
             display_name="自动推理系统提示词",
-            description="用于AI参数推理的系统提示词",
+            description="用于AI参数推理的系统提示词（占位，请运行 extract_prompts_to_db.py 导入真实内容）",
             template_type="system",
-            content="你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。\n必须输出 JSON，对每个必填字段给出合理值。",
+            content="此提示词模板为占位符。请运行 scripts/extract_prompts_to_db.py 脚本导入真实的提示词内容。",
             variables=["tool_name", "tool_type", "server", "schema_json", "message", "previous_output"],
             is_builtin=True,
             version="1.0.0",
@@ -1045,13 +1042,13 @@ def _create_basic_default_prompt_templates():
         )
         db.add(system_template)
         
-        # 默认用户提示词（完整版）
+        # 默认用户提示词（完整版，占位）
         user_template_full = PromptTemplate(
             name="auto_infer_user_full",
             display_name="自动推理用户提示词（完整版）",
-            description="用于AI参数推理的用户提示词，包含必填字段说明",
+            description="用于AI参数推理的用户提示词，包含必填字段说明（占位，请运行 extract_prompts_to_db.py 导入真实内容）",
             template_type="user",
-            content="工具名称：{tool_name}\n工具类型：{tool_type}\n服务器：{server}\n参数 Schema：\n{schema_json}\n{required_fields_text}\n用户输入：{message}\n如果需要上下文，可参考上一节点输出：{previous_output}\n\n请输出 JSON，严格遵守 schema 格式。\n重要：\n1. 必须包含所有必填字段（如果上面列出了必填字段）\n2. 根据字段类型和描述，为每个必填字段生成合理的值",
+            content="此提示词模板为占位符。请运行 scripts/extract_prompts_to_db.py 脚本导入真实的提示词内容。",
             variables=["tool_name", "tool_type", "server", "schema_json", "required_fields_text", "message", "previous_output"],
             is_builtin=True,
             version="1.0.0",
@@ -1061,13 +1058,13 @@ def _create_basic_default_prompt_templates():
         )
         db.add(user_template_full)
         
-        # 默认用户提示词（简化版）
+        # 默认用户提示词（简化版，占位）
         user_template_simple = PromptTemplate(
             name="auto_infer_user_simple",
             display_name="自动推理用户提示词（简化版）",
-            description="用于AI参数推理的用户提示词，不包含必填字段说明（向后兼容）",
+            description="用于AI参数推理的用户提示词，不包含必填字段说明（占位，请运行 extract_prompts_to_db.py 导入真实内容）",
             template_type="user",
-            content="工具名称：{tool_name}\n工具类型：{tool_type}\n服务器：{server}\n参数 Schema：\n{schema_json}\n\n用户输入：{message}\n如果需要上下文，可参考上一节点输出：{previous_output}\n\n请输出 JSON，严格遵守 schema 格式。",
+            content="此提示词模板为占位符。请运行 scripts/extract_prompts_to_db.py 脚本导入真实的提示词内容。",
             variables=["tool_name", "tool_type", "server", "schema_json", "message", "previous_output"],
             is_builtin=True,
             version="1.0.0",
@@ -1078,7 +1075,7 @@ def _create_basic_default_prompt_templates():
         db.add(user_template_simple)
         
         db.commit()
-        logger.info("基础默认提示词模板创建完成（后备方案）")
+        logger.warning("已创建基础默认提示词模板（占位符）。请运行 scripts/extract_prompts_to_db.py 导入真实的提示词内容。")
         
     except Exception as e:
         logger.error(f"创建基础默认提示词模板失败: {str(e)}")

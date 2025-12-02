@@ -11,35 +11,11 @@ from utils.log_helper import get_logger
 
 logger = get_logger("prompt_templates")
 
-# 硬编码的默认值（作为后备）
-_DEFAULT_SYSTEM_PROMPT = (
-    "你是一个工具参数推理助手。请根据用户输入和工具描述，生成满足工具 schema 的 JSON 参数。"
-    "必须输出 JSON，对每个必填字段给出合理值。"
-)
-
-_DEFAULT_USER_PROMPT_TEMPLATE = (
-    "工具名称：{tool_name}\n"
-    "工具类型：{tool_type}\n"
-    "服务器：{server}\n"
-    "参数 Schema：\n{schema_json}\n"
-    "{required_fields_text}\n"
-    "用户输入：{message}\n"
-    "如果需要上下文，可参考上一节点输出：{previous_output}\n\n"
-    "请输出 JSON，严格遵守 schema 格式。\n"
-    "重要：\n"
-    "1. 必须包含所有必填字段（如果上面列出了必填字段）\n"
-    "2. 根据字段类型和描述，为每个必填字段生成合理的值"
-)
-
-_DEFAULT_USER_PROMPT_SIMPLE_TEMPLATE = (
-    "工具名称：{tool_name}\n"
-    "工具类型：{tool_type}\n"
-    "服务器：{server}\n"
-    "参数 Schema：\n{schema_json}\n\n"
-    "用户输入：{message}\n"
-    "如果需要上下文，可参考上一节点输出：{previous_output}\n\n"
-    "请输出 JSON，严格遵守 schema 格式。"
-)
+# 提示词模板占位（真实内容由数据库中的 auto_infer_* 管理）
+# 兜底内容只在 extract_prompts_to_db.py 中维护
+_DEFAULT_SYSTEM_PROMPT = ""
+_DEFAULT_USER_PROMPT_TEMPLATE = ""
+_DEFAULT_USER_PROMPT_SIMPLE_TEMPLATE = ""
 
 
 class PromptTemplates:

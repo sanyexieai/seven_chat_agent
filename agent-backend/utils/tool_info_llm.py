@@ -6,8 +6,67 @@ import json
 from typing import Dict, Any, Optional
 from utils.llm_helper import get_llm_helper
 from utils.log_helper import get_logger
+from database.database import SessionLocal
+from models.database_models import PromptTemplate
 
 logger = get_logger("tool_info_llm")
+
+# 工具信息分析提示词占位（真实内容由数据库中的 tool_info_analyzer_* 管理）
+# 兜底内容只在 extract_prompts_to_db.py 中维护
+_DEFAULT_TOOL_INFO_SYSTEM_PROMPT = ""
+_DEFAULT_TOOL_INFO_USER_PROMPT = ""
+
+
+def _get_tool_info_system_prompt() -> str:
+    """从数据库获取工具信息分析系统提示词，不存在时回退到内置默认值"""
+    db = SessionLocal()
+    try:
+        template = db.query(PromptTemplate).filter(
+            PromptTemplate.name == "tool_info_analyzer_system",
+            PromptTemplate.template_type == "system",
+            PromptTemplate.is_active == True,
+        ).first()
+        
+        if template:
+            return template.content
+        else:
+            # 真正的兜底内容只在 extract_prompts_to_db.py 中维护，这里只给出技术性占位文本
+            logger.warning("tool_info_analyzer_system 提示词未在数据库中配置，请在 prompt_templates 表中添加或通过提示词管理界面配置。")
+            return _DEFAULT_TOOL_INFO_SYSTEM_PROMPT or "tool_info_analyzer_system 提示词未在数据库中配置。"
+    except Exception as exc:
+        logger.warning(f"从数据库获取 tool_info_analyzer_system 提示词失败: {exc}")
+        return _DEFAULT_TOOL_INFO_SYSTEM_PROMPT or "tool_info_analyzer_system 提示词获取失败，请检查数据库配置。"
+    finally:
+        db.close()
+
+
+def _get_tool_info_user_prompt(tool_name: str, tool_description: str, tool_args: str, input_schema: str, examples: str) -> str:
+    """从数据库获取工具信息分析用户提示词模板，不存在时回退到内置默认值"""
+    db = SessionLocal()
+    try:
+        template = db.query(PromptTemplate).filter(
+            PromptTemplate.name == "tool_info_analyzer_user",
+            PromptTemplate.template_type == "user",
+            PromptTemplate.is_active == True,
+        ).first()
+        
+        if template:
+            return template.content.format(
+                tool_name=tool_name,
+                tool_description=tool_description,
+                tool_args=tool_args,
+                input_schema=input_schema,
+                examples=examples
+            )
+        else:
+            # 真正的兜底内容只在 extract_prompts_to_db.py 中维护，这里只给出技术性占位文本
+            logger.warning("tool_info_analyzer_user 提示词未在数据库中配置，请在 prompt_templates 表中添加或通过提示词管理界面配置。")
+            return _DEFAULT_TOOL_INFO_USER_PROMPT or "tool_info_analyzer_user 提示词未在数据库中配置。"
+    except Exception as exc:
+        logger.warning(f"从数据库获取 tool_info_analyzer_user 提示词失败: {exc}")
+        return _DEFAULT_TOOL_INFO_USER_PROMPT or "tool_info_analyzer_user 提示词获取失败，请检查数据库配置。"
+    finally:
+        db.close()
 
 
 async def extract_tool_metadata_with_llm(tool_raw_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -36,32 +95,20 @@ async def extract_tool_metadata_with_llm(tool_raw_data: Dict[str, Any]) -> Dict[
         input_schema = tool_raw_data.get('inputSchema', {})
         examples = tool_raw_data.get('examples', [])
         
-        system_prompt = (
-            "你是一个工具信息分析专家。请根据提供的工具原始数据，"
-            "提取和整理出有用的元数据信息，包括参数说明、使用场景、注意事项等。"
-            "请以 JSON 格式输出，确保信息准确、有用。"
-        )
+        # 从数据库获取提示词
+        system_prompt = _get_tool_info_system_prompt()
         
-        user_prompt = f"""请分析以下 MCP 工具的信息，并提取有用的元数据：
-
-工具名称：{tool_name}
-工具描述：{tool_description}
-参数信息：{json.dumps(tool_args, ensure_ascii=False, indent=2) if tool_args else '无'}
-输入 Schema：{json.dumps(input_schema, ensure_ascii=False, indent=2) if input_schema else '无'}
-示例：{json.dumps(examples, ensure_ascii=False, indent=2) if examples else '无'}
-
-请提取以下信息并以 JSON 格式输出：
-{{
-  "args_description": "参数的详细说明（如果有）",
-  "usage_scenarios": ["使用场景1", "使用场景2"],
-  "notes": "注意事项或限制",
-  "best_practices": "最佳实践建议",
-  "related_tools": ["相关工具名称"],
-  "category": "工具类别（如：search, file, network, utility等）",
-  "tags": ["标签1", "标签2"]
-}}
-
-请确保输出是有效的 JSON 格式。"""
+        tool_args_str = json.dumps(tool_args, ensure_ascii=False, indent=2) if tool_args else '无'
+        input_schema_str = json.dumps(input_schema, ensure_ascii=False, indent=2) if input_schema else '无'
+        examples_str = json.dumps(examples, ensure_ascii=False, indent=2) if examples else '无'
+        
+        user_prompt = _get_tool_info_user_prompt(
+            tool_name=tool_name,
+            tool_description=tool_description,
+            tool_args=tool_args_str,
+            input_schema=input_schema_str,
+            examples=examples_str
+        )
 
         # 调用 LLM
         messages = [

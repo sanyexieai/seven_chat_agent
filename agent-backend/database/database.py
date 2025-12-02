@@ -64,18 +64,6 @@ def create_default_agents():
         # 创建默认智能体
         default_agents = [
             {
-                "name": "general_agent",
-                "display_name": "通用智能体",
-                "description": "可配置提示词、工具和LLM的通用智能体",
-                "agent_type": "general",
-                "system_prompt": "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。请用简洁、准确、友好的方式回应用户的问题。",
-                "config": {
-                    "model": "qwen3:32b",
-                    "temperature": 0.7,
-                    "max_tokens": 2048
-                }
-            },
-            {
                 "name": "flow_agent",
                 "display_name": "流程图智能体",
                 "description": "可配置各种节点的流程图智能体",

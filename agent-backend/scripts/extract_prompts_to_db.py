@@ -400,12 +400,42 @@ PROMPT_DEFINITIONS = [
     
     # ========== tool_info_llm.py ==========
     {
-        "name": "tool_info_analyzer",
-        "display_name": "工具信息分析专家提示词",
-        "description": "用于分析工具信息并提取元数据的提示词",
+        "name": "tool_info_analyzer_system",
+        "display_name": "工具信息分析专家系统提示词",
+        "description": "用于分析工具信息并提取元数据的系统提示词",
         "template_type": "system",
         "content": "你是一个工具信息分析专家。请根据提供的工具原始数据，提取和整理出有用的元数据信息，包括参数说明、使用场景、注意事项等。\n请以 JSON 格式输出，确保信息准确、有用。",
         "variables": [],
+        "is_builtin": True,
+        "version": "1.0.0",
+        "source_file": "utils/tool_info_llm.py"
+    },
+    {
+        "name": "tool_info_analyzer_user",
+        "display_name": "工具信息分析专家用户提示词",
+        "description": "用于分析工具信息并提取元数据的用户提示词",
+        "template_type": "user",
+        "content": """请分析以下 MCP 工具的信息，并提取有用的元数据：
+
+工具名称：{tool_name}
+工具描述：{tool_description}
+参数信息：{tool_args}
+输入 Schema：{input_schema}
+示例：{examples}
+
+请提取以下信息并以 JSON 格式输出：
+{{
+  "args_description": "参数的详细说明（如果有）",
+  "usage_scenarios": ["使用场景1", "使用场景2"],
+  "notes": "注意事项或限制",
+  "best_practices": "最佳实践建议",
+  "related_tools": ["相关工具名称"],
+  "category": "工具类别（如：search, file, network, utility等）",
+  "tags": ["标签1", "标签2"]
+}}
+
+请确保输出是有效的 JSON 格式。""",
+        "variables": ["tool_name", "tool_description", "tool_args", "input_schema", "examples"],
         "is_builtin": True,
         "version": "1.0.0",
         "source_file": "utils/tool_info_llm.py"

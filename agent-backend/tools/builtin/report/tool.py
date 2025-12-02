@@ -44,8 +44,6 @@ class ReportTool(BaseTool):
         file_type = parameters.get("file_type", "markdown")
         output_path = parameters.get("output_path")  # 可选：指定输出路径
         
-        # 过滤掉已废弃的 model 参数（如果存在）
-        # model 参数已移除，现在从环境变量 REPORT_MODEL 获取
         
         results = []
         async for chunk in report(

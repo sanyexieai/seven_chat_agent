@@ -20,104 +20,55 @@ except ImportError:
     from utils.context_helper import LLMModelInfoFactory
 
 from utils.llm_helper import get_llm_helper
+from database.database import SessionLocal
+from models.database_models import PromptTemplate
 
 load_dotenv()
 
-MARKDOWN_REPORT_PROMPT_TEMPLATE = Template("""
-你是资深数据分析师和执行专家，需要基于提供的文件内容**实际执行分析任务**，而不是只写规划。
+# 报告 Markdown 提示词模板占位（真实内容由数据库中的 report_markdown_advanced 管理）
+# 兜底内容只在 extract_prompts_to_db.py 中维护
+_DEFAULT_MARKDOWN_REPORT_PROMPT = ""
 
-你的任务是：
-1. **深入分析**：仔细阅读所有文件内容，提取关键数据、统计信息、趋势、异常等
-2. **执行计算**：进行数据统计、对比分析、问题识别等实际分析工作
-3. **得出结论**：基于实际分析结果给出具体、可执行的结论和建议
 
----
-【任务上下文】
-- 任务：{{ task }}
-- 当前时间：{{ current_time }}
-- 相关文件概览：
-{{ file_summary_table }}
+def _get_markdown_report_prompt_template() -> Template:
+    """从数据库获取 Markdown 报告提示词模板，不存在时回退到内置默认值"""
+    db = SessionLocal()
+    try:
+        template = db.query(PromptTemplate).filter(
+            PromptTemplate.name == "report_markdown_advanced",
+            PromptTemplate.template_type == "system",
+            PromptTemplate.is_active == True,
+        ).first()
+        
+        if template:
+            return Template(template.content)
+        else:
+            # 真正的兜底内容只在 extract_prompts_to_db.py 中维护，这里只给出技术性占位文本
+            logger.warning("report_markdown_advanced 提示词未在数据库中配置，请在 prompt_templates 表中添加或通过提示词管理界面配置。")
+            return Template(_DEFAULT_MARKDOWN_REPORT_PROMPT or "report_markdown_advanced 提示词未在数据库中配置。")
+    except Exception as exc:
+        logger.warning(f"从数据库获取 report_markdown_advanced 提示词失败: {exc}")
+        return Template(_DEFAULT_MARKDOWN_REPORT_PROMPT or "report_markdown_advanced 提示词获取失败，请检查数据库配置。")
+    finally:
+        db.close()
 
-【文件详细内容 - 请仔细分析以下内容】
-{{ file_details }}
 
----
-【执行要求】
-1. **必须基于实际文件内容进行分析**，不要写泛泛而谈的内容或占位符
-2. **使用文件统计信息**：利用文件统计信息（字符数、行数、错误数、警告数等）进行数据分析
-3. **提取具体数据**：从文件中提取数字、统计、关键信息、错误信息等实际数据
-4. **识别问题**：基于文件中的错误和警告统计，找出实际问题、异常、风险点
-5. **执行计算**：进行数据对比、趋势分析、问题统计等实际计算
-6. **给出结论**：基于实际分析结果，给出具体可执行的建议，不要写"示例"或"占位符"
-7. 如果文件内容不足，明确说明缺少什么信息，需要什么补充
-
----
-【报告结构 - 请按此结构输出，但内容必须基于实际分析】
-
-# 任务报告：{{ task }}
-
-**日期**：{{ current_time }}
-
-## 目录
-
-1. [任务概述](#任务概述)
-2. [文件列表](#文件列表)
-3. [执行详情](#执行详情)
-4. [结论](#结论)
-
----
-
-## 任务概述
-
-### 任务描述
-
-当前任务为：`{{ task }}`
-
-**请基于文件内容，说明任务的实际执行情况和完成度**。
-
----
-
-## 文件列表
-
-{{ file_summary_table }}
-
----
-
-## 执行详情
-
-### 步骤摘要
-
-**请基于实际文件内容，描述以下步骤的真实执行情况：**
-
-1. **输入验证**：基于 `{{ file_names_desc }}` 等文件，说明实际验证了哪些内容，发现了什么问题
-2. **核心处理**：基于文件内容，说明实际执行了哪些关键操作，处理了哪些数据，得到了什么结果
-3. **结果输出**：说明实际生成了哪些输出，状态如何
-
-### 关键数据
-
-**请从文件中提取实际的关键数据，不要写占位符：**
-
-```yaml
-任务状态: [基于文件内容判断：已完成/进行中/失败/阻塞，并说明原因]
-处理时间: {{ current_time }}
-涉及文件:
-{{ yaml_files_block }}
-实际处理的数据量: [从文件中提取]
-关键指标: [从文件中提取具体数字或指标]
-发现的问题: [从文件中识别出的实际问题]
-```
-
----
-
-## 结论
-
-**请基于实际分析结果，给出具体可执行的结论：**
-
-> 1. **主要发现**：[基于文件内容的具体发现，不要写"示例"或占位符]
-> 2. **问题与风险**：[从文件中识别出的实际问题和风险]
-> 3. **下一步建议**：[基于实际分析结果，给出具体可执行的建议]
-> 4. **信息缺口**：[如果信息不足，明确说明缺少什么，需要补充什么]
-""")
+def _get_report_model_name() -> str:
+    """
+    获取用于报告生成的模型名称
+    优先从全局 LLM 配置（数据库）中读取，失败时回退到环境变量 REPORT_MODEL
+    """
+    try:
+        llm_helper = get_llm_helper()
+        cfg = llm_helper.get_config()
+        model = (cfg or {}).get("model")
+        if model:
+            return model
+    except Exception as exc:
+        logger.warning(f"从 LLM 配置获取报告模型失败，使用环境变量 REPORT_MODEL: {exc}")
+    
+    # 回退到环境变量 / 默认值
+    return os.getenv("REPORT_MODEL", "gpt-4.1")
 
 
 @timer()
@@ -170,7 +121,8 @@ async def ppt_report(
         else:
             flat_files.append(f)
 
-    model = os.getenv("REPORT_MODEL", "gpt-4.1")
+    # 从数据库/LLM 默认配置中获取模型名称，用于计算上下文长度
+    model = _get_report_model_name()
     truncate_flat_files = truncate_files(flat_files, max_tokens=int(LLMModelInfoFactory.get_context_length(model) * 0.8))
     prompt = Template(get_prompt("report")["ppt_prompt"]) \
         .render(task=task, files=truncate_flat_files, date=datetime.now().strftime("%Y-%m-%d"))
@@ -202,7 +154,8 @@ async def markdown_report(
         else:
             flat_files.append(f)
 
-    model = os.getenv("REPORT_MODEL", "gpt-4.1")
+    # 从数据库/LLM 默认配置中获取模型名称，用于计算上下文长度
+    model = _get_report_model_name()
     truncate_flat_files = truncate_files(flat_files, max_tokens=int(LLMModelInfoFactory.get_context_length(model) * 0.8))
 
     file_entries: List[Dict[str, str]] = []
@@ -295,7 +248,8 @@ async def markdown_report(
     yaml_files_block = "\n".join(f"  - {entry['name']}" for entry in file_entries)
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    prompt = MARKDOWN_REPORT_PROMPT_TEMPLATE.render(
+    markdown_template = _get_markdown_report_prompt_template()
+    prompt = markdown_template.render(
         task=task,
         current_time=current_time,
         file_summary_table=file_summary_table,
@@ -353,7 +307,8 @@ async def html_report(
                     "type": "txt",
                     "link": fpath
                 })
-    model = os.getenv("REPORT_MODEL", "gpt-4.1")
+    # 从数据库/LLM 默认配置中获取模型名称，用于计算上下文长度
+    model = _get_report_model_name()
     discount = int(LLMModelInfoFactory.get_context_length(model) * 0.8)
     key_files = truncate_files(key_files, max_tokens=discount)
     flat_files = truncate_files(flat_files, max_tokens=discount - sum([len(f["content"]) for f in key_files]))

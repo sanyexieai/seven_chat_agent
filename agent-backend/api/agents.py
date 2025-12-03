@@ -42,7 +42,7 @@ async def get_agent(
         logger.error(f"获取智能体失败: {str(e)}")
         raise HTTPException(status_code=500, detail="获取智能体失败")
 
-@router.post("/", response_model=AgentResponse)
+@router.post("", response_model=AgentResponse)
 async def create_agent(
     agent_data: AgentCreate,
     db: Session = Depends(get_db)

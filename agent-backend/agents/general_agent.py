@@ -327,8 +327,8 @@ class GeneralAgent(BaseAgent):
     async def process_message(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AgentMessage:
         """处理用户消息（非流式）"""
         try:
-            # 获取用户上下文
-            agent_context = self.get_context(user_id)
+            # 先从 Pipeline 中获取用户上下文（内部会自动初始化 Pipeline）
+            agent_context = self.get_context(user_id, context)
             if not agent_context:
                 agent_context = AgentContext(
                     user_id=user_id,
@@ -336,18 +336,36 @@ class GeneralAgent(BaseAgent):
                     messages=[],
                     metadata={}
                 )
-                self.update_context(user_id, agent_context)
             
-            # 构建对话历史
-            conversation_history = []
-            for msg in agent_context.messages[-10:]:  # 保留最近10条消息
-                if msg.type == MessageType.USER:
-                    conversation_history.append({"role": "user", "content": msg.content})
-                elif msg.type == MessageType.AGENT:
-                    conversation_history.append({"role": "assistant", "content": msg.content})
+            # 如果 AgentContext 中已保存过 Pipeline 状态，则恢复到本次调用的 context 中
+            try:
+                pipeline_state = (agent_context.metadata or {}).get("pipeline_state")
+                if pipeline_state:
+                    if context is None:
+                        context = {}
+                    # 使用导入的方式恢复 Pipeline
+                    restored = Pipeline()
+                    restored.import_data(pipeline_state)
+                    context["pipeline"] = restored
+            except Exception:
+                pass
+
+            # 写回（可能更新了 metadata 的引用）
+            self.update_context(user_id, agent_context, context)
             
-            # 添加当前用户消息
-            conversation_history.append({"role": "user", "content": message})
+            # 统一通过基类记忆接口记录用户消息
+            self.remember_user_message(
+                user_id=user_id,
+                message=message,
+                context=context,
+                stream=False,
+            )
+            
+            # 构建对话历史（使用基类提供的可重写钩子）
+            conversation_history = self.build_conversation_history(
+                agent_context=agent_context,
+                current_user_message=message,
+            )
             
             # 查询知识库（如果有绑定的话）
             knowledge_context = ""
@@ -435,13 +453,26 @@ class GeneralAgent(BaseAgent):
                 agent_name=self.name
             )
             
-            # 更新上下文
+            # 更新上下文（写回 Pipeline 管理的 AgentContext）
             agent_context.messages.append(response)
-            self.update_context(user_id, agent_context)
-            
+
             # 保存工具使用信息到元数据
             if tools_used:
                 response.metadata = {"tools_used": tools_used}
+
+            # 通过基类记忆接口记录整轮对话摘要
+            self.remember_dialog_turn(
+                user_id=user_id,
+                user_message=message,
+                agent_response=response_content,
+                context=context,
+                stream=False,
+                tools_used=tools_used,
+                category="dialog_turn",
+            )
+
+            # 最终写回 AgentContext
+            self.update_context(user_id, agent_context, context)
             
             logger.info(f"通用智能体 {self.name} 处理消息完成，使用工具: {tools_used}")
             return response
@@ -458,8 +489,8 @@ class GeneralAgent(BaseAgent):
     async def process_message_stream(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AsyncGenerator[StreamChunk, None]:
         """流式处理用户消息"""
         try:
-            # 获取用户上下文
-            agent_context = self.get_context(user_id)
+            # 从 BaseAgent / Pipeline 获取用户上下文
+            agent_context = self.get_context(user_id, context)
             if not agent_context:
                 agent_context = AgentContext(
                     user_id=user_id,
@@ -467,18 +498,21 @@ class GeneralAgent(BaseAgent):
                     messages=[],
                     metadata={}
                 )
-                self.update_context(user_id, agent_context)
+            self.update_context(user_id, agent_context, context)
             
-            # 构建对话历史
-            conversation_history = []
-            for msg in agent_context.messages[-10:]:  # 保留最近10条消息
-                if msg.type == MessageType.USER:
-                    conversation_history.append({"role": "user", "content": msg.content})
-                elif msg.type == MessageType.AGENT:
-                    conversation_history.append({"role": "assistant", "content": msg.content})
+            # 统一通过基类记忆接口记录用户消息（流式）
+            self.remember_user_message(
+                user_id=user_id,
+                message=message,
+                context=context,
+                stream=True,
+            )
             
-            # 添加当前用户消息
-            conversation_history.append({"role": "user", "content": message})
+            # 构建对话历史（使用基类提供的可重写钩子）
+            conversation_history = self.build_conversation_history(
+                agent_context=agent_context,
+                current_user_message=message,
+            )
             
             # 查询知识库（如果有绑定的话）
             knowledge_context = ""
@@ -623,7 +657,7 @@ class GeneralAgent(BaseAgent):
                 agent_name=self.name
             )
             
-            # 更新对话历史
+            # 更新对话历史（写回 Pipeline 管理的 AgentContext）
             agent_context.messages.append(AgentMessage(
                 id=str(uuid.uuid4()),
                 type=MessageType.USER,
@@ -641,7 +675,20 @@ class GeneralAgent(BaseAgent):
                 metadata={"tools_used": tools_used}
             ))
             
-            self.update_context(user_id, agent_context)
+            # 通过基类记忆接口记录整轮对话摘要（流式）
+            self.remember_dialog_turn(
+                user_id=user_id,
+                user_message=message,
+                agent_response=full_response,
+                context=context,
+                stream=True,
+                tools_used=tools_used,
+                category="dialog_turn_stream",
+            )
+
+            # 最终写回 AgentContext
+            self.update_context(user_id, agent_context, context)
+            
             logger.info(f"智能体 {self.name} 流式处理消息完成，响应长度: {len(full_response)}, 使用工具: {tools_used}")
             
         except Exception as e:

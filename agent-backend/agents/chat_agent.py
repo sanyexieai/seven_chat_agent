@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, AsyncGenerator, Set
 from models.chat_models import AgentMessage, AgentContext, ToolCall, StreamChunk
 from tools.base_tool import BaseTool
+from agents.base_agent import BaseAgent
 import asyncio
 import uuid
 from datetime import datetime
@@ -248,13 +249,26 @@ class ChatAgent(BaseAgent):
         return False
     
     async def process_message(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AgentMessage:
-        """处理用户消息"""
-        # 将用户消息添加到短期记忆
+        """处理用户消息
+        
+        说明：
+        - 保留 ChatAgent 自己的分级知识库结构
+        - 同时将关键记忆同步到 Pipeline（短期），方便其他模块统一访问
+        """
+        # 将用户消息添加到短期记忆（内部知识库）
         self.add_knowledge(
             content=f"用户消息: {message}",
             memory_level=MemoryLevel.SHORT_TERM,
             category="user_input",
             tags=["用户消息", "短期记忆"]
+        )
+        
+        # 统一通过基类记忆接口同步到 Pipeline 短期记忆
+        self.remember_user_message(
+            user_id=user_id,
+            message=message,
+            context=context,
+            stream=False,
         )
         
         # 整理记忆
@@ -263,7 +277,7 @@ class ChatAgent(BaseAgent):
         # 基于知识库生成回复
         response_content = await self._generate_response(message, context)
         
-        # 将回复添加到短期记忆
+        # 将回复添加到短期记忆（内部知识库）
         self.add_knowledge(
             content=f"智能体回复: {response_content}",
             memory_level=MemoryLevel.SHORT_TERM,
@@ -271,16 +285,33 @@ class ChatAgent(BaseAgent):
             tags=["智能体回复", "短期记忆"]
         )
         
+        # 统一通过基类记忆接口同步回复到 Pipeline 短期记忆
+        self.remember_agent_response(
+            user_id=user_id,
+            response=response_content,
+            context=context,
+            stream=False,
+            category="agent_response",
+        )
+        
         return self.create_message(response_content, "agent")
     
     async def process_message_stream(self, user_id: str, message: str, context: Dict[str, Any] = None) -> AsyncGenerator[StreamChunk, None]:
         """流式处理用户消息"""
-        # 将用户消息添加到短期记忆
+        # 将用户消息添加到短期记忆（内部知识库）
         self.add_knowledge(
             content=f"用户消息: {message}",
             memory_level=MemoryLevel.SHORT_TERM,
             category="user_input",
             tags=["用户消息", "短期记忆"]
+        )
+        
+        # 统一通过基类记忆接口同步到 Pipeline 短期记忆（流式）
+        self.remember_user_message(
+            user_id=user_id,
+            message=message,
+            context=context,
+            stream=True,
         )
         
         # 整理记忆
@@ -290,12 +321,21 @@ class ChatAgent(BaseAgent):
         async for chunk in self._generate_stream_response(message, context):
             yield chunk
         
-        # 将完整回复添加到短期记忆
+        # 将完整回复添加到短期记忆（内部知识库）
         self.add_knowledge(
             content=f"智能体流式回复完成",
             memory_level=MemoryLevel.SHORT_TERM,
             category="agent_response",
             tags=["智能体回复", "短期记忆", "流式"]
+        )
+        
+        # 统一通过基类记忆接口同步“流式回复完成”到 Pipeline 短期记忆
+        self.remember_agent_response(
+            user_id=user_id,
+            response="智能体流式回复完成",
+            context=context,
+            stream=True,
+            category="agent_response",
         )
     
     async def _generate_response(self, message: str, context: Dict[str, Any] = None) -> str:

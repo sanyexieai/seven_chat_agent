@@ -278,6 +278,28 @@ class ToolConfig(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class PipelineState(Base):
+    """Pipeline 状态持久化表
+    
+    作用：
+    - 按 user_id + agent_name + session_id 维度持久化 Pipeline.export() 的完整状态
+    - 便于在服务重启或跨请求时恢复智能体的上下文与记忆
+    """
+    __tablename__ = "pipeline_states"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    pipeline_id = Column(String(100), nullable=True, index=True)
+    user_id = Column(String(100), nullable=False, index=True)
+    agent_name = Column(String(100), nullable=False, index=True)
+    session_id = Column(String(100), nullable=True, index=True)
+    state = Column(JSON, nullable=False)  # Pipeline.export() 的结果
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        UniqueConstraint('user_id', 'agent_name', 'session_id', name='uq_pipeline_state_user_agent_session'),
+    )
+
+
 class ToolPromptLink(Base):
     """工具与提示词模板关联表
     

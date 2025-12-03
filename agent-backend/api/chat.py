@@ -6,6 +6,7 @@ from database.database import get_db
 from models.database_models import ChatMessage, UserSession
 from models.database_models import ChatMessageResponse, MessageCreate
 from services.session_service import SessionService, MessageService
+from services.pipeline_state_service import PipelineStateService
 from utils.log_helper import get_logger
 from pydantic import BaseModel
 import json
@@ -66,12 +67,45 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                         # 在context中添加数据库会话，以便智能体查询知识库
                         enhanced_context = request.context.copy() if request.context else {}
                         enhanced_context['db_session'] = db
+
+                        # 在调用前从数据库恢复 Pipeline 状态
+                        try:
+                            if request.session_id:
+                                from agents.pipeline import Pipeline
+                                state = PipelineStateService.get_state(
+                                    db=db,
+                                    user_id=request.user_id,
+                                    agent_name=agent.name,
+                                    session_id=request.session_id,
+                                )
+                                if state:
+                                    p = Pipeline(pipeline_id=state.get("pipeline_id"))
+                                    p.import_data(state)
+                                    enhanced_context["pipeline"] = p
+                        except Exception as e:
+                            logger.warning(f"恢复 Pipeline 状态失败: {e}")
                         
                         # 调用智能体的process_message方法
                         result = await agent.process_message(request.user_id, request.message, enhanced_context)
                         response_message = result.content
                         tools_used = result.metadata.get('tools_used', []) if result.metadata else []
                         
+                        # 在调用后保存 Pipeline 状态
+                        try:
+                            from agents.pipeline import Pipeline
+                            pipeline = enhanced_context.get("pipeline")
+                            if isinstance(pipeline, Pipeline) and request.session_id:
+                                state = pipeline.export()
+                                PipelineStateService.save_state(
+                                    db=db,
+                                    user_id=request.user_id,
+                                    agent_name=agent.name,
+                                    session_id=request.session_id,
+                                    state=state,
+                                )
+                        except Exception as e:
+                            logger.warning(f"保存 Pipeline 状态失败: {e}")
+
                         logger.info(f"智能体 {agent.name} 处理消息完成，使用工具: {tools_used}")
                     else:
                         # 否则使用默认的聊天方法
@@ -222,6 +256,23 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                 # 在context中添加数据库会话，以便智能体查询知识库
                 enhanced_context = request.context.copy() if request.context else {}
                 enhanced_context['db_session'] = db
+
+                # 在执行工作流/流式处理前，从数据库恢复 Pipeline 状态
+                try:
+                    if request.session_id:
+                        from agents.pipeline import Pipeline
+                        state = PipelineStateService.get_state(
+                            db=db,
+                            user_id=request.user_id,
+                            agent_name=agent.name,
+                            session_id=request.session_id,
+                        )
+                        if state:
+                            p = Pipeline(pipeline_id=state.get("pipeline_id"))
+                            p.import_data(state)
+                            enhanced_context["pipeline"] = p
+                except Exception as e:
+                    logger.warning(f"恢复 Pipeline 状态失败: {e}")
                 
                 # 使用工作流引擎适配器执行（优先使用工作流引擎，否则回退到智能体的 process_message_stream）
                 from agents.flow.agent_adapter import execute_agent_stream
@@ -311,7 +362,23 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                         # 不要 break，继续接收后续的 chunk（如结束节点的 chunk）
                         # 但是，为了避免无限等待，我们需要一个机制来检测是否真的结束了
                         # 暂时不 break，让流程继续执行
-                
+
+                # 流式执行结束后，若有 Pipeline，则保存状态
+                try:
+                    from agents.pipeline import Pipeline
+                    pipeline = enhanced_context.get("pipeline")
+                    if isinstance(pipeline, Pipeline) and request.session_id:
+                        state = pipeline.export()
+                        PipelineStateService.save_state(
+                            db=db,
+                            user_id=request.user_id,
+                            agent_name=agent.name,
+                            session_id=request.session_id,
+                            state=state,
+                        )
+                except Exception as e:
+                    logger.warning(f"保存 Pipeline 状态失败: {e}")
+
                 logger.info(f"智能体 {agent.name} 流式处理消息完成")
                 
             except Exception as e:

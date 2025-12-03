@@ -428,6 +428,28 @@ def run_chat_migrations():
         logger.error(f"聊天相关表迁移失败: {str(e)}")
         raise
 
+
+def run_pipeline_state_migrations():
+    """运行 Pipeline 状态表迁移"""
+    logger.info("开始检查 pipeline_states 表迁移...")
+    try:
+        inspector = inspect(engine)
+        table_name = "pipeline_states"
+        
+        with engine.connect() as conn:
+            if table_name not in inspector.get_table_names():
+                logger.info("pipeline_states 表不存在，创建该表...")
+                from models.database_models import Base  # type: ignore
+                Base.metadata.tables[table_name].create(bind=engine, checkfirst=True)
+                logger.info("pipeline_states 表创建完成")
+            else:
+                logger.info("pipeline_states 表已存在，暂不做字段级迁移")
+            
+            conn.commit()
+    except Exception as e:
+        logger.error(f"pipeline_states 表迁移失败: {str(e)}")
+        raise
+
 def run_knowledge_base_migrations():
     """运行知识库相关表的数据库迁移"""
     logger.info("开始检查知识库相关表迁移...")

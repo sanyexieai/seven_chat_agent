@@ -15,6 +15,9 @@ const { Header, Content, Sider } = Layout;
 const { TextArea } = Input;
 const { Title, Text } = Typography;
 
+// 默认智能体在浏览器本地缓存中的 key
+const DEFAULT_AGENT_STORAGE_KEY = 'default-agent-name';
+
 type FlowNodeStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 interface Message {
@@ -600,12 +603,28 @@ const ChatPage: React.FC = () => {
         const data = await response.json();
         const agentsList = Array.isArray(data) ? data : [];
         setAgents(agentsList);
-        
-        // 如果没有选中的智能体，设置第一个作为默认值
+
+        // 如果没有选中的智能体，则从本地缓存中恢复默认智能体；如果没有缓存则使用第一个
         if (agentsList.length > 0 && !selectedAgent) {
-          setSelectedAgent(agentsList[0]);
-          // 加载第一个智能体的流程图
-          await updateFlowForAgent(agentsList[0].name);
+          let defaultAgent = null as any;
+          try {
+            const storedName = localStorage.getItem(DEFAULT_AGENT_STORAGE_KEY);
+            if (storedName) {
+              defaultAgent = agentsList.find(a => a.name === storedName) || null;
+            }
+          } catch {
+            // 读取 localStorage 失败时忽略，退回到第一个智能体
+          }
+
+          if (!defaultAgent) {
+            defaultAgent = agentsList[0];
+          }
+
+          if (defaultAgent) {
+            setSelectedAgent(defaultAgent);
+            // 加载默认智能体的流程图
+            await updateFlowForAgent(defaultAgent.name);
+          }
         }
       }
     } catch (error) {
@@ -2241,6 +2260,13 @@ const ChatPage: React.FC = () => {
                       flow_config: agent.flow_config
                     };
                     setSelectedAgent(selectedAgentData);
+
+                    // 将当前选择的智能体名称持久化到本地缓存，作为下次进入页面时的默认智能体
+                    try {
+                      localStorage.setItem(DEFAULT_AGENT_STORAGE_KEY, agent.name);
+                    } catch {
+                      // 在隐私模式或禁用本地存储的环境下忽略错误
+                    }
                     
                     // 生成流程图数据
                     let newFlowData: FlowData;

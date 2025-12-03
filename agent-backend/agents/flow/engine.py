@@ -219,7 +219,8 @@ class FlowEngine:
 		context = context or {}
 		
 		# 初始化 Pipeline（如果尚未初始化）
-		from .pipeline import get_pipeline
+		# 使用通用的 agents.pipeline 模块，适用于所有类型智能体
+		from agents.pipeline import get_pipeline
 		pipeline = get_pipeline(context)
 		pipeline.sync_to_flow_state(context)
 		

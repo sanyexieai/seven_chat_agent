@@ -400,7 +400,7 @@ class BaseFlowNode(ABC):
 		Returns:
 			Pipeline 实例
 		"""
-		from .pipeline import get_pipeline
+		from agents.pipeline import get_pipeline
 		return get_pipeline(context)
 	
 	def pipeline_put(self, context: Dict[str, Any], key: str, value: Any, namespace: str = 'global') -> None:

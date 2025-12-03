@@ -110,6 +110,12 @@ def run_migrations():
         
         # 运行工具配置表迁移
         run_tool_config_migrations()
+
+        # 运行记忆表迁移
+        run_memory_migrations()
+
+        # 运行工具向量嵌入字段迁移
+        run_tool_embedding_migrations()
             
     except Exception as e:
         logger.error(f"数据库迁移失败: {str(e)}")
@@ -1160,6 +1166,64 @@ def run_tool_config_migrations():
                 
     except Exception as e:
         logger.error(f"工具配置表迁移失败: {str(e)}")
+        raise
+
+
+def run_memory_migrations():
+    """运行通用记忆表迁移"""
+    logger.info("开始检查 memories 表迁移...")
+    try:
+        with engine.connect() as conn:
+            inspector = inspect(engine)
+            if 'memories' not in inspector.get_table_names():
+                logger.info("memories 表不存在，创建该表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("memories 表创建完成")
+            else:
+                logger.info("memories 表已存在，检查字段...")
+                # 核心字段检查，若缺失则补充
+                required_columns = [
+                    'user_id', 'agent_name', 'session_id',
+                    'memory_type', 'content', 'embedding',
+                    'memory_metadata', 'score', 'is_active',
+                ]
+                for column in required_columns:
+                    if not check_column_exists('memories', column):
+                        if column == 'memory_type':
+                            conn.execute(text("ALTER TABLE memories ADD COLUMN memory_type VARCHAR(50) NOT NULL DEFAULT 'short_term';"))
+                        elif column in ('user_id', 'agent_name', 'session_id', 'category', 'source'):
+                            conn.execute(text(f"ALTER TABLE memories ADD COLUMN {column} VARCHAR(100);"))
+                        elif column == 'content':
+                            conn.execute(text("ALTER TABLE memories ADD COLUMN content TEXT NOT NULL DEFAULT '';"))
+                        elif column in ('memory_metadata', 'embedding'):
+                            conn.execute(text(f"ALTER TABLE memories ADD COLUMN {column} JSON;"))
+                        elif column == 'score':
+                            conn.execute(text("ALTER TABLE memories ADD COLUMN score FLOAT;"))
+                        elif column == 'is_active':
+                            conn.execute(text("ALTER TABLE memories ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
+                        logger.info(f"为 memories 表添加字段: {column}")
+            conn.commit()
+    except Exception as e:
+        logger.error(f"memories 表迁移失败: {str(e)}")
+        raise
+
+
+def run_tool_embedding_migrations():
+    """为工具表添加 embedding 字段，用于 RAG 检索"""
+    logger.info("开始检查工具 embedding 字段迁移...")
+    try:
+        with engine.connect() as conn:
+            # mcp_tools.embedding
+            if check_table_exists('mcp_tools') and not check_column_exists('mcp_tools', 'embedding'):
+                conn.execute(text("ALTER TABLE mcp_tools ADD COLUMN embedding JSON;"))
+                logger.info("为 mcp_tools 添加 embedding 字段")
+            # temporary_tools.embedding
+            if check_table_exists('temporary_tools') and not check_column_exists('temporary_tools', 'embedding'):
+                conn.execute(text("ALTER TABLE temporary_tools ADD COLUMN embedding JSON;"))
+                logger.info("为 temporary_tools 添加 embedding 字段")
+            conn.commit()
+    except Exception as e:
+        logger.error(f"工具 embedding 字段迁移失败: {str(e)}")
         raise
 
 def create_default_mcp_servers():

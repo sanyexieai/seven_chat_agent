@@ -212,6 +212,7 @@ class MCPTool(Base):
     container_type = Column(String(50), nullable=True, default="none")  # 容器类型：browser, file, none
     container_config = Column(JSON, nullable=True)  # 容器配置
     is_active = Column(Boolean, default=True)
+    embedding = Column(JSON, nullable=True)  # 工具描述/用法的向量嵌入（用于RAG检索）
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -258,6 +259,7 @@ class TemporaryTool(Base):
     is_temporary = Column(Boolean, default=True)  # 是否为临时工具
     score = Column(Float, default=3.0)  # 工具评分：范围[1,5]，默认取中间值3.0
     is_available = Column(Boolean, default=True)  # 是否可用（由评分阈值计算并持久化）
+    embedding = Column(JSON, nullable=True)  # 工具代码/描述的向量嵌入（用于RAG检索）
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -277,6 +279,34 @@ class ToolConfig(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
+class MemoryRecord(Base):
+    """通用记忆表
+    
+    每条记忆一行，用于对话记忆 / 系统记忆 / 工具调用结果等的RAG检索。
+    """
+    __tablename__ = "memories"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(100), nullable=True, index=True)
+    agent_name = Column(String(100), nullable=True, index=True)
+    session_id = Column(String(100), nullable=True, index=True)
+    
+    # 记忆类型：short_term / long_term / subconscious 等，默认对齐 Pipeline 的定义
+    memory_type = Column(String(50), nullable=False, index=True)
+    category = Column(String(100), nullable=True)  # 如 user_input / agent_response / dialog_turn / tool_result
+    source = Column(String(50), nullable=True)  # conversation / tool / system / kb 等
+    
+    content = Column(Text, nullable=False)  # 记忆正文
+    memory_metadata = Column(JSON, nullable=True)  # 任意附加信息（tags、工具名等）
+    
+    # RAG 向量
+    embedding = Column(JSON, nullable=True)  # 向量嵌入（List[float]）
+    score = Column(Float, nullable=True)  # 可选的质量分 / 重要性分
+    
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class PipelineState(Base):
     """Pipeline 状态持久化表
@@ -325,6 +355,38 @@ class ToolPromptLink(Base):
 
 
 # Pydantic响应模型
+class MemoryRecordCreate(BaseModel):
+    """创建记忆记录的请求模型"""
+    user_id: Optional[str] = None
+    agent_name: Optional[str] = None
+    session_id: Optional[str] = None
+    memory_type: str
+    category: Optional[str] = None
+    source: Optional[str] = None
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class MemoryRecordResponse(BaseModel):
+    """记忆记录响应模型"""
+    id: int
+    user_id: Optional[str] = None
+    agent_name: Optional[str] = None
+    session_id: Optional[str] = None
+    memory_type: str
+    category: Optional[str] = None
+    source: Optional[str] = None
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+    embedding: Optional[List[float]] = None
+    score: Optional[float] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 class AgentResponse(BaseModel):
     id: int
     name: str
@@ -447,6 +509,7 @@ class MCPToolResponse(BaseModel):
     tool_metadata: Optional[Dict[str, Any]] = None  # LLM整理后的元数据
     container_type: Optional[str] = "none"
     container_config: Optional[Dict[str, Any]] = None
+    embedding: Optional[List[float]] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -489,6 +552,7 @@ class TemporaryToolResponse(BaseModel):
     container_config: Optional[Dict[str, Any]] = None
     is_active: bool
     is_temporary: bool
+    embedding: Optional[List[float]] = None
     created_at: datetime
     updated_at: datetime
     

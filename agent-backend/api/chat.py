@@ -64,9 +64,11 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                     
                     # 调用智能体处理消息
                     if hasattr(agent, 'process_message'):
-                        # 在context中添加数据库会话，以便智能体查询知识库
+                        # 在context中添加数据库会话和session_id，以便智能体查询知识库和恢复上下文
                         enhanced_context = request.context.copy() if request.context else {}
                         enhanced_context['db_session'] = db
+                        if request.session_id:
+                            enhanced_context['session_id'] = request.session_id
 
                         # 在调用前从数据库恢复 Pipeline 状态
                         try:
@@ -253,9 +255,11 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                 except Exception as e:
                     logger.warning(f"获取智能体信息失败: {str(e)}")
                 
-                # 在context中添加数据库会话，以便智能体查询知识库
+                # 在context中添加数据库会话和session_id，以便智能体查询知识库和恢复上下文
                 enhanced_context = request.context.copy() if request.context else {}
                 enhanced_context['db_session'] = db
+                if request.session_id:
+                    enhanced_context['session_id'] = request.session_id
 
                 # 在执行工作流/流式处理前，从数据库恢复 Pipeline 状态
                 try:
@@ -274,6 +278,25 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                 except Exception as e:
                     logger.warning(f"恢复 Pipeline 状态失败: {e}")
                 
+                # 如果有 session_id，则先保存一条用户消息到 chat_messages（与非流式接口行为对齐）
+                if request.session_id:
+                    try:
+                        from models.database_models import MessageCreate
+                        # 这里的 agent_name 采用智能体的对外名称（描述优先，其次名称）
+                        stream_agent_name = agent.description if hasattr(agent, 'description') and agent.description else agent.name
+                        user_message_data = MessageCreate(
+                            session_id=request.session_id,
+                            user_id=request.user_id,
+                            message_type="user",
+                            content=request.message,
+                            agent_name=stream_agent_name,
+                            metadata=None
+                        )
+                        MessageService.create_message(db, user_message_data)
+                        logger.info(f"流式会话 {request.session_id} 已保存用户消息到 chat_messages")
+                    except Exception as e:
+                        logger.warning(f"流式会话保存用户消息失败: {str(e)}")
+
                 # 使用工作流引擎适配器执行（优先使用工作流引擎，否则回退到智能体的 process_message_stream）
                 from agents.flow.agent_adapter import execute_agent_stream
                 from agents.flow.business_handler import FlowBusinessHandler
@@ -288,6 +311,7 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                 logger.info(f"流式聊天请求：session_id={request.session_id}, user_id={request.user_id}, agent_name={business_handler.agent_name}")
                 
                 # 执行流式处理
+                assistant_message_saved = False
                 async for chunk in execute_agent_stream(
                     agent=agent,
                     user_id=request.user_id,
@@ -351,17 +375,32 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                         yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
                         break
                     elif chunk.type == "final":
+                        # 在收到最终内容块时，将助手完整回复保存到 chat_messages
+                        if request.session_id and not assistant_message_saved:
+                            try:
+                                from models.database_models import MessageCreate
+                                stream_agent_name = agent.description if hasattr(agent, 'description') and agent.description else agent.name
+                                assistant_message_data = MessageCreate(
+                                    session_id=request.session_id,
+                                    user_id=request.user_id,
+                                    message_type="assistant",
+                                    content=chunk.content or "",
+                                    agent_name=stream_agent_name,
+                                    metadata={"tools_used": business_handler.get_tools_used()},
+                                )
+                                MessageService.create_message(db, assistant_message_data)
+                                assistant_message_saved = True
+                                logger.info(f"流式会话 {request.session_id} 已保存助手消息到 chat_messages")
+                            except Exception as e:
+                                logger.warning(f"流式会话保存助手消息失败: {str(e)}")
+
                         # final 块：发送完成信号，但不要立即 break，继续接收后续的 chunk
-                        # 这样可以让流程继续执行到结束节点
-                        # 注意：前端可能会在收到 final chunk 后停止显示，但后端会继续执行
                         done_data = {
                             'type': 'done',
                             'tools_used': business_handler.get_tools_used()
                         }
                         yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
                         # 不要 break，继续接收后续的 chunk（如结束节点的 chunk）
-                        # 但是，为了避免无限等待，我们需要一个机制来检测是否真的结束了
-                        # 暂时不 break，让流程继续执行
 
                 # 流式执行结束后，若有 Pipeline，则保存状态
                 try:

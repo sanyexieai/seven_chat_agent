@@ -3,6 +3,8 @@ from typing import Dict, Any, List, Optional, AsyncGenerator
 from models.chat_models import AgentMessage, AgentContext, ToolCall, StreamChunk
 from tools.base_tool import BaseTool
 from agents.pipeline import Pipeline, get_pipeline
+from services.memory_service import MemoryService
+from models.database_models import MemoryRecordCreate
 import asyncio
 import uuid
 from datetime import datetime
@@ -50,8 +52,17 @@ class BaseAgent(ABC):
         
         - 主存储：self.contexts[user_id]，由常驻的 Agent 实例跨请求共享
         - 为了让 Pipeline 拿得到上下文，这里会把已有的 AgentContext 镜像到 Pipeline.agent_contexts 命名空间
+        - 如果 context 中有 session_id，会检查内存中的上下文是否匹配，不匹配则返回 None（让子类从数据库恢复）
         """
         agent_context = self.contexts.get(user_id)
+        
+        # 如果内存中有上下文，但 context 中提供了 session_id 且不匹配，返回 None（让子类从数据库恢复）
+        if agent_context and context is not None:
+            session_id = context.get("session_id")
+            if session_id and agent_context.session_id != session_id:
+                # session_id 不匹配，返回 None，让子类从数据库恢复正确的上下文
+                return None
+        
         if agent_context and context is not None:
             try:
                 pipeline = self.get_pipeline(context)
@@ -157,11 +168,34 @@ class BaseAgent(ABC):
             if extra_metadata:
                 metadata.update(extra_metadata)
 
+            ctx = context or {}
+
+            # 1) 写入 Pipeline 短期记忆
             self.pipeline_write_short_term_memory(
-                context=context or {},
+                context=ctx,
                 content=f"用户消息: {message}",
                 metadata=metadata,
             )
+
+            # 2) 同步到数据库 memories 表（带 RAG 向量）
+            db_session = ctx.get("db_session")
+            if db_session:
+                try:
+                    memory_service = MemoryService()
+                    record = MemoryRecordCreate(
+                        user_id=user_id,
+                        agent_name=self.name,
+                        session_id=ctx.get("session_id"),
+                        memory_type=Pipeline.MEMORY_TYPE_SHORT_TERM,
+                        category="user_input",
+                        source="conversation",
+                        content=f"用户消息: {message}",
+                        metadata=metadata,
+                    )
+                    memory_service.create_memory(db_session, record, auto_embed=True)
+                except Exception:
+                    # DB 记忆失败不影响主流程
+                    pass
         except Exception:
             # 记忆失败不影响主流程
             pass
@@ -195,11 +229,33 @@ class BaseAgent(ABC):
             if extra_metadata:
                 metadata.update(extra_metadata)
 
+            ctx = context or {}
+
+            # 1) 写入 Pipeline 短期记忆
             self.pipeline_write_short_term_memory(
-                context=context or {},
+                context=ctx,
                 content=f"智能体回复: {response}",
                 metadata=metadata,
             )
+
+            # 2) 同步到数据库 memories 表
+            db_session = ctx.get("db_session")
+            if db_session:
+                try:
+                    memory_service = MemoryService()
+                    record = MemoryRecordCreate(
+                        user_id=user_id,
+                        agent_name=self.name,
+                        session_id=ctx.get("session_id"),
+                        memory_type=Pipeline.MEMORY_TYPE_SHORT_TERM,
+                        category=category,
+                        source="conversation",
+                        content=f"智能体回复: {response}",
+                        metadata=metadata,
+                    )
+                    memory_service.create_memory(db_session, record, auto_embed=True)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -236,11 +292,33 @@ class BaseAgent(ABC):
             if extra_metadata:
                 metadata.update(extra_metadata)
 
+            ctx = context or {}
+
+            # 1) 写入 Pipeline 短期记忆（轮次摘要）
             self.pipeline_write_short_term_memory(
-                context=context or {},
+                context=ctx,
                 content=summary_content,
                 metadata=metadata,
             )
+
+            # 2) 同步到数据库 memories 表（轮次摘要）
+            db_session = ctx.get("db_session")
+            if db_session:
+                try:
+                    memory_service = MemoryService()
+                    record = MemoryRecordCreate(
+                        user_id=user_id,
+                        agent_name=self.name,
+                        session_id=ctx.get("session_id"),
+                        memory_type=Pipeline.MEMORY_TYPE_SHORT_TERM,
+                        category=category,
+                        source="conversation",
+                        content=summary_content,
+                        metadata=metadata,
+                    )
+                    memory_service.create_memory(db_session, record, auto_embed=True)
+                except Exception:
+                    pass
         except Exception:
             pass
     

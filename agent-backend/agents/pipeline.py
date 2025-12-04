@@ -350,6 +350,35 @@ class Pipeline:
             'files': self._files,
             'history_count': len(self._history)
         }
+    
+    def export_for_frontend(self) -> Dict[str, Any]:
+        """导出管道数据为前端需要的格式
+        
+        注意：会过滤掉不可序列化的对象（如 AgentContext）
+        """
+        import json
+        
+        # 过滤掉 agent_contexts 命名空间（包含不可序列化的 AgentContext 对象）
+        filtered_data = {}
+        for namespace, namespace_data in self._data.items():
+            if namespace == 'agent_contexts':
+                # 跳过 agent_contexts，这是内部使用的，前端不需要
+                continue
+            filtered_data[namespace] = {}
+            for key, value in namespace_data.items():
+                try:
+                    # 尝试序列化，如果失败则跳过
+                    json.dumps(value, default=str)
+                    filtered_data[namespace][key] = value
+                except (TypeError, ValueError):
+                    # 如果无法序列化，转换为字符串表示
+                    filtered_data[namespace][key] = str(value)
+        
+        return {
+            'pipeline_data': filtered_data,  # 命名空间 -> key -> value
+            'pipeline_files': self._files,  # 命名空间 -> key -> file info
+            'pipeline_history': self.get_history(limit=100)  # 最近100条历史记录
+        }
 
     def import_data(self, data: Dict[str, Any]) -> None:
         """导入管道数据"""

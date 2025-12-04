@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from database.database import get_db
 from models.database_models import ChatMessage, UserSession
 from models.database_models import ChatMessageResponse, MessageCreate
 from services.session_service import SessionService, MessageService
 from services.pipeline_state_service import PipelineStateService
+from models.database_models import PipelineState
 from utils.log_helper import get_logger
 from pydantic import BaseModel
 import json
@@ -29,8 +30,64 @@ class ChatResponse(BaseModel):
     agent_name: str = "AI助手"
     tools_used: List[str] = []
     timestamp: str
+    # 前端上下文容器使用的 Pipeline 上下文快照
+    pipeline_context: Dict[str, Any] | None = None
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+@router.get("/pipeline_state")
+async def get_pipeline_state(
+    user_id: str = Query(..., description="用户ID"),
+    agent_name: str = Query(..., description="智能体名称"),
+    session_id: Optional[str] = Query(None, description="会话ID"),
+    db: Session = Depends(get_db),
+):
+    """获取指定用户/智能体/会话的 Pipeline 上下文快照
+
+    返回结构与流式 final_response 中 metadata.flow_state 一致，方便前端统一展示。
+    """
+    try:
+        # 1) 优先按 (user_id, agent_name, session_id) 精确匹配
+        state = PipelineStateService.get_state(
+            db=db,
+            user_id=user_id,
+            agent_name=agent_name,
+            session_id=session_id,
+        )
+
+        # 2) 如果精确匹配不到，再按 (user_id, session_id) 做一次宽松匹配，取最近的一条
+        if not state and session_id:
+            try:
+                qs = (
+                    db.query(PipelineState)
+                    .filter(
+                        PipelineState.user_id == user_id,
+                        PipelineState.session_id == str(session_id),
+                    )
+                    .order_by(PipelineState.updated_at.desc())
+                )
+                record = qs.first()
+                state = record.state if record else None
+            except Exception as inner_e:
+                logger.warning(f"宽松匹配 PipelineState 失败: {inner_e}")
+
+        if not state:
+            return {"success": True, "pipeline_context": None}
+
+        # 还原 Pipeline 并导出前端可用格式
+        from agents.pipeline import Pipeline
+
+        p = Pipeline(pipeline_id=state.get("pipeline_id"))
+        p.import_data(state)
+        context_for_frontend = p.export_for_frontend()
+        return {"success": True, "pipeline_context": context_for_frontend}
+    except Exception as e:
+        logger.error(f"获取 Pipeline 状态失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取 Pipeline 状态失败: {str(e)}",
+        )
 
 @router.post("", response_model=ChatResponse)
 async def chat(request: ChatRequest, db: Session = Depends(get_db)):
@@ -92,7 +149,8 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                         response_message = result.content
                         tools_used = result.metadata.get('tools_used', []) if result.metadata else []
                         
-                        # 在调用后保存 Pipeline 状态
+                        # 在调用后保存 Pipeline 状态，并准备前端上下文数据
+                        pipeline_context = None
                         try:
                             from agents.pipeline import Pipeline
                             pipeline = enhanced_context.get("pipeline")
@@ -105,6 +163,8 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                                     session_id=request.session_id,
                                     state=state,
                                 )
+                                # 导出为前端格式
+                                pipeline_context = pipeline.export_for_frontend()
                         except Exception as e:
                             logger.warning(f"保存 Pipeline 状态失败: {e}")
 
@@ -183,13 +243,13 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 except Exception as e:
                     logger.warning(f"保存聊天消息失败: {str(e)}")
             
-            from datetime import datetime
             response = ChatResponse(
                 success=True,
                 message=response_message,
                 agent_name=agent_name,
                 tools_used=tools_used,
-                timestamp=datetime.now().isoformat()
+                timestamp=datetime.now().isoformat(),
+                pipeline_context=pipeline_context
             )
         except Exception as e:
             logger.error(f"调用智能体失败: {str(e)}")
@@ -323,11 +383,28 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                 ):
                     # 将 StreamChunk 转换为 SSE 格式
                     # 确保所有类型的 chunk 都被传递，包括 node_start 和 node_complete
+                    
+                    # 安全序列化 metadata，过滤掉不可序列化的对象
+                    def safe_serialize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+                        """安全序列化 metadata，将不可序列化的对象转换为字符串"""
+                        if not metadata:
+                            return {}
+                        safe_metadata = {}
+                        for key, value in metadata.items():
+                            try:
+                                # 尝试序列化，如果成功则保留原值
+                                json.dumps(value, default=str)
+                                safe_metadata[key] = value
+                            except (TypeError, ValueError):
+                                # 如果无法序列化，转换为字符串表示
+                                safe_metadata[key] = str(value)
+                        return safe_metadata
+                    
                     chunk_data = {
                         'content': chunk.content or '',
                         'type': chunk.type,
                         'chunk_id': chunk.chunk_id,
-                        'metadata': chunk.metadata or {}
+                        'metadata': safe_serialize_metadata(chunk.metadata or {})
                     }
                     
                     # 特殊处理某些类型
@@ -352,7 +429,15 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                     if chunk.type in ("node_start", "node_complete"):
                         logger.debug(f"发送节点事件: type={chunk.type}, node_id={chunk.metadata.get('node_id') if chunk.metadata else 'N/A'}")
                     
-                    data_chunk = f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                    # 使用自定义序列化函数处理不可序列化的对象
+                    def json_serializer(obj):
+                        """自定义 JSON 序列化函数"""
+                        try:
+                            return json.dumps(obj, default=str, ensure_ascii=False)
+                        except (TypeError, ValueError):
+                            return str(obj)
+                    
+                    data_chunk = f"data: {json.dumps(chunk_data, ensure_ascii=False, default=str)}\n\n"
                     yield data_chunk
                     
                     # 如果是最终块或错误块，发送完成信号
@@ -364,7 +449,7 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                             'type': 'done',
                             'tools_used': business_handler.get_tools_used()
                         }
-                        yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(done_data, ensure_ascii=False, default=str)}\n\n"
                         break
                     elif chunk.type == "done":
                         # done 块：发送完成信号并 break
@@ -372,7 +457,7 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                             'type': 'done',
                             'tools_used': business_handler.get_tools_used()
                         }
-                        yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(done_data, ensure_ascii=False, default=str)}\n\n"
                         break
                     elif chunk.type == "final":
                         # 在收到最终内容块时，将助手完整回复保存到 chat_messages
@@ -399,10 +484,11 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                             'type': 'done',
                             'tools_used': business_handler.get_tools_used()
                         }
-                        yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(done_data, ensure_ascii=False, default=str)}\n\n"
                         # 不要 break，继续接收后续的 chunk（如结束节点的 chunk）
 
                 # 流式执行结束后，若有 Pipeline，则保存状态
+                # 注意：Pipeline 上下文数据应该在 final chunk 的 metadata 中已经发送给前端
                 try:
                     from agents.pipeline import Pipeline
                     pipeline = enhanced_context.get("pipeline")
@@ -426,8 +512,8 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                     'content': f'抱歉，智能体处理消息时出现错误: {str(e)}',
                     'type': 'error'
                 }
-                yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(error_data, ensure_ascii=False, default=str)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'tools_used': []}, ensure_ascii=False, default=str)}\n\n"
         
         return StreamingResponse(
             generate_response(),

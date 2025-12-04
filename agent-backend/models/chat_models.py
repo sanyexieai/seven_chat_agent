@@ -40,6 +40,7 @@ class ChatResponse(BaseModel):
     agent_name: Optional[str] = Field(default=None, description="智能体名称")
     tools_used: Optional[List[str]] = Field(default=[], description="使用的工具")
     timestamp: datetime = Field(default_factory=datetime.now, description="时间戳")
+    pipeline_context: Optional[Dict[str, Any]] = Field(default=None, description="Pipeline上下文数据")
 
 class AgentMessage(BaseModel):
     """智能体消息模型"""

@@ -1,5 +1,6 @@
 from typing import Dict, Any, AsyncGenerator
 from agents.base_agent import BaseAgent
+from agents.pipeline import Pipeline
 from models.chat_models import AgentMessage, StreamChunk, MessageType, AgentContext
 from utils.log_helper import get_logger
 from utils.llm_helper import get_llm_helper
@@ -330,61 +331,16 @@ class GeneralAgent(BaseAgent):
             # 先从 BaseAgent / Pipeline 中获取用户上下文（内部会自动初始化 Pipeline）
             agent_context = self.get_context(user_id, context)
             if not agent_context:
-                # 如果有 session_id 且数据库里有历史消息，则从 chat_messages 重建 AgentContext
+                # BaseAgent 未能从数据库恢复，则为当前会话创建一个新的 AgentContext
                 session_id = None
-                db_session = None
                 if context:
                     session_id = context.get("session_id")
-                    db_session = context.get("db_session")
-                if session_id and db_session:
-                    try:
-                        from services.session_service import MessageService
-                        history = MessageService.get_session_messages(db_session, session_id, limit=100)
-                        messages: List[AgentMessage] = []
-                        for m in history:
-                            # 将数据库中的 message_type 映射为内部 MessageType
-                            mtype = (m.message_type or "").lower()
-                            if mtype == "user":
-                                msg_type = MessageType.USER
-                            elif mtype in ("assistant", "agent"):
-                                msg_type = MessageType.AGENT
-                            elif mtype == "system":
-                                msg_type = MessageType.SYSTEM
-                            elif mtype == "tool":
-                                msg_type = MessageType.TOOL
-                            else:
-                                msg_type = MessageType.AGENT
-                            messages.append(AgentMessage(
-                                id=m.message_id,
-                                type=msg_type,
-                                content=m.content or "",
-                                agent_name=m.agent_name or self.name,
-                                timestamp=m.created_at or datetime.now(),
-                                metadata=m.metadata or {},
-                            ))
-                        agent_context = AgentContext(
-                            user_id=user_id,
-                            session_id=session_id,
-                            messages=messages,
-                            metadata={},
-                        )
-                        logger.info(f"通用智能体 {self.name} 已从数据库重建 AgentContext，历史消息数: {len(messages)}")
-                    except Exception as e:
-                        logger.warning(f"从数据库重建 AgentContext 失败，退回空上下文: {e}")
-                        agent_context = AgentContext(
-                            user_id=user_id,
-                            session_id=str(uuid.uuid4()),
-                            messages=[],
-                            metadata={},
-                        )
-                else:
-                    # 没有 session_id 或 db_session，退回空上下文
-                    agent_context = AgentContext(
-                        user_id=user_id,
-                        session_id=str(uuid.uuid4()),
-                        messages=[],
-                        metadata={},
-                    )
+                agent_context = AgentContext(
+                    user_id=user_id,
+                    session_id=session_id or str(uuid.uuid4()),
+                    messages=[],
+                    metadata={},
+                )
             
             # 如果 AgentContext 中已保存过 Pipeline 状态，则恢复到本次调用的 context 中
             try:
@@ -551,59 +507,16 @@ class GeneralAgent(BaseAgent):
             # 从 BaseAgent / Pipeline 获取用户上下文
             agent_context = self.get_context(user_id, context)
             if not agent_context:
-                # 如果有 session_id 且数据库里有历史消息，则从 chat_messages 重建 AgentContext
+                # BaseAgent 未能从数据库恢复，则为当前会话创建一个新的 AgentContext
                 session_id = None
-                db_session = None
                 if context:
                     session_id = context.get("session_id")
-                    db_session = context.get("db_session")
-                if session_id and db_session:
-                    try:
-                        from services.session_service import MessageService
-                        history = MessageService.get_session_messages(db_session, session_id, limit=100)
-                        messages: List[AgentMessage] = []
-                        for m in history:
-                            mtype = (m.message_type or "").lower()
-                            if mtype == "user":
-                                msg_type = MessageType.USER
-                            elif mtype in ("assistant", "agent"):
-                                msg_type = MessageType.AGENT
-                            elif mtype == "system":
-                                msg_type = MessageType.SYSTEM
-                            elif mtype == "tool":
-                                msg_type = MessageType.TOOL
-                            else:
-                                msg_type = MessageType.AGENT
-                            messages.append(AgentMessage(
-                                id=m.message_id,
-                                type=msg_type,
-                                content=m.content or "",
-                                agent_name=m.agent_name or self.name,
-                                timestamp=m.created_at or datetime.now(),
-                                metadata=m.metadata or {},
-                            ))
-                        agent_context = AgentContext(
-                            user_id=user_id,
-                            session_id=session_id,
-                            messages=messages,
-                            metadata={},
-                        )
-                        logger.info(f"通用智能体 {self.name}（流式）已从数据库重建 AgentContext，历史消息数: {len(messages)}")
-                    except Exception as e:
-                        logger.warning(f"（流式）从数据库重建 AgentContext 失败，退回空上下文: {e}")
-                        agent_context = AgentContext(
-                            user_id=user_id,
-                            session_id=str(uuid.uuid4()),
-                            messages=[],
-                            metadata={},
-                        )
-                else:
-                    agent_context = AgentContext(
-                        user_id=user_id,
-                        session_id=str(uuid.uuid4()),
-                        messages=[],
-                        metadata={},
-                    )
+                agent_context = AgentContext(
+                    user_id=user_id,
+                    session_id=session_id or str(uuid.uuid4()),
+                    messages=[],
+                    metadata={},
+                )
             self.update_context(user_id, agent_context, context)
             
             # 统一通过基类记忆接口记录用户消息（流式）
@@ -753,13 +666,27 @@ class GeneralAgent(BaseAgent):
                             agent_name=self.name
                         )
 
-            # 发送最终响应块，包含完整的响应内容
+            # 准备 Pipeline 上下文数据（如果存在）
+            pipeline_context = None
+            try:
+                if context:
+                    pipeline = context.get("pipeline")
+                    if isinstance(pipeline, Pipeline):
+                        pipeline_context = pipeline.export_for_frontend()
+            except Exception as e:
+                logger.warning(f"导出 Pipeline 上下文失败: {e}")
+            
+            # 发送最终响应块，包含完整的响应内容和 Pipeline 上下文
+            final_metadata = {"tools_used": tools_used}
+            if pipeline_context:
+                final_metadata["flow_state"] = pipeline_context
+            
             yield StreamChunk(
                 chunk_id=f"{user_id}_final",
                 session_id=agent_context.session_id,
                 type="final",
                 content=full_response,
-                metadata={"tools_used": tools_used},
+                metadata=final_metadata,
                 agent_name=self.name
             )
             

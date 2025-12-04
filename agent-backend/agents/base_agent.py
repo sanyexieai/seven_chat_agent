@@ -1,13 +1,18 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, AsyncGenerator
-from models.chat_models import AgentMessage, AgentContext, ToolCall, StreamChunk
+from models.chat_models import AgentMessage, AgentContext, ToolCall, StreamChunk, MessageType
 from tools.base_tool import BaseTool
 from agents.pipeline import Pipeline, get_pipeline
 from services.memory_service import MemoryService
 from models.database_models import MemoryRecordCreate
+from utils.log_helper import get_logger
+from services.session_service import MessageService
 import asyncio
 import uuid
 from datetime import datetime
+
+
+logger = get_logger("base_agent")
 
 
 class BaseAgent(ABC):
@@ -53,6 +58,7 @@ class BaseAgent(ABC):
         - 主存储：self.contexts[user_id]，由常驻的 Agent 实例跨请求共享
         - 为了让 Pipeline 拿得到上下文，这里会把已有的 AgentContext 镜像到 Pipeline.agent_contexts 命名空间
         - 如果 context 中有 session_id，会检查内存中的上下文是否匹配，不匹配则返回 None（让子类从数据库恢复）
+        - 如果内存中没有上下文，但 context 中提供了 db_session + session_id，则尝试从 chat_messages 表中重建 AgentContext
         """
         agent_context = self.contexts.get(user_id)
         
@@ -62,6 +68,48 @@ class BaseAgent(ABC):
             if session_id and agent_context.session_id != session_id:
                 # session_id 不匹配，返回 None，让子类从数据库恢复正确的上下文
                 return None
+        
+        # 如果内存中没有上下文，且提供了 db_session + session_id，则尝试从数据库恢复
+        if agent_context is None and context is not None:
+            db_session = context.get("db_session")
+            session_id = context.get("session_id")
+            if db_session and session_id:
+                try:
+                    history = MessageService.get_session_messages(db_session, session_id, limit=100)
+                    messages: List[AgentMessage] = []
+                    for m in history:
+                        # 将数据库中的 message_type 映射为内部 MessageType
+                        mtype = (m.message_type or "").lower()
+                        if mtype == "user":
+                            msg_type = MessageType.USER
+                        elif mtype in ("assistant", "agent"):
+                            msg_type = MessageType.AGENT
+                        elif mtype == "system":
+                            msg_type = MessageType.SYSTEM
+                        elif mtype == "tool":
+                            msg_type = MessageType.TOOL
+                        else:
+                            msg_type = MessageType.AGENT
+                        messages.append(AgentMessage(
+                            id=m.message_id,
+                            type=msg_type,
+                            content=m.content or "",
+                            agent_name=m.agent_name or self.name,
+                            timestamp=m.created_at or datetime.now(),
+                            metadata=m.metadata or {},
+                        ))
+                    agent_context = AgentContext(
+                        user_id=user_id,
+                        session_id=session_id,
+                        messages=messages,
+                        metadata={},
+                    )
+                    # 写入内存缓存
+                    self.contexts[user_id] = agent_context
+                    logger.info(f"BaseAgent 为用户 {user_id} 会话 {session_id} 从数据库重建 AgentContext，历史消息数: {len(messages)}")
+                except Exception as e:
+                    logger.warning(f"BaseAgent 从数据库重建 AgentContext 失败，将创建空上下文: {e}")
+                    agent_context = None
         
         if agent_context and context is not None:
             try:
@@ -135,10 +183,56 @@ class BaseAgent(ABC):
             quality_score=quality_score,
         )
     
-    def pipeline_search_memory(self, context: Optional[Dict[str, Any]], query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """搜索 Pipeline 中的记忆（长期 + 短期，可配置）"""
+    def pipeline_search_memory(
+        self,
+        context: Optional[Dict[str, Any]],
+        query: str,
+        limit: int = 10,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """综合搜索记忆：先查 Pipeline 内存，再查数据库 memories 表（RAG）。
+        
+        - Pipeline：搜索当前进程内的短期/长期记忆（基于字符串包含）
+        - memories：如果 context 中有 db_session，则调用 MemoryService.search_memories 做向量检索
+        """
         pipeline = self.get_pipeline(context)
-        return pipeline.search_memory(query=query, limit=limit)
+
+        # 1) 先查 Pipeline 内部记忆
+        results: List[Dict[str, Any]] = []
+        try:
+            in_pipeline = pipeline.search_memory(query=query, limit=limit)
+            for item in in_pipeline:
+                if "source" not in item:
+                    item["source"] = "pipeline"
+                results.append(item)
+        except Exception:
+            pass
+
+        # 2) 再查数据库 memories 表（向量检索）
+        ctx = context or {}
+        db_session = ctx.get("db_session")
+        session_id = ctx.get("session_id")
+        if db_session:
+            try:
+                memory_service = MemoryService()
+                db_results = memory_service.search_memories(
+                    db=db_session,
+                    query=query,
+                    user_id=user_id,
+                    agent_name=self.name,
+                    session_id=session_id,
+                    memory_types=None,
+                    top_k=limit,
+                )
+                for r in db_results:
+                    item = dict(r)
+                    item.setdefault("source", "memories_db")
+                    results.append(item)
+            except Exception:
+                # 记忆检索失败不影响主流程
+                pass
+
+        return results
 
     # ========= 统一的记忆处理接口（推荐子类使用） =========
 

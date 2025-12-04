@@ -21,6 +21,9 @@ export const API_PATHS = {
   // 聊天相关
   CHAT: '/api/chat',
   CHAT_STREAM: '/api/chat/stream',
+  // 注意：这里的 sessionId 是会话的 UUID（user_sessions.session_id），不是数字 ID
+  CHAT_PIPELINE_STATE: (userId: string, agentName: string, sessionId?: string) =>
+    `/api/chat/pipeline_state?user_id=${encodeURIComponent(userId)}&agent_name=${encodeURIComponent(agentName)}${sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ''}`,
   
   // MCP相关
   MCP_SERVERS: '/api/mcp/servers',

@@ -202,6 +202,42 @@ const ChatPage: React.FC = () => {
     flow_state?: Record<string, any>;
   } | null>(null);
 
+  // 加载指定会话的 Pipeline 上下文（用于右侧上下文容器）
+  // sessionUuid 对应后端 user_sessions.session_id（字符串 UUID），不是数字 ID
+  const loadSessionPipelineContext = async (
+    sessionUuid: string | undefined,
+    agentNameOverride?: string,
+  ) => {
+    try {
+      // 仅对持久会话加载；临时会话（sessionUuid 为空或 temp_ 前缀）跳过
+      if (!sessionUuid || sessionUuid.startsWith('temp_')) return;
+
+      const userId = 'default_user';
+      const agentName =
+        agentNameOverride ||
+        currentSession?.agent?.name ||
+        selectedAgent?.name ||
+        'general_agent';
+
+      const api = getApiUrl(API_PATHS.CHAT_PIPELINE_STATE(userId, agentName, sessionUuid));
+      console.debug('[Pipeline] fetching pipeline_state:', api);
+      const resp = await fetch(api);
+      if (!resp.ok) {
+        console.warn('[Pipeline] pipeline_state not found, status:', resp.status);
+        return;
+      }
+      const data = await resp.json();
+      if (data?.pipeline_context) {
+        setPipelineContext(data.pipeline_context);
+      } else {
+        // 如果后端没有记录，清空当前上下文
+        setPipelineContext(null);
+      }
+    } catch (err) {
+      console.error('[Pipeline] 加载会话 Pipeline 状态失败:', err);
+    }
+  };
+
   // 从智能体配置生成流程图数据
   const generateFlowDataFromAgent = (agent: any): FlowData => {
     if (!agent || !agent.flow_config || !agent.flow_config.nodes) {
@@ -805,8 +841,10 @@ const ChatPage: React.FC = () => {
         // 重置工作空间清空状态，新会话可以正常工作
         setWorkspaceCleared(false);
         
-        // 加载会话消息
+        // 加载会话消息（使用数字 ID）
         await loadSessionMessages(sessionId);
+        // 加载会话对应的 Pipeline 上下文（使用 UUID）
+        await loadSessionPipelineContext(session.session_id);
       }
     } catch (error) {
       console.error('加载会话失败:', error);
@@ -2421,7 +2459,13 @@ const ChatPage: React.FC = () => {
           <WorkspacePanel
             tabs={workspaceTabs}
             activeKey={activeWorkspaceKey}
-            onChange={(key) => setActiveWorkspaceKey(key)}
+            onChange={(key) => {
+              setActiveWorkspaceKey(key);
+              // 当用户切换到“上下文”标签页时，主动刷新一次 Pipeline 上下文
+              if (key === 'context' && currentSession?.session_id) {
+                loadSessionPipelineContext(currentSession.session_id);
+              }
+            }}
             onClose={(key) => {
               setWorkspaceTabs(prev => prev.filter(t => t.key !== key || t.closable === false));
               if (activeWorkspaceKey === key) {

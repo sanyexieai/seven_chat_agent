@@ -4,6 +4,7 @@ from models.chat_models import AgentMessage, AgentContext, ToolCall, StreamChunk
 from tools.base_tool import BaseTool
 from agents.pipeline import Pipeline, get_pipeline
 from services.memory_service import MemoryService
+from services.memory_refinement_service import MemoryRefinementService
 from models.database_models import MemoryRecordCreate
 from utils.log_helper import get_logger
 from services.session_service import MessageService
@@ -271,16 +272,17 @@ class BaseAgent(ABC):
                 metadata=metadata,
             )
 
-            # 2) 同步到数据库 memories 表（带 RAG 向量）
+            # 2) 同步到数据库 memories 表（原始对话存为潜意识）
             db_session = ctx.get("db_session")
             if db_session:
                 try:
                     memory_service = MemoryService()
+                    # 原始对话数据存为潜意识（subconscious）
                     record = MemoryRecordCreate(
                         user_id=user_id,
                         agent_name=self.name,
                         session_id=ctx.get("session_id"),
-                        memory_type=Pipeline.MEMORY_TYPE_SHORT_TERM,
+                        memory_type=Pipeline.MEMORY_TYPE_SUBCONSCIOUS,  # 改为潜意识
                         category="user_input",
                         source="conversation",
                         content=f"用户消息: {message}",
@@ -332,16 +334,17 @@ class BaseAgent(ABC):
                 metadata=metadata,
             )
 
-            # 2) 同步到数据库 memories 表
+            # 2) 同步到数据库 memories 表（原始对话存为潜意识）
             db_session = ctx.get("db_session")
             if db_session:
                 try:
                     memory_service = MemoryService()
+                    # 原始对话数据存为潜意识（subconscious）
                     record = MemoryRecordCreate(
                         user_id=user_id,
                         agent_name=self.name,
                         session_id=ctx.get("session_id"),
-                        memory_type=Pipeline.MEMORY_TYPE_SHORT_TERM,
+                        memory_type=Pipeline.MEMORY_TYPE_SUBCONSCIOUS,  # 改为潜意识
                         category=category,
                         source="conversation",
                         content=f"智能体回复: {response}",
@@ -395,16 +398,17 @@ class BaseAgent(ABC):
                 metadata=metadata,
             )
 
-            # 2) 同步到数据库 memories 表（轮次摘要）
+            # 2) 同步到数据库 memories 表（原始对话存为潜意识）
             db_session = ctx.get("db_session")
             if db_session:
                 try:
                     memory_service = MemoryService()
+                    # 原始对话数据存为潜意识（subconscious）
                     record = MemoryRecordCreate(
                         user_id=user_id,
                         agent_name=self.name,
                         session_id=ctx.get("session_id"),
-                        memory_type=Pipeline.MEMORY_TYPE_SHORT_TERM,
+                        memory_type=Pipeline.MEMORY_TYPE_SUBCONSCIOUS,  # 改为潜意识
                         category=category,
                         source="conversation",
                         content=summary_content,
@@ -508,4 +512,64 @@ class BaseAgent(ABC):
     async def cleanup_context(self, user_id: str):
         """清理用户上下文"""
         if user_id in self.contexts:
-            del self.contexts[user_id] 
+            del self.contexts[user_id]
+    
+    async def refine_memories_from_subconscious(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        """从潜意识记忆中提取重点，并存储为短期/长期记忆
+        
+        这个方法应该在对话结束后或定期调用，用于提炼记忆。
+        
+        Args:
+            context: 上下文字典（需要包含 db_session 和 session_id）
+            user_id: 用户ID（如果未提供，从 context 中获取）
+            limit: 每次处理的潜意识记忆数量
+            
+        Returns:
+            提炼结果统计
+        """
+        ctx = context or {}
+        db_session = ctx.get("db_session")
+        session_id = ctx.get("session_id")
+        
+        if not db_session:
+            logger.warning("BaseAgent.refine_memories_from_subconscious: 缺少 db_session")
+            return {
+                "processed": 0,
+                "short_term_created": 0,
+                "long_term_created": 0,
+                "errors": 1,
+            }
+        
+        if not user_id:
+            # 尝试从 context 中获取
+            user_id = ctx.get("user_id", "default_user")
+        
+        try:
+            refinement_service = MemoryRefinementService()
+            result = await refinement_service.refine_memories(
+                db=db_session,
+                user_id=user_id,
+                agent_name=self.name,
+                session_id=session_id,
+                limit=limit,
+            )
+            logger.info(
+                f"BaseAgent {self.name} 记忆提炼完成: "
+                f"处理 {result['processed']} 条，"
+                f"创建短期记忆 {result['short_term_created']} 条，"
+                f"创建长期记忆 {result['long_term_created']} 条"
+            )
+            return result
+        except Exception as e:
+            logger.error(f"BaseAgent {self.name} 记忆提炼失败: {e}")
+            return {
+                "processed": 0,
+                "short_term_created": 0,
+                "long_term_created": 0,
+                "errors": 1,
+            } 

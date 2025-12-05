@@ -489,6 +489,18 @@ class GeneralAgent(BaseAgent):
             # 最终写回 AgentContext
             self.update_context(user_id, agent_context, context)
             
+            # 异步触发记忆提炼（不阻塞主流程）
+            try:
+                asyncio.create_task(
+                    self.refine_memories_from_subconscious(
+                        context=context,
+                        user_id=user_id,
+                        limit=5,  # 每次提炼5条潜意识记忆
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"触发记忆提炼失败: {e}")
+            
             logger.info(f"通用智能体 {self.name} 处理消息完成，使用工具: {tools_used}")
             return response
             
@@ -731,6 +743,18 @@ class GeneralAgent(BaseAgent):
 
             # 最终写回 AgentContext
             self.update_context(user_id, agent_context, context)
+            
+            # 异步触发记忆提炼（不阻塞主流程）
+            try:
+                asyncio.create_task(
+                    self.refine_memories_from_subconscious(
+                        context=context,
+                        user_id=user_id,
+                        limit=5,  # 每次提炼5条潜意识记忆
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"触发记忆提炼失败: {e}")
             
             logger.info(f"智能体 {self.name} 流式处理消息完成，响应长度: {len(full_response)}, 使用工具: {tools_used}")
             

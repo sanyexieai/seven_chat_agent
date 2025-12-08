@@ -36,6 +36,13 @@ export interface PipelineData {
     value?: any;
   }>;
   flow_state?: Record<string, any>;
+  memory_summary?: Record<string, {
+    count: number;
+    size: number;
+    namespace: string;
+    config: Record<string, any>;
+    keys: string[];
+  }>;
 }
 
 interface FlowContextPanelProps {
@@ -84,9 +91,35 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
     return formatted.substring(0, maxLength) + '...';
   };
 
+  // 判断是否为记忆类型命名空间
+  const isMemoryNamespace = (namespace: string): boolean => {
+    return namespace.startsWith('memory_');
+  };
+
+  // 获取记忆类型的中文名称
+  const getMemoryTypeName = (namespace: string): string => {
+    const memoryTypeMap: Record<string, string> = {
+      'memory_subconscious': '潜意识记忆',
+      'memory_long_term': '长期记忆',
+      'memory_short_term': '短期记忆'
+    };
+    return memoryTypeMap[namespace] || namespace;
+  };
+
+  // 获取记忆类型的颜色
+  const getMemoryTypeColor = (namespace: string): string => {
+    const colorMap: Record<string, string> = {
+      'memory_subconscious': 'purple',
+      'memory_long_term': 'gold',
+      'memory_short_term': 'cyan'
+    };
+    return colorMap[namespace] || 'blue';
+  };
+
   // 渲染数据面板
   const renderDataPanel = () => {
     const pipelineData = contextData?.pipeline_data || {};
+    const memorySummary = contextData?.memory_summary || {};
     const namespaces = Object.keys(pipelineData);
 
     if (namespaces.length === 0) {
@@ -99,9 +132,106 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
       );
     }
 
+    // 分离记忆类型和其他命名空间
+    const memoryNamespaces = namespaces.filter(ns => isMemoryNamespace(ns));
+    const otherNamespaces = namespaces.filter(ns => !isMemoryNamespace(ns));
+
     return (
       <div className="context-panel-content">
-        {namespaces.map((namespace) => {
+        {/* 优先显示记忆类型 */}
+        {memoryNamespaces.map((namespace) => {
+          const namespaceData = pipelineData[namespace] || {};
+          const keys = Object.keys(namespaceData).filter(k => !k.endsWith('_metadata'));
+          const summary = memorySummary[namespace.replace('memory_', '')];
+
+          return (
+            <div key={namespace} className="context-namespace" style={{ marginBottom: '16px' }}>
+              <div className="context-namespace-header">
+                <Space>
+                  <Tag color={getMemoryTypeColor(namespace)}>
+                    {getMemoryTypeName(namespace)}
+                  </Tag>
+                  {summary && (
+                    <>
+                      <Text type="secondary" style={{ fontSize: '12px' }}>
+                        {summary.count} 条
+                      </Text>
+                      <Text type="secondary" style={{ fontSize: '11px' }}>
+                        ({summary.size} 字符)
+                      </Text>
+                    </>
+                  )}
+                  {!summary && keys.length > 0 && (
+                    <Text type="secondary" style={{ fontSize: '12px' }}>
+                      {keys.length} 项
+                    </Text>
+                  )}
+                </Space>
+              </div>
+              {keys.length === 0 ? (
+                <div style={{ padding: '8px', color: '#999', fontSize: '12px' }}>
+                  暂无记忆
+                </div>
+              ) : (
+                <div className="context-namespace-content">
+                  {keys.map((key) => {
+                    const value = namespaceData[key];
+                    const metadata = namespaceData[`${key}_metadata`];
+                    const preview = getValuePreview(value);
+                    const fullValue = formatValue(value);
+
+                    return (
+                      <div key={key} className="context-item">
+                        <div className="context-item-header">
+                          <Space>
+                            <Text strong>{key}</Text>
+                            {metadata?.quality_score != null && typeof metadata.quality_score === 'number' && (
+                              <Tag color="orange" style={{ fontSize: '11px', padding: '0 4px' }}>
+                                质量: {metadata.quality_score.toFixed(2)}
+                              </Tag>
+                            )}
+                            {metadata?.created_at && (
+                              <Text type="secondary" style={{ fontSize: '11px' }}>
+                                {new Date(metadata.created_at).toLocaleString()}
+                              </Text>
+                            )}
+                          </Space>
+                          <Space size="small">
+                            <Tooltip title="复制完整值">
+                              <Button
+                                type="text"
+                                size="small"
+                                icon={<CopyOutlined />}
+                                onClick={() => handleCopy(fullValue, `${namespace}.${key}`)}
+                              />
+                            </Tooltip>
+                          </Space>
+                        </div>
+                        <div className="context-item-value">
+                          <Paragraph
+                            copyable={false}
+                            ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}
+                            style={{ margin: 0, fontSize: '12px' }}
+                          >
+                            {preview}
+                          </Paragraph>
+                        </div>
+                        {copiedKey === `${namespace}.${key}` && (
+                          <Text type="success" style={{ fontSize: '12px' }}>
+                            已复制
+                          </Text>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* 显示其他命名空间 */}
+        {otherNamespaces.map((namespace) => {
           const namespaceData = pipelineData[namespace] || {};
           const keys = Object.keys(namespaceData);
 
@@ -286,11 +416,17 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
   const getStats = () => {
     const pipelineData = contextData?.pipeline_data || {};
     const pipelineFiles = contextData?.pipeline_files || {};
-    const history = contextData?.pipeline_history || [];
+    const history = contextData?.pipeline_history || {};
+    const memorySummary = contextData?.memory_summary || {};
 
     let dataCount = 0;
-    Object.values(pipelineData).forEach((ns) => {
-      dataCount += Object.keys(ns || {}).length;
+    let memoryCount = 0;
+    Object.entries(pipelineData).forEach(([namespace, ns]) => {
+      const count = Object.keys(ns || {}).filter(k => !k.endsWith('_metadata')).length;
+      dataCount += count;
+      if (isMemoryNamespace(namespace)) {
+        memoryCount += count;
+      }
     });
 
     let fileCount = 0;
@@ -298,10 +434,16 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
       fileCount += Object.keys(ns || {}).length;
     });
 
+    // 从 memory_summary 获取记忆统计
+    const memoryTypesCount = Object.values(memorySummary).reduce((sum, summary: any) => {
+      return sum + (summary.count || 0);
+    }, 0);
+
     return {
       dataCount,
+      memoryCount: memoryTypesCount > 0 ? memoryTypesCount : memoryCount,
       fileCount,
-      historyCount: history.length,
+      historyCount: Array.isArray(history) ? history.length : 0,
       namespaceCount: Object.keys(pipelineData).length + Object.keys(pipelineFiles).length
     };
   };
@@ -329,6 +471,11 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
       }
       extra={
         <Space>
+          {stats.memoryCount > 0 && (
+            <Badge count={stats.memoryCount} showZero>
+              <Tag color="gold">记忆</Tag>
+            </Badge>
+          )}
           {stats.dataCount > 0 && (
             <Badge count={stats.dataCount} showZero>
               <Tag color="blue">数据</Tag>

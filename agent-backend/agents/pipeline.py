@@ -351,10 +351,50 @@ class Pipeline:
             'history_count': len(self._history)
         }
     
+    def get_all_memory_types(self) -> List[str]:
+        """获取所有记忆类型列表"""
+        return [
+            self.MEMORY_TYPE_SUBCONSCIOUS,
+            self.MEMORY_TYPE_LONG_TERM,
+            self.MEMORY_TYPE_SHORT_TERM
+        ]
+    
+    def get_memory_summary(self) -> Dict[str, Any]:
+        """获取所有记忆类型的摘要信息
+        
+        Returns:
+            包含每种记忆类型的统计信息和配置的字典
+        """
+        summary = {}
+        for memory_type in self.get_all_memory_types():
+            namespace = self.get_memory_namespace(memory_type)
+            namespace_data = self.get_namespace(namespace)
+            
+            # 统计记忆条目数（排除元数据键）
+            memory_keys = [k for k in namespace_data.keys() if not k.endswith('_metadata')]
+            memory_count = len(memory_keys)
+            
+            # 计算总大小
+            total_size = self._estimate_memory_size(namespace)
+            
+            # 获取配置
+            config = self.get_memory_config(memory_type)
+            
+            summary[memory_type] = {
+                'count': memory_count,
+                'size': total_size,
+                'namespace': namespace,
+                'config': config,
+                'keys': memory_keys[:10]  # 只返回前10个键作为预览
+            }
+        
+        return summary
+    
     def export_for_frontend(self) -> Dict[str, Any]:
         """导出管道数据为前端需要的格式
         
         注意：会过滤掉不可序列化的对象（如 AgentContext）
+        确保所有记忆类型都被包含，即使为空
         """
         import json
         
@@ -374,10 +414,20 @@ class Pipeline:
                     # 如果无法序列化，转换为字符串表示
                     filtered_data[namespace][key] = str(value)
         
+        # 确保所有记忆类型的命名空间都被包含（即使为空）
+        for memory_type in self.get_all_memory_types():
+            namespace = self.get_memory_namespace(memory_type)
+            if namespace not in filtered_data:
+                filtered_data[namespace] = {}
+        
+        # 获取记忆摘要信息
+        memory_summary = self.get_memory_summary()
+        
         return {
             'pipeline_data': filtered_data,  # 命名空间 -> key -> value
             'pipeline_files': self._files,  # 命名空间 -> key -> file info
-            'pipeline_history': self.get_history(limit=100)  # 最近100条历史记录
+            'pipeline_history': self.get_history(limit=100),  # 最近100条历史记录
+            'memory_summary': memory_summary  # 记忆类型摘要信息
         }
 
     def import_data(self, data: Dict[str, Any]) -> None:

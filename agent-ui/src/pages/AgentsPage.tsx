@@ -264,6 +264,8 @@ const AgentsPage: React.FC = () => {
         return <RobotOutlined />;
       case 'flow_driven':
         return <BranchesOutlined />;
+      case 'chat':
+        return <MessageOutlined />;
       default:
         return <RobotOutlined />;
     }
@@ -275,6 +277,8 @@ const AgentsPage: React.FC = () => {
         return '通用智能体';
       case 'flow_driven':
         return '流程图智能体';
+      case 'chat':
+        return '聊天智能体';
       default:
         return agentType;
     }
@@ -286,6 +290,8 @@ const AgentsPage: React.FC = () => {
         return 'blue';
       case 'flow_driven':
         return 'purple';
+      case 'chat':
+        return 'cyan';
       default:
         return 'default';
     }
@@ -416,6 +422,7 @@ const AgentsPage: React.FC = () => {
       >
         <Select placeholder="选择智能体类型" disabled={isEdit}>
           <Option value="general">通用智能体</Option>
+          <Option value="chat">聊天智能体</Option>
         </Select>
       </Form.Item>
 
@@ -449,7 +456,7 @@ const AgentsPage: React.FC = () => {
       <Form.Item
         name="system_prompt"
         label="系统提示词"
-        rules={[{ required: true, message: '请输入系统提示词' }]}
+        extra="通用智能体建议填写；聊天智能体可留空"
       >
         <TextArea
           rows={6}

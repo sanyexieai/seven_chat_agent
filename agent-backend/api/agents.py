@@ -75,6 +75,10 @@ async def create_agent(
                     flow_config = agent_data.flow_config or {}
                     flow_agent = FlowDrivenAgent(agent.name, agent.display_name, flow_config)
                     agent_manager.agents[agent.name] = flow_agent
+                elif agent_data.agent_type == "chat":
+                    from agents.chat_agent import ChatAgent
+                    chat_agent = ChatAgent(agent.name, agent.display_name)
+                    agent_manager.agents[agent.name] = chat_agent
                 
                 logger.info(f"智能体 {agent.name} 已加载到agent_manager")
         except Exception as e:
@@ -138,6 +142,11 @@ async def update_agent(
                         pass
                     agent_manager.agents[agent.name] = flow_agent
                     logger.info(f"智能体 {agent.name} 已重新加载到agent_manager")
+                elif agent_data.agent_type == "chat":
+                    from agents.chat_agent import ChatAgent
+                    chat_agent = ChatAgent(agent.name, agent.display_name)
+                    agent_manager.agents[agent.name] = chat_agent
+                    logger.info(f"聊天智能体 {agent.name} 已重新加载到agent_manager")
                 
         except Exception as e:
             logger.warning(f"重新加载智能体到agent_manager失败: {str(e)}")

@@ -407,6 +407,10 @@ class AgentManager:
                             logger.info(f"流程图智能体 {db_agent.name} 注入绑定工具: {len(norm)} 个")
                     except Exception as e:
                         logger.warning(f"注入绑定工具失败: {str(e)}")
+                elif db_agent.agent_type == "chat":
+                    logger.info(f"加载聊天智能体 {db_agent.name}")
+                    from agents.chat_agent import ChatAgent
+                    agent = ChatAgent(db_agent.name, db_agent.display_name)
                 else:
                     # 默认使用通用智能体
                     agent = GeneralAgent(db_agent.name, db_agent.display_name, "你是一个智能AI助手，能够帮助用户解答问题、进行对话交流。")

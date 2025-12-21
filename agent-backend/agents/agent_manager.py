@@ -1,7 +1,7 @@
 from typing import Dict, Optional, AsyncGenerator, Any
 from agents.base_agent import BaseAgent
-from agents.general_agent import GeneralAgent
-from agents.flow_driven_agent import FlowDrivenAgent
+from agents.general.general_agent import GeneralAgent
+from agents.flow.flow_agent import FlowDrivenAgent
 from models.chat_models import AgentMessage, StreamChunk, AgentContext
 from utils.log_helper import get_logger
 from database.database import SessionLocal
@@ -409,7 +409,7 @@ class AgentManager:
                         logger.warning(f"注入绑定工具失败: {str(e)}")
                 elif db_agent.agent_type == "chat":
                     logger.info(f"加载聊天智能体 {db_agent.name}")
-                    from agents.chat_agent import ChatAgent
+                    from agents.chat.chat_agent import ChatAgent
                     agent = ChatAgent(db_agent.name, db_agent.display_name)
                 else:
                     # 默认使用通用智能体

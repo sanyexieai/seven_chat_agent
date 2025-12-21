@@ -37,6 +37,8 @@ NodeRegistry.register("composite", CompositeNode)
 NodeRegistry.register("auto_param", AutoParamNode)
 NodeRegistry.register("planner", PlannerNode)
 
+from .flow_agent import FlowDrivenAgent
+
 __all__ = [
 	'BaseFlowNode',
 	'NodeCategory',
@@ -49,5 +51,6 @@ __all__ = [
 	'EndNode',
 	'RouterNode',
 	'CompositeNode',
-	'PlannerNode'
+	'PlannerNode',
+	'FlowDrivenAgent'
 ]

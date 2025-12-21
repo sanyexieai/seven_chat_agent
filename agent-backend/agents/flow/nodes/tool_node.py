@@ -97,6 +97,12 @@ class ToolNode(BaseFlowNode):
 					result = await tool_manager.execute_tool(tool_name, params)
 					
 					result_text = self._format_tool_result(result)
+					check = await self._llm_check_tool_result(tool_name, result_text, result)
+					if not check.get("success", True):
+						result_text = f"【LLM判定工具失败】{check.get('reason','未提供原因')}\n原始输出：{result_text}"
+						tool_status = "failed"
+					else:
+						tool_status = "success"
 					
 					# 获取当前工具评分
 					try:
@@ -112,7 +118,9 @@ class ToolNode(BaseFlowNode):
 						'tool_name': tool_name,
 						'tool_type': tool_type,
 						'tool_score': tool_score,
-						'tool_result': result
+						'tool_result': result,
+						'tool_status': tool_status,
+						'llm_judge': check,
 					})
 			
 			# 向后兼容：如果没有 tool_name，使用旧的 MCP 调用方式
@@ -132,13 +140,25 @@ class ToolNode(BaseFlowNode):
 			)
 			
 			result_text = self._format_tool_result(result)
+			check = await self._llm_check_tool_result(f"{actual_server}_{actual_tool}", result_text, result)
+			tool_status = "success" if check.get("success", True) else "failed"
+			if tool_status == "failed":
+				result_text = f"【LLM判定工具失败】{check.get('reason','未提供原因')}\n原始输出：{result_text}"
+			check = await self._llm_check_tool_result(f"{actual_server}_{actual_tool}", result_text, result)
+			if not check.get("success", True):
+				result_text = f"【LLM判定工具失败】{check.get('reason','未提供原因')}\n原始输出：{result_text}"
+				tool_status = "failed"
+			else:
+				tool_status = "success"
 			
 			# 保存输出
 			self.save_output(context, result_text)
 			
 			return self._create_agent_message(result_text, agent_name, metadata={
 				'tool_name': f"{actual_server}_{actual_tool}",
-				'tool_result': result
+				'tool_result': result,
+				'tool_status': tool_status,
+				'llm_judge': check,
 			})
 		except Exception as e:
 			logger.error(f"工具节点执行失败: {str(e)}")
@@ -234,6 +254,10 @@ class ToolNode(BaseFlowNode):
 					
 					result = await tool_manager.execute_tool(tool_name, params)
 					result_text = self._format_tool_result(result)
+					check = await self._llm_check_tool_result(tool_name, result_text, result)
+					tool_status = "success" if check.get("success", True) else "failed"
+					if tool_status == "failed":
+						result_text = f"【LLM判定工具失败】{check.get('reason','未提供原因')}\n原始输出：{result_text}"
 					
 					# 处理结果并保存文件路径到 flow_state
 					flow_state = self._get_flow_state(context)
@@ -334,6 +358,8 @@ class ToolNode(BaseFlowNode):
 							'tool_name': tool_name,
 							'tool_type': tool_type,
 							'tool_result': result,
+							'tool_status': tool_status,
+							'llm_judge': check,
 							'download_info': download_info
 						}
 					)
@@ -347,6 +373,8 @@ class ToolNode(BaseFlowNode):
 						metadata={
 							'tool_name': tool_name,
 							'tool_type': tool_type,
+							'tool_status': tool_status,
+							'llm_judge': check,
 							'download_info': download_info
 						}
 					)
@@ -361,6 +389,8 @@ class ToolNode(BaseFlowNode):
 							'tool_name': tool_name,
 							'tool_type': tool_type,
 							'tool_result': result,
+							'tool_status': tool_status,
+							'llm_judge': check,
 							'download_info': download_info
 						}
 					)
@@ -463,7 +493,9 @@ class ToolNode(BaseFlowNode):
 					'tool_type': tool_type or 'mcp',
 					'server': actual_server,
 					'params': params,
-					'tool_result': result
+					'tool_result': result,
+					'tool_status': tool_status,
+					'llm_judge': check,
 				}
 			)
 			yield self._create_stream_chunk(
@@ -473,7 +505,9 @@ class ToolNode(BaseFlowNode):
 				metadata={
 					'tool_name': f"{actual_server}_{actual_tool}",
 					'tool_type': tool_type or 'mcp',
-					'server': actual_server
+					'server': actual_server,
+					'tool_status': tool_status,
+					'llm_judge': check,
 				}
 			)
 			
@@ -488,7 +522,9 @@ class ToolNode(BaseFlowNode):
 					'tool_type': tool_type or 'mcp',
 					'server': actual_server,
 					'params': params,
-					'tool_result': result
+					'tool_result': result,
+					'tool_status': tool_status,
+					'llm_judge': check,
 				}
 			)
 			yield final_chunk
@@ -674,6 +710,47 @@ class ToolNode(BaseFlowNode):
 			return json.loads(match.group(1))
 		except Exception:
 			return None
+
+	async def _llm_check_tool_result(self, tool_name: str, result_text: str, result_obj: Any) -> Dict[str, Any]:
+		"""
+		使用 LLM 判定工具执行是否成功；失败则给出原因。
+		- 若 LLM 不可用，则使用关键词启发式降级。
+		"""
+		try:
+			from utils.llm_helper import get_llm_helper
+			helper = get_llm_helper()
+			system_prompt = (
+				"你是工具执行结果的判定器。根据工具输出判断是否执行成功。"
+				"如果输出中包含报错、失败、未找到、空结果、异常、timeout、traceback 等，应判定为失败。"
+				"请仅返回 JSON：{\"success\":true/false,\"reason\":\"简要中文原因\"}。"
+			)
+			user_prompt = f"工具: {tool_name}\n输出:\n{result_text}\n如有结构化结果，可参考: {result_obj}"
+			resp = await helper.call(
+				messages=[
+					{"role": "system", "content": system_prompt},
+					{"role": "user", "content": user_prompt},
+				],
+				temperature=0,
+				max_tokens=120,
+			)
+			import json as _json, re as _re
+			match = _re.search(r"\{.*\}", resp, _re.DOTALL)
+			if match:
+				data = _json.loads(match.group(0))
+				if isinstance(data, dict) and "success" in data:
+					return data
+		except Exception as e:
+			logger.warning(f"LLM 判定工具结果失败，使用启发式: {e}")
+		
+		# 启发式降级
+		text_lower = (result_text or "").lower()
+		keywords = ["error", "failed", "exception", "not found", "timeout", "traceback", "拒绝", "未找到", "空结果"]
+		for kw in keywords:
+			if kw in text_lower:
+				return {"success": False, "reason": f"检测到失败关键词：{kw}"}
+		if not result_text or str(result_text).strip() == "":
+			return {"success": False, "reason": "输出为空"}
+		return {"success": True, "reason": "未发现明显错误"}
 
 
 

@@ -57,7 +57,7 @@ async def create_agent(
             if agent_manager:
                 # 根据智能体类型创建相应的智能体实例
                 if agent_data.agent_type == "general":
-                    from agents.general_agent import GeneralAgent
+                    from agents.general.general_agent import GeneralAgent
                     system_prompt = agent_data.system_prompt or ""
                     
                     # 获取智能体的LLM配置
@@ -71,12 +71,12 @@ async def create_agent(
                     prompt_agent = GeneralAgent(agent.name, agent.display_name, system_prompt, llm_config)
                     agent_manager.agents[agent.name] = prompt_agent
                 elif agent_data.agent_type == "flow_driven":
-                    from agents.flow_driven_agent import FlowDrivenAgent
+                    from agents.flow.flow_agent import FlowDrivenAgent
                     flow_config = agent_data.flow_config or {}
                     flow_agent = FlowDrivenAgent(agent.name, agent.display_name, flow_config)
                     agent_manager.agents[agent.name] = flow_agent
                 elif agent_data.agent_type == "chat":
-                    from agents.chat_agent import ChatAgent
+                    from agents.chat.chat_agent import ChatAgent
                     chat_agent = ChatAgent(agent.name, agent.display_name)
                     agent_manager.agents[agent.name] = chat_agent
                 
@@ -107,7 +107,7 @@ async def update_agent(
             if agent_manager:
                 # 根据智能体类型创建相应的智能体实例
                 if agent_data.agent_type == "general":
-                    from agents.general_agent import GeneralAgent
+                    from agents.general.general_agent import GeneralAgent
                     system_prompt = agent_data.system_prompt or ""
                     
                     # 获取智能体的LLM配置
@@ -122,7 +122,7 @@ async def update_agent(
                     agent_manager.agents[agent.name] = prompt_agent
                     logger.info(f"智能体 {agent.name} 已重新加载到agent_manager")
                 elif agent_data.agent_type == "flow_driven":
-                    from agents.flow_driven_agent import FlowDrivenAgent
+                    from agents.flow.flow_agent import FlowDrivenAgent
                     flow_config = agent_data.flow_config or {}
                     flow_agent = FlowDrivenAgent(agent.name, agent.display_name, flow_config)
                     # 注入最新绑定工具
@@ -143,7 +143,7 @@ async def update_agent(
                     agent_manager.agents[agent.name] = flow_agent
                     logger.info(f"智能体 {agent.name} 已重新加载到agent_manager")
                 elif agent_data.agent_type == "chat":
-                    from agents.chat_agent import ChatAgent
+                    from agents.chat.chat_agent import ChatAgent
                     chat_agent = ChatAgent(agent.name, agent.display_name)
                     agent_manager.agents[agent.name] = chat_agent
                     logger.info(f"聊天智能体 {agent.name} 已重新加载到agent_manager")

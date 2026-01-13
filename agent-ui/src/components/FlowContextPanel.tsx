@@ -27,22 +27,19 @@ const { Text, Paragraph } = Typography;
 
 export interface PipelineData {
   pipeline_data?: Record<string, Record<string, any>>;
+  pipeline_data_3d?: Record<string, Record<string, Record<string, Record<string, any>>>>;
   pipeline_files?: Record<string, Record<string, any>>;
   pipeline_history?: Array<{
     timestamp?: string;
     action: string;
-    namespace: string;
+    namespace?: string;
+    user_id?: string;
+    topic_id?: string;
+    agent_id?: string;
     key: string;
     value?: any;
   }>;
   flow_state?: Record<string, any>;
-  memory_summary?: Record<string, {
-    count: number;
-    size: number;
-    namespace: string;
-    config: Record<string, any>;
-    keys: string[];
-  }>;
 }
 
 interface FlowContextPanelProps {
@@ -91,38 +88,233 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
     return formatted.substring(0, maxLength) + '...';
   };
 
-  // 判断是否为记忆类型命名空间
-  const isMemoryNamespace = (namespace: string): boolean => {
-    return namespace.startsWith('memory_');
-  };
-
-  // 获取记忆类型的中文名称
-  const getMemoryTypeName = (namespace: string): string => {
-    const memoryTypeMap: Record<string, string> = {
-      'memory_subconscious': '潜意识记忆',
-      'memory_long_term': '长期记忆',
-      'memory_short_term': '短期记忆'
-    };
-    return memoryTypeMap[namespace] || namespace;
-  };
-
-  // 获取记忆类型的颜色
-  const getMemoryTypeColor = (namespace: string): string => {
-    const colorMap: Record<string, string> = {
-      'memory_subconscious': 'purple',
-      'memory_long_term': 'gold',
-      'memory_short_term': 'cyan'
-    };
-    return colorMap[namespace] || 'blue';
-  };
 
   // 渲染数据面板
   const renderDataPanel = () => {
     const pipelineData = contextData?.pipeline_data || {};
-    const memorySummary = contextData?.memory_summary || {};
+    const pipelineData3d = contextData?.pipeline_data_3d || {};
     const namespaces = Object.keys(pipelineData);
 
-    if (namespaces.length === 0) {
+    // 组织三维数据：按用户、话题、智能体分组
+    const organize3dData = () => {
+      const users = Object.keys(pipelineData3d);
+      if (users.length === 0) return null;
+
+      // 按用户分组
+      const userGroups: Record<string, {
+        topics: Record<string, {
+          agents: Record<string, Record<string, any>>
+        }>
+      }> = {};
+
+      users.forEach((userId) => {
+        if (!userGroups[userId]) {
+          userGroups[userId] = { topics: {} };
+        }
+        const topics = Object.keys(pipelineData3d[userId] || {});
+        topics.forEach((topicId) => {
+          if (!userGroups[userId].topics[topicId]) {
+            userGroups[userId].topics[topicId] = { agents: {} };
+          }
+          const agents = Object.keys(pipelineData3d[userId][topicId] || {});
+          agents.forEach((agentId) => {
+            userGroups[userId].topics[topicId].agents[agentId] = pipelineData3d[userId][topicId][agentId] || {};
+          });
+        });
+      });
+
+      return userGroups;
+    };
+
+    // 渲染三维数据（按用户-话题-智能体结构）
+    const render3dData = () => {
+      const userGroups = organize3dData();
+      if (!userGroups) return null;
+
+      return (
+        <div style={{ marginBottom: '16px' }}>
+          {Object.entries(userGroups).map(([userId, userData]) => {
+            const topics = Object.keys(userData.topics);
+            
+            // 收集用户级别的数据（跨话题的）
+            const userLevelData: Record<string, any> = {};
+            // 收集话题级别的数据
+            const topicGroups: Record<string, Record<string, any>> = {};
+            // 收集智能体级别的数据（跨话题的）
+            const agentGroups: Record<string, Record<string, any>> = {};
+
+            // 提取话题列表（从 topics_list key）
+            let topicsList: string[] = [];
+            topics.forEach((topicId) => {
+              const agents = Object.keys(userData.topics[topicId].agents);
+              agents.forEach((agentId) => {
+                const agentData = userData.topics[topicId].agents[agentId];
+                const keys = Object.keys(agentData).filter(k => !k.endsWith('_metadata'));
+
+                keys.forEach((key) => {
+                  const value = agentData[key];
+                  const metadata = agentData[`${key}_metadata`] || {};
+                  const keyLower = key.toLowerCase();
+                  const valueStr = typeof value === 'string' ? value : JSON.stringify(value);
+                  
+                  // 提取话题列表
+                  if (key === 'topics_list') {
+                    try {
+                      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+                      if (Array.isArray(parsed)) {
+                        topicsList = parsed;
+                      }
+                    } catch (e) {
+                      // 解析失败，忽略
+                    }
+                  }
+                  
+                  // 根据 key 和 metadata 判断属于哪个维度
+                  const category = metadata.category || '';
+                  const tags = metadata.tags || [];
+                  
+                  // 用户维度：用户偏好、习惯、特征等
+                  if (keyLower.includes('user') || keyLower.includes('preference') || 
+                      keyLower.includes('like') || keyLower.includes('习惯') ||
+                      keyLower.includes('特征') || category === 'user_preference' ||
+                      tags.some((t: string) => t.includes('用户') || t.includes('偏好') || t.includes('习惯'))) {
+                    // 合并相同 key 的内容
+                    if (!userLevelData[key]) {
+                      userLevelData[key] = value;
+                    } else if (typeof userLevelData[key] === 'string' && typeof value === 'string') {
+                      // 如果已存在，合并内容
+                      userLevelData[key] = userLevelData[key] + '\n' + value;
+                    }
+                  }
+                  // 智能体维度：聊天内容、提炼内容、记忆等
+                  else if (!keyLower.includes('topic') && !keyLower.includes('session')) {
+                    if (!agentGroups[agentId]) {
+                      agentGroups[agentId] = {};
+                    }
+                    // 如果 key 相同，合并内容
+                    if (agentGroups[agentId][key] && typeof agentGroups[agentId][key] === 'string' && typeof value === 'string') {
+                      agentGroups[agentId][key] = agentGroups[agentId][key] + '\n' + value;
+                    } else {
+                      agentGroups[agentId][key] = value;
+                    }
+                  }
+                });
+              });
+            });
+            
+            // 如果没有从数据中提取到话题列表，使用默认的空数组
+            if (topicsList.length === 0) {
+              topicsList = [];
+            }
+
+            return (
+              <div key={userId} style={{ marginBottom: '24px', padding: '12px', border: '1px solid #e8e8e8', borderRadius: '4px' }}>
+                {/* 用户维度 - 始终显示标题 */}
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong style={{ fontSize: '14px' }}>用户：</Text>
+                  </div>
+                  <div style={{ paddingLeft: '20px' }}>
+                    {Object.keys(userLevelData).length > 0 ? (
+                      Object.entries(userLevelData).map(([key, value]) => {
+                        const preview = getValuePreview(value, 200);
+                        const fullValue = formatValue(value);
+                        return (
+                          <div key={key} style={{ marginBottom: '8px', fontSize: '12px', color: '#666', lineHeight: '1.6' }}>
+                            {preview}
+                            <Tooltip title="复制">
+                              <Button
+                                type="text"
+                                size="small"
+                                icon={<CopyOutlined />}
+                                onClick={() => handleCopy(fullValue, `user-${key}`)}
+                                style={{ marginLeft: '8px' }}
+                              />
+                            </Tooltip>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <Text type="secondary" style={{ fontSize: '12px', fontStyle: 'italic' }}>
+                        暂无用户数据
+                      </Text>
+                    )}
+                  </div>
+                </div>
+
+                {/* 话题维度 - 始终显示标题 */}
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong style={{ fontSize: '14px' }}>话题：</Text>
+                  </div>
+                  <div style={{ paddingLeft: '20px' }}>
+                    {topicsList.length > 0 ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                        {topicsList.map((topic, index) => (
+                          <Tag key={index} color="blue" style={{ fontSize: '12px', marginBottom: '4px' }}>
+                            {topic}
+                          </Tag>
+                        ))}
+                      </div>
+                    ) : (
+                      <Text type="secondary" style={{ fontSize: '12px', fontStyle: 'italic' }}>
+                        暂无话题数据
+                      </Text>
+                    )}
+                  </div>
+                </div>
+
+                {/* 智能体维度 - 始终显示标题 */}
+                <div>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong style={{ fontSize: '14px' }}>智能体：</Text>
+                  </div>
+                  <div style={{ paddingLeft: '20px' }}>
+                    {Object.keys(agentGroups).length > 0 ? (
+                      Object.entries(agentGroups).map(([agentId, agentData]) => {
+                        // 合并智能体下的所有内容为一个摘要（长度限制）
+                        const agentSummary = Object.values(agentData)
+                          .map(v => typeof v === 'string' ? v : JSON.stringify(v))
+                          .join(' ')
+                          .substring(0, 300);
+                        
+                        return (
+                          <div key={agentId} style={{ marginBottom: '8px', fontSize: '12px', color: '#666', lineHeight: '1.6' }}>
+                            {agentSummary}
+                            {agentSummary.length >= 300 && <span style={{ color: '#999' }}>...</span>}
+                            <Tooltip title="复制完整内容">
+                              <Button
+                                type="text"
+                                size="small"
+                                icon={<CopyOutlined />}
+                                onClick={() => handleCopy(
+                                  Object.values(agentData).map(v => typeof v === 'string' ? v : JSON.stringify(v)).join('\n'),
+                                  `agent-${agentId}`
+                                )}
+                                style={{ marginLeft: '8px' }}
+                              />
+                            </Tooltip>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <Text type="secondary" style={{ fontSize: '12px', fontStyle: 'italic' }}>
+                        暂无智能体数据
+                      </Text>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+    const userGroups = organize3dData();
+    const has3dData = userGroups && Object.keys(userGroups).length > 0;
+
+    if (namespaces.length === 0 && !has3dData) {
       return (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -132,106 +324,13 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
       );
     }
 
-    // 分离记忆类型和其他命名空间
-    const memoryNamespaces = namespaces.filter(ns => isMemoryNamespace(ns));
-    const otherNamespaces = namespaces.filter(ns => !isMemoryNamespace(ns));
-
     return (
       <div className="context-panel-content">
-        {/* 优先显示记忆类型 */}
-        {memoryNamespaces.map((namespace) => {
-          const namespaceData = pipelineData[namespace] || {};
-          const keys = Object.keys(namespaceData).filter(k => !k.endsWith('_metadata'));
-          const summary = memorySummary[namespace.replace('memory_', '')];
+        {/* 显示三维数据（按用户-话题-智能体结构） */}
+        {has3dData && render3dData()}
 
-          return (
-            <div key={namespace} className="context-namespace" style={{ marginBottom: '16px' }}>
-              <div className="context-namespace-header">
-                <Space>
-                  <Tag color={getMemoryTypeColor(namespace)}>
-                    {getMemoryTypeName(namespace)}
-                  </Tag>
-                  {summary && (
-                    <>
-                      <Text type="secondary" style={{ fontSize: '12px' }}>
-                        {summary.count} 条
-                      </Text>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>
-                        ({summary.size} 字符)
-                      </Text>
-                    </>
-                  )}
-                  {!summary && keys.length > 0 && (
-                    <Text type="secondary" style={{ fontSize: '12px' }}>
-                      {keys.length} 项
-                    </Text>
-                  )}
-                </Space>
-              </div>
-              {keys.length === 0 ? (
-                <div style={{ padding: '8px', color: '#999', fontSize: '12px' }}>
-                  暂无记忆
-                </div>
-              ) : (
-                <div className="context-namespace-content">
-                  {keys.map((key) => {
-                    const value = namespaceData[key];
-                    const metadata = namespaceData[`${key}_metadata`];
-                    const preview = getValuePreview(value);
-                    const fullValue = formatValue(value);
-
-                    return (
-                      <div key={key} className="context-item">
-                        <div className="context-item-header">
-                          <Space>
-                            <Text strong>{key}</Text>
-                            {metadata?.quality_score != null && typeof metadata.quality_score === 'number' && (
-                              <Tag color="orange" style={{ fontSize: '11px', padding: '0 4px' }}>
-                                质量: {metadata.quality_score.toFixed(2)}
-                              </Tag>
-                            )}
-                            {metadata?.created_at && (
-                              <Text type="secondary" style={{ fontSize: '11px' }}>
-                                {new Date(metadata.created_at).toLocaleString()}
-                              </Text>
-                            )}
-                          </Space>
-                          <Space size="small">
-                            <Tooltip title="复制完整值">
-                              <Button
-                                type="text"
-                                size="small"
-                                icon={<CopyOutlined />}
-                                onClick={() => handleCopy(fullValue, `${namespace}.${key}`)}
-                              />
-                            </Tooltip>
-                          </Space>
-                        </div>
-                        <div className="context-item-value">
-                          <Paragraph
-                            copyable={false}
-                            ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}
-                            style={{ margin: 0, fontSize: '12px' }}
-                          >
-                            {preview}
-                          </Paragraph>
-                        </div>
-                        {copiedKey === `${namespace}.${key}` && (
-                          <Text type="success" style={{ fontSize: '12px' }}>
-                            已复制
-                          </Text>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {/* 显示其他命名空间 */}
-        {otherNamespaces.map((namespace) => {
+        {/* 显示命名空间数据（向后兼容） */}
+        {namespaces.map((namespace) => {
           const namespaceData = pipelineData[namespace] || {};
           const keys = Object.keys(namespaceData);
 
@@ -385,9 +484,18 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
               <div className="context-history-header">
                 <Space>
                   <Tag color="purple">{entry.action}</Tag>
-                  <Text type="secondary" style={{ fontSize: '12px' }}>
-                    {entry.namespace}
-                  </Text>
+                  {entry.namespace && (
+                    <Text type="secondary" style={{ fontSize: '12px' }}>
+                      {entry.namespace}
+                    </Text>
+                  )}
+                  {(entry.user_id || entry.topic_id || entry.agent_id) && (
+                    <Space size="small">
+                      {entry.user_id && <Tag color="purple" style={{ fontSize: '11px' }}>用户: {entry.user_id}</Tag>}
+                      {entry.topic_id && <Tag color="blue" style={{ fontSize: '11px' }}>话题: {entry.topic_id}</Tag>}
+                      {entry.agent_id && <Tag color="green" style={{ fontSize: '11px' }}>智能体: {entry.agent_id}</Tag>}
+                    </Space>
+                  )}
                   <Text strong style={{ fontSize: '12px' }}>
                     {entry.key}
                   </Text>
@@ -415,18 +523,24 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
   // 统计信息
   const getStats = () => {
     const pipelineData = contextData?.pipeline_data || {};
+    const pipelineData3d = contextData?.pipeline_data_3d || {};
     const pipelineFiles = contextData?.pipeline_files || {};
     const history = contextData?.pipeline_history || {};
-    const memorySummary = contextData?.memory_summary || {};
 
     let dataCount = 0;
-    let memoryCount = 0;
     Object.entries(pipelineData).forEach(([namespace, ns]) => {
       const count = Object.keys(ns || {}).filter(k => !k.endsWith('_metadata')).length;
       dataCount += count;
-      if (isMemoryNamespace(namespace)) {
-        memoryCount += count;
-      }
+    });
+
+    // 统计三维数据
+    let data3dCount = 0;
+    Object.values(pipelineData3d).forEach((userData) => {
+      Object.values(userData).forEach((topicData) => {
+        Object.values(topicData).forEach((agentData) => {
+          data3dCount += Object.keys(agentData || {}).filter(k => !k.endsWith('_metadata')).length;
+        });
+      });
     });
 
     let fileCount = 0;
@@ -434,14 +548,8 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
       fileCount += Object.keys(ns || {}).length;
     });
 
-    // 从 memory_summary 获取记忆统计
-    const memoryTypesCount = Object.values(memorySummary).reduce((sum, summary: any) => {
-      return sum + (summary.count || 0);
-    }, 0);
-
     return {
-      dataCount,
-      memoryCount: memoryTypesCount > 0 ? memoryTypesCount : memoryCount,
+      dataCount: dataCount + data3dCount,
       fileCount,
       historyCount: Array.isArray(history) ? history.length : 0,
       namespaceCount: Object.keys(pipelineData).length + Object.keys(pipelineFiles).length
@@ -471,11 +579,6 @@ const FlowContextPanel: React.FC<FlowContextPanelProps> = ({
       }
       extra={
         <Space>
-          {stats.memoryCount > 0 && (
-            <Badge count={stats.memoryCount} showZero>
-              <Tag color="gold">记忆</Tag>
-            </Badge>
-          )}
           {stats.dataCount > 0 && (
             <Badge count={stats.dataCount} showZero>
               <Tag color="blue">数据</Tag>

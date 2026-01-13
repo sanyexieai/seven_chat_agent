@@ -5,6 +5,7 @@ import os
 import copy
 from pathlib import Path
 from utils.log_helper import get_logger
+from utils.llm_helper import get_llm_helper
 
 logger = get_logger("pipeline")
 
@@ -15,13 +16,8 @@ class Pipeline:
     用于在整个系统中存储和共享数据：
     - 支持所有类型智能体（普通聊天、流程图、工具编排等）
     - 支持多种数据类型：文本、文件、JSON、列表等
-    - 支持细化的记忆类型：潜意识、长期记忆、短期记忆
+    - 支持三维数据组织：用户、话题、智能体
     """
-
-    # 记忆类型定义
-    MEMORY_TYPE_SUBCONSCIOUS = 'subconscious'  # 潜意识：存在本地，不常用且搜索困难
-    MEMORY_TYPE_LONG_TERM = 'long_term'  # 长期记忆：记忆深刻且能通用于整个系统
-    MEMORY_TYPE_SHORT_TERM = 'short_term'  # 短期记忆：针对当前任务，容量有限，需要快速更新
 
     def __init__(self, pipeline_id: Optional[str] = None, persistent: bool = False):
         """
@@ -34,7 +30,11 @@ class Pipeline:
         self.pipeline_id = pipeline_id or f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.persistent = persistent
 
-        # 数据存储：按命名空间组织
+        # 数据存储：按三维组织（用户、话题、智能体）
+        # 结构：{user_id: {topic_id: {agent_id: {key: value}}}}
+        self._data_3d: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
+
+        # 兼容旧版本：按命名空间组织（向后兼容）
         # 结构：{namespace: {key: value}}
         self._data: Dict[str, Dict[str, Any]] = {}
 
@@ -45,127 +45,332 @@ class Pipeline:
         # 历史记录：记录数据变更历史
         self._history: List[Dict[str, Any]] = []
 
-        # 初始化默认命名空间
+        # 默认维度值
+        self._default_user_id = 'default_user'
+        self._default_topic_id = 'default_topic'
+        self._default_agent_id = 'default_agent'
+
+        # 初始化默认命名空间（向后兼容）
         self._data['global'] = {}
         self._data['nodes'] = {}  # 节点专用命名空间
 
-        # 初始化记忆类型命名空间
-        self._data[f'memory_{self.MEMORY_TYPE_SUBCONSCIOUS}'] = {}  # 潜意识记忆
-        self._data[f'memory_{self.MEMORY_TYPE_LONG_TERM}'] = {}  # 长期记忆
-        self._data[f'memory_{self.MEMORY_TYPE_SHORT_TERM}'] = {}  # 短期记忆
-
-        # 记忆类型配置
-        self._memory_config = {
-            self.MEMORY_TYPE_SUBCONSCIOUS: {
-                'max_size': None,  # 无限制（本地存储）
-                'searchable': False,  # 搜索困难
-                'persistent': True,  # 持久化
-                'access_frequency': 'low'  # 访问频率低
-            },
-            self.MEMORY_TYPE_LONG_TERM: {
-                'max_size': None,  # 无限制（但需要高质量）
-                'searchable': True,  # 可搜索
-                'persistent': True,  # 持久化
-                'access_frequency': 'medium',  # 中等访问频率
-                'quality_threshold': 0.7  # 质量阈值（用于筛选）
-            },
-            self.MEMORY_TYPE_SHORT_TERM: {
-                'max_size': 10000,  # 容量有限（字符数或条目数）
-                'searchable': True,  # 可快速搜索
-                'persistent': False,  # 不持久化（任务结束后清理）
-                'access_frequency': 'high',  # 高访问频率
-                'update_strategy': 'fifo'  # 更新策略：先进先出
-            }
-        }
-
     # ========== 基础数据操作 ==========
 
-    def put(self, key: str, value: Any, namespace: str = 'global') -> None:
+    def _get_dimensions_from_context(self, context: Optional[Dict[str, Any]] = None) -> tuple[str, str, str]:
         """
-        向管道中写入数据
+        从上下文中提取三维信息（用户、话题、智能体）
+        
+        Args:
+            context: 上下文字典
+            
+        Returns:
+            (user_id, topic_id, agent_id)
+        """
+        if context is None:
+            return self._default_user_id, self._default_topic_id, self._default_agent_id
+        
+        user_id = context.get('user_id') or context.get('user') or self._default_user_id
+        topic_id = context.get('topic_id') or context.get('topic') or context.get('session_id') or self._default_topic_id
+        agent_id = context.get('agent_id') or context.get('agent_name') or context.get('agent') or self._default_agent_id
+        
+        return str(user_id), str(topic_id), str(agent_id)
+
+    def put(
+        self, 
+        key: str, 
+        value: Any, 
+        namespace: str = 'global',
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        向管道中写入数据（支持三维和命名空间两种模式）
 
         Args:
             key: 数据键名
             value: 数据值（可以是任何类型）
-            namespace: 命名空间，默认为 'global'
+            namespace: 命名空间，默认为 'global'（向后兼容）
+            user_id: 用户ID（三维模式）
+            topic_id: 话题ID（三维模式）
+            agent_id: 智能体ID（三维模式）
+            context: 上下文字典（用于自动提取维度信息）
         """
-        if namespace not in self._data:
-            self._data[namespace] = {}
+        # 如果提供了三维参数或 context，使用三维存储
+        if user_id is not None or topic_id is not None or agent_id is not None or context is not None:
+            if user_id is None or topic_id is None or agent_id is None:
+                # 从 context 中提取缺失的维度
+                ctx_user, ctx_topic, ctx_agent = self._get_dimensions_from_context(context)
+                user_id = user_id or ctx_user
+                topic_id = topic_id or ctx_topic
+                agent_id = agent_id or ctx_agent
+            
+            # 三维存储
+            if user_id not in self._data_3d:
+                self._data_3d[user_id] = {}
+            if topic_id not in self._data_3d[user_id]:
+                self._data_3d[user_id][topic_id] = {}
+            if agent_id not in self._data_3d[user_id][topic_id]:
+                self._data_3d[user_id][topic_id][agent_id] = {}
+            
+            old_value = self._data_3d[user_id][topic_id][agent_id].get(key)
+            self._data_3d[user_id][topic_id][agent_id][key] = value
+            
+            # 记录历史
+            self._history.append({
+                'timestamp': datetime.now().isoformat(),
+                'action': 'put',
+                'user_id': user_id,
+                'topic_id': topic_id,
+                'agent_id': agent_id,
+                'key': key,
+                'old_value': old_value,
+                'new_value': value
+            })
+            
+            logger.debug(f"Pipeline[{self.pipeline_id}] 写入数据（三维）: {user_id}.{topic_id}.{agent_id}.{key}")
+        else:
+            # 向后兼容：使用命名空间存储
+            if namespace not in self._data:
+                self._data[namespace] = {}
 
-        old_value = self._data[namespace].get(key)
-        self._data[namespace][key] = value
+            old_value = self._data[namespace].get(key)
+            self._data[namespace][key] = value
 
-        # 记录历史
-        self._history.append({
-            'timestamp': datetime.now().isoformat(),
-            'action': 'put',
-            'namespace': namespace,
-            'key': key,
-            'old_value': old_value,
-            'new_value': value
-        })
+            # 记录历史
+            self._history.append({
+                'timestamp': datetime.now().isoformat(),
+                'action': 'put',
+                'namespace': namespace,
+                'key': key,
+                'old_value': old_value,
+                'new_value': value
+            })
 
-        logger.debug(f"Pipeline[{self.pipeline_id}] 写入数据: {namespace}.{key}")
+            logger.debug(f"Pipeline[{self.pipeline_id}] 写入数据: {namespace}.{key}")
 
-    def get(self, key: str, default: Any = None, namespace: str = 'global') -> Any:
+    def get(
+        self, 
+        key: str, 
+        default: Any = None, 
+        namespace: str = 'global',
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Any:
         """
-        从管道中读取数据
+        从管道中读取数据（支持三维和命名空间两种模式）
 
         Args:
             key: 数据键名
             default: 默认值
-            namespace: 命名空间，默认为 'global'
+            namespace: 命名空间，默认为 'global'（向后兼容）
+            user_id: 用户ID（三维模式）
+            topic_id: 话题ID（三维模式）
+            agent_id: 智能体ID（三维模式）
+            context: 上下文字典（用于自动提取维度信息）
 
         Returns:
             数据值，如果不存在则返回默认值
         """
-        if namespace not in self._data:
-            return default
+        # 如果提供了三维参数或 context，使用三维读取
+        if user_id is not None or topic_id is not None or agent_id is not None or context is not None:
+            if user_id is None or topic_id is None or agent_id is None:
+                # 从 context 中提取缺失的维度
+                ctx_user, ctx_topic, ctx_agent = self._get_dimensions_from_context(context)
+                user_id = user_id or ctx_user
+                topic_id = topic_id or ctx_topic
+                agent_id = agent_id or ctx_agent
+            
+            # 三维读取
+            if user_id not in self._data_3d:
+                return default
+            if topic_id not in self._data_3d[user_id]:
+                return default
+            if agent_id not in self._data_3d[user_id][topic_id]:
+                return default
+            
+            return self._data_3d[user_id][topic_id][agent_id].get(key, default)
+        else:
+            # 向后兼容：使用命名空间读取
+            if namespace not in self._data:
+                return default
 
-        return self._data[namespace].get(key, default)
+            return self._data[namespace].get(key, default)
 
-    def has(self, key: str, namespace: str = 'global') -> bool:
+    def has(
+        self, 
+        key: str, 
+        namespace: str = 'global',
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """检查管道中是否存在指定键"""
-        if namespace not in self._data:
-            return False
-        return key in self._data[namespace]
+        # 如果提供了三维参数或 context，使用三维检查
+        if user_id is not None or topic_id is not None or agent_id is not None or context is not None:
+            if user_id is None or topic_id is None or agent_id is None:
+                ctx_user, ctx_topic, ctx_agent = self._get_dimensions_from_context(context)
+                user_id = user_id or ctx_user
+                topic_id = topic_id or ctx_topic
+                agent_id = agent_id or ctx_agent
+            
+            if user_id not in self._data_3d:
+                return False
+            if topic_id not in self._data_3d[user_id]:
+                return False
+            if agent_id not in self._data_3d[user_id][topic_id]:
+                return False
+            return key in self._data_3d[user_id][topic_id][agent_id]
+        else:
+            # 向后兼容
+            if namespace not in self._data:
+                return False
+            return key in self._data[namespace]
 
-    def delete(self, key: str, namespace: str = 'global') -> bool:
+    def delete(
+        self, 
+        key: str, 
+        namespace: str = 'global',
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """
         从管道中删除数据
 
         Returns:
             是否成功删除
         """
-        if namespace not in self._data:
-            return False
+        # 如果提供了三维参数或 context，使用三维删除
+        if user_id is not None or topic_id is not None or agent_id is not None or context is not None:
+            if user_id is None or topic_id is None or agent_id is None:
+                ctx_user, ctx_topic, ctx_agent = self._get_dimensions_from_context(context)
+                user_id = user_id or ctx_user
+                topic_id = topic_id or ctx_topic
+                agent_id = agent_id or ctx_agent
+            
+            if user_id not in self._data_3d:
+                return False
+            if topic_id not in self._data_3d[user_id]:
+                return False
+            if agent_id not in self._data_3d[user_id][topic_id]:
+                return False
+            if key not in self._data_3d[user_id][topic_id][agent_id]:
+                return False
 
-        if key not in self._data[namespace]:
-            return False
+            old_value = self._data_3d[user_id][topic_id][agent_id].pop(key)
 
-        old_value = self._data[namespace].pop(key)
+            # 记录历史
+            self._history.append({
+                'timestamp': datetime.now().isoformat(),
+                'action': 'delete',
+                'user_id': user_id,
+                'topic_id': topic_id,
+                'agent_id': agent_id,
+                'key': key,
+                'old_value': old_value
+            })
 
-        # 记录历史
-        self._history.append({
-            'timestamp': datetime.now().isoformat(),
-            'action': 'delete',
-            'namespace': namespace,
-            'key': key,
-            'old_value': old_value
-        })
+            logger.debug(f"Pipeline[{self.pipeline_id}] 删除数据（三维）: {user_id}.{topic_id}.{agent_id}.{key}")
+            return True
+        else:
+            # 向后兼容
+            if namespace not in self._data:
+                return False
 
-        logger.debug(f"Pipeline[{self.pipeline_id}] 删除数据: {namespace}.{key}")
-        return True
+            if key not in self._data[namespace]:
+                return False
+
+            old_value = self._data[namespace].pop(key)
+
+            # 记录历史
+            self._history.append({
+                'timestamp': datetime.now().isoformat(),
+                'action': 'delete',
+                'namespace': namespace,
+                'key': key,
+                'old_value': old_value
+            })
+
+            logger.debug(f"Pipeline[{self.pipeline_id}] 删除数据: {namespace}.{key}")
+            return True
 
     def get_namespace(self, namespace: str) -> Dict[str, Any]:
-        """获取整个命名空间的数据"""
+        """获取整个命名空间的数据（向后兼容）"""
         return self._data.get(namespace, {}).copy()
+    
+    def get_3d_data(
+        self,
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        获取三维数据（用户、话题、智能体）
+        
+        Args:
+            user_id: 用户ID
+            topic_id: 话题ID
+            agent_id: 智能体ID
+            context: 上下文字典（用于自动提取维度信息）
+            
+        Returns:
+            该三维空间下的所有数据
+        """
+        if user_id is None or topic_id is None or agent_id is None:
+            ctx_user, ctx_topic, ctx_agent = self._get_dimensions_from_context(context)
+            user_id = user_id or ctx_user
+            topic_id = topic_id or ctx_topic
+            agent_id = agent_id or ctx_agent
+        
+        if user_id not in self._data_3d:
+            return {}
+        if topic_id not in self._data_3d[user_id]:
+            return {}
+        if agent_id not in self._data_3d[user_id][topic_id]:
+            return {}
+        
+        return self._data_3d[user_id][topic_id][agent_id].copy()
 
     def clear_namespace(self, namespace: str) -> None:
-        """清空指定命名空间的所有数据"""
+        """清空指定命名空间的所有数据（向后兼容）"""
         if namespace in self._data:
             self._data[namespace].clear()
             logger.debug(f"Pipeline[{self.pipeline_id}] 清空命名空间: {namespace}")
+    
+    def clear_3d_data(
+        self,
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        清空三维数据（用户、话题、智能体）
+        
+        Args:
+            user_id: 用户ID
+            topic_id: 话题ID
+            agent_id: 智能体ID
+            context: 上下文字典（用于自动提取维度信息）
+        """
+        if user_id is None or topic_id is None or agent_id is None:
+            ctx_user, ctx_topic, ctx_agent = self._get_dimensions_from_context(context)
+            user_id = user_id or ctx_user
+            topic_id = topic_id or ctx_topic
+            agent_id = agent_id or ctx_agent
+        
+        if user_id in self._data_3d:
+            if topic_id in self._data_3d[user_id]:
+                if agent_id in self._data_3d[user_id][topic_id]:
+                    self._data_3d[user_id][topic_id][agent_id].clear()
+                    logger.debug(f"Pipeline[{self.pipeline_id}] 清空三维数据: {user_id}.{topic_id}.{agent_id}")
 
     # ========== 节点专用操作 ==========
 
@@ -346,55 +551,17 @@ class Pipeline:
         """导出管道数据（用于持久化或调试）"""
         return {
             'pipeline_id': self.pipeline_id,
-            'data': self._data,
+            'data': self._data,  # 向后兼容的命名空间数据
+            'data_3d': self._data_3d,  # 三维数据
             'files': self._files,
             'history_count': len(self._history)
         }
     
-    def get_all_memory_types(self) -> List[str]:
-        """获取所有记忆类型列表"""
-        return [
-            self.MEMORY_TYPE_SUBCONSCIOUS,
-            self.MEMORY_TYPE_LONG_TERM,
-            self.MEMORY_TYPE_SHORT_TERM
-        ]
-    
-    def get_memory_summary(self) -> Dict[str, Any]:
-        """获取所有记忆类型的摘要信息
-        
-        Returns:
-            包含每种记忆类型的统计信息和配置的字典
-        """
-        summary = {}
-        for memory_type in self.get_all_memory_types():
-            namespace = self.get_memory_namespace(memory_type)
-            namespace_data = self.get_namespace(namespace)
-            
-            # 统计记忆条目数（排除元数据键）
-            memory_keys = [k for k in namespace_data.keys() if not k.endswith('_metadata')]
-            memory_count = len(memory_keys)
-            
-            # 计算总大小
-            total_size = self._estimate_memory_size(namespace)
-            
-            # 获取配置
-            config = self.get_memory_config(memory_type)
-            
-            summary[memory_type] = {
-                'count': memory_count,
-                'size': total_size,
-                'namespace': namespace,
-                'config': config,
-                'keys': memory_keys[:10]  # 只返回前10个键作为预览
-            }
-        
-        return summary
     
     def export_for_frontend(self) -> Dict[str, Any]:
         """导出管道数据为前端需要的格式
         
         注意：会过滤掉不可序列化的对象（如 AgentContext）
-        确保所有记忆类型都被包含，即使为空
         """
         import json
         
@@ -414,26 +581,34 @@ class Pipeline:
                     # 如果无法序列化，转换为字符串表示
                     filtered_data[namespace][key] = str(value)
         
-        # 确保所有记忆类型的命名空间都被包含（即使为空）
-        for memory_type in self.get_all_memory_types():
-            namespace = self.get_memory_namespace(memory_type)
-            if namespace not in filtered_data:
-                filtered_data[namespace] = {}
-        
-        # 获取记忆摘要信息
-        memory_summary = self.get_memory_summary()
+        # 过滤三维数据（同样处理不可序列化对象）
+        filtered_data_3d = {}
+        for user_id, user_data in self._data_3d.items():
+            filtered_data_3d[user_id] = {}
+            for topic_id, topic_data in user_data.items():
+                filtered_data_3d[user_id][topic_id] = {}
+                for agent_id, agent_data in topic_data.items():
+                    filtered_data_3d[user_id][topic_id][agent_id] = {}
+                    for key, value in agent_data.items():
+                        try:
+                            json.dumps(value, default=str)
+                            filtered_data_3d[user_id][topic_id][agent_id][key] = value
+                        except (TypeError, ValueError):
+                            filtered_data_3d[user_id][topic_id][agent_id][key] = str(value)
         
         return {
-            'pipeline_data': filtered_data,  # 命名空间 -> key -> value
+            'pipeline_data': filtered_data,  # 命名空间 -> key -> value（向后兼容）
+            'pipeline_data_3d': filtered_data_3d,  # 三维数据：user_id -> topic_id -> agent_id -> key -> value
             'pipeline_files': self._files,  # 命名空间 -> key -> file info
-            'pipeline_history': self.get_history(limit=100),  # 最近100条历史记录
-            'memory_summary': memory_summary  # 记忆类型摘要信息
+            'pipeline_history': self.get_history(limit=100)  # 最近100条历史记录
         }
 
     def import_data(self, data: Dict[str, Any]) -> None:
         """导入管道数据"""
         if 'data' in data:
             self._data = data['data']
+        if 'data_3d' in data:
+            self._data_3d = data['data_3d']
         if 'files' in data:
             self._files = data['files']
         logger.info(f"Pipeline[{self.pipeline_id}] 导入数据完成")
@@ -508,153 +683,119 @@ class Pipeline:
 
     # ========== 上下文工程 ==========
 
-    # ----- 记忆类型管理 -----
-
-    def get_memory_namespace(self, memory_type: str) -> str:
-        """
-        获取记忆类型的命名空间
-
-        Args:
-            memory_type: 记忆类型（MEMORY_TYPE_SUBCONSCIOUS/LONG_TERM/SHORT_TERM）
-
-        Returns:
-            命名空间名称
-        """
-        return f'memory_{memory_type}'
-
-    def get_memory_config(self, memory_type: str) -> Dict[str, Any]:
-        """获取记忆类型的配置"""
-        return self._memory_config.get(memory_type, {})
-
-    # ----- 记忆写入（按类型）-----
+    # ----- 记忆写入（简化版，直接使用三维存储）-----
 
     def write_to_memory(
         self,
         content: Union[str, Dict[str, Any], List[Any]],
-        memory_type: str,
         key: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        quality_score: Optional[float] = None
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        写入到指定类型的记忆
+        写入记忆（使用三维存储）
 
         Args:
             content: 要写入的内容
-            memory_type: 记忆类型（MEMORY_TYPE_SUBCONSCIOUS/LONG_TERM/SHORT_TERM）
             key: 数据键名，如果为 None 则自动生成
             metadata: 元数据
-            quality_score: 质量分数（0.0-1.0），用于长期记忆筛选
+            user_id: 用户ID
+            topic_id: 话题ID
+            agent_id: 智能体ID
+            context: 上下文字典（用于自动提取维度信息）
 
         Returns:
             实际使用的 key
         """
-        namespace = self.get_memory_namespace(memory_type)
-        config = self.get_memory_config(memory_type)
+        # 从 context 中提取缺失的维度
+        if user_id is None or topic_id is None or agent_id is None:
+            ctx_user, ctx_topic, ctx_agent = self._get_dimensions_from_context(context)
+            user_id = user_id or ctx_user
+            topic_id = topic_id or ctx_topic
+            agent_id = agent_id or ctx_agent
 
         if key is None:
             key = f"mem_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
-        # 长期记忆需要质量检查
-        if memory_type == self.MEMORY_TYPE_LONG_TERM:
-            threshold = config.get('quality_threshold', 0.7)
-            if quality_score is None or quality_score < threshold:
-                logger.warning(f"长期记忆质量分数 {quality_score} 低于阈值 {threshold}，将降级为潜意识记忆")
-                # 降级为潜意识记忆
-                return self.write_to_memory(content, self.MEMORY_TYPE_SUBCONSCIOUS, key, metadata, quality_score)
-
-        # 短期记忆容量检查
-        if memory_type == self.MEMORY_TYPE_SHORT_TERM:
-            max_size = config.get('max_size')
-            if max_size:
-                current_size = self._estimate_memory_size(namespace)
-                content_size = self._estimate_content_size(content)
-                if current_size + content_size > max_size:
-                    # 触发清理或压缩
-                    self._evict_short_term_memory(namespace, target_size=max_size - content_size)
-
         # 写入内容
-        self.put(key, content, namespace=namespace)
+        self.put(key, content, user_id=user_id, topic_id=topic_id, agent_id=agent_id, context=context)
 
         # 存储元数据
-        mem_metadata = metadata or {}
-        mem_metadata.update({
-            'memory_type': memory_type,
-            'created_at': datetime.now().isoformat(),
-            'quality_score': quality_score
-        })
-        self.put(f"{key}_metadata", mem_metadata, namespace=namespace)
+        if metadata:
+            mem_metadata = metadata.copy()
+            mem_metadata['created_at'] = datetime.now().isoformat()
+            self.put(f"{key}_metadata", mem_metadata, user_id=user_id, topic_id=topic_id, agent_id=agent_id, context=context)
 
-        logger.debug(f"Pipeline[{self.pipeline_id}] 写入{memory_type}记忆: {key}")
+        logger.debug(f"Pipeline[{self.pipeline_id}] 写入记忆: {user_id}.{topic_id}.{agent_id}.{key}")
         return key
 
     def read_from_memory(
         self,
         key: str,
-        memory_type: str,
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
         default: Any = None
     ) -> Any:
         """
-        从指定类型的记忆中读取
+        从记忆中读取
 
         Args:
             key: 数据键名
-            memory_type: 记忆类型
+            user_id: 用户ID
+            topic_id: 话题ID
+            agent_id: 智能体ID
+            context: 上下文字典（用于自动提取维度信息）
             default: 默认值
 
         Returns:
             记忆内容
         """
-        namespace = self.get_memory_namespace(memory_type)
-        return self.get(key, default, namespace=namespace)
+        return self.get(key, default, user_id=user_id, topic_id=topic_id, agent_id=agent_id, context=context)
 
     def search_memory(
         self,
         query: str,
-        memory_types: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
         limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
-        搜索记忆（仅搜索可搜索的记忆类型）
+        搜索记忆
 
         Args:
             query: 查询字符串
-            memory_types: 要搜索的记忆类型列表，如果为 None 则搜索所有可搜索类型
+            user_id: 用户ID
+            topic_id: 话题ID
+            agent_id: 智能体ID
+            context: 上下文字典（用于自动提取维度信息）
             limit: 返回的最大条目数
 
         Returns:
             匹配的记忆列表
         """
-        if memory_types is None:
-            # 只搜索可搜索的记忆类型
-            memory_types = [
-                self.MEMORY_TYPE_LONG_TERM,
-                self.MEMORY_TYPE_SHORT_TERM
-            ]
-
+        data = self.get_3d_data(user_id, topic_id, agent_id, context)
         results = []
-        for memory_type in memory_types:
-            config = self.get_memory_config(memory_type)
-            if not config.get('searchable', False):
+
+        for key, content in data.items():
+            if key.endswith('_metadata'):
                 continue
 
-            namespace = self.get_memory_namespace(memory_type)
-            namespace_data = self.get_namespace(namespace)
-
-            for key, content in namespace_data.items():
-                if key.endswith('_metadata'):
-                    continue
-
-                # TODO: 实现语义搜索
-                # 简单实现：文本匹配
-                if isinstance(content, str) and query.lower() in content.lower():
-                    metadata = namespace_data.get(f"{key}_metadata", {})
-                    results.append({
-                        'key': key,
-                        'content': content,
-                        'memory_type': memory_type,
-                        'metadata': metadata
-                    })
+            # TODO: 实现语义搜索
+            # 简单实现：文本匹配
+            if isinstance(content, str) and query.lower() in content.lower():
+                metadata = data.get(f"{key}_metadata", {})
+                results.append({
+                    'key': key,
+                    'content': content,
+                    'metadata': metadata
+                })
 
         if limit:
             results = results[:limit]
@@ -662,83 +803,17 @@ class Pipeline:
         logger.debug(f"Pipeline[{self.pipeline_id}] 搜索记忆: 找到 {len(results)} 条")
         return results
 
-    def promote_memory(
+    def _estimate_memory_size(
         self,
-        key: str,
-        from_type: str,
-        to_type: str,
-        quality_score: Optional[float] = None
-    ) -> bool:
-        """
-        提升记忆类型（例如：从短期记忆提升到长期记忆）
-
-        Args:
-            key: 记忆键名
-            from_type: 源记忆类型
-            to_type: 目标记忆类型
-            quality_score: 质量分数（用于长期记忆）
-
-        Returns:
-            是否成功提升
-        """
-        from_namespace = self.get_memory_namespace(from_type)
-        to_namespace = self.get_memory_namespace(to_type)
-
-        content = self.get(key, namespace=from_namespace)
-        if content is None:
-            return False
-
-        metadata = self.get(f"{key}_metadata", {}, namespace=from_namespace)
-        if quality_score:
-            metadata['quality_score'] = quality_score
-
-        # 写入到新类型
-        self.write_to_memory(content, to_type, key, metadata, quality_score)
-
-        # 从旧类型删除
-        self.delete(key, namespace=from_namespace)
-        self.delete(f"{key}_metadata", namespace=from_namespace)
-
-        logger.debug(f"Pipeline[{self.pipeline_id}] 提升记忆: {key} ({from_type} -> {to_type})")
-        return True
-
-    def demote_memory(
-        self,
-        key: str,
-        from_type: str,
-        to_type: str
-    ) -> bool:
-        """
-        降级记忆类型（例如：从长期记忆降级到潜意识）
-
-        Args:
-            key: 记忆键名
-            from_type: 源记忆类型
-            to_type: 目标记忆类型
-
-        Returns:
-            是否成功降级
-        """
-        return self.promote_memory(key, from_type, to_type, quality_score=0.0)
-
-    def clear_short_term_memory(self) -> int:
-        """
-        清空短期记忆（任务结束后调用）
-
-        Returns:
-            清理的条目数
-        """
-        namespace = self.get_memory_namespace(self.MEMORY_TYPE_SHORT_TERM)
-        count = len(self.get_namespace(namespace))
-        self.clear_namespace(namespace)
-        logger.debug(f"Pipeline[{self.pipeline_id}] 清空短期记忆: {count} 条")
-        return count
-
-    def _estimate_memory_size(self, namespace: str) -> int:
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> int:
         """估算记忆空间大小（字符数）"""
-        namespace_data = self.get_namespace(namespace)
+        data = self.get_3d_data(user_id, topic_id, agent_id, context)
         total_size = 0
-        for key, value in namespace_data.items():
+        for key, value in data.items():
             if key.endswith('_metadata'):
                 continue
             total_size += self._estimate_content_size(value)
@@ -753,38 +828,30 @@ class Pipeline:
         else:
             return len(str(content))
 
-    def _evict_short_term_memory(self, namespace: str, target_size: int) -> None:
+    def clear_memory(
+        self,
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> int:
         """
-        淘汰短期记忆（FIFO策略）
+        清空指定三维空间的记忆
 
         Args:
-            namespace: 命名空间
-            target_size: 目标大小
+            user_id: 用户ID
+            topic_id: 话题ID
+            agent_id: 智能体ID
+            context: 上下文字典（用于自动提取维度信息）
+
+        Returns:
+            清理的条目数
         """
-        namespace_data = self.get_namespace(namespace)
-        items = []
-
-        for key, value in namespace_data.items():
-            if key.endswith('_metadata'):
-                continue
-            metadata = namespace_data.get(f"{key}_metadata", {})
-            items.append({
-                'key': key,
-                'content': value,
-                'created_at': metadata.get('created_at', ''),
-                'size': self._estimate_content_size(value)
-            })
-
-        # 按创建时间排序（最早的在前面）
-        items.sort(key=lambda x: x['created_at'])
-
-        current_size = self._estimate_memory_size(namespace)
-        for item in items:
-            if current_size <= target_size:
-                break
-            self.delete(item['key'], namespace=namespace)
-            self.delete(f"{item['key']}_metadata", namespace=namespace)
-            current_size -= item['size']
+        data = self.get_3d_data(user_id, topic_id, agent_id, context)
+        count = len([k for k in data.keys() if not k.endswith('_metadata')])
+        self.clear_3d_data(user_id, topic_id, agent_id, context)
+        logger.debug(f"Pipeline[{self.pipeline_id}] 清空记忆: {count} 条")
+        return count
 
     # ----- 写入（Writing）-----
 
@@ -1202,6 +1269,60 @@ class Pipeline:
             if namespace.startswith('isolated_'):
                 isolated.append(namespace)
         return isolated
+    
+    # ========== 三维数据查询方法 ==========
+    
+    def list_users(self) -> List[str]:
+        """列出所有用户ID"""
+        return list(self._data_3d.keys())
+    
+    def list_topics(self, user_id: Optional[str] = None) -> List[str]:
+        """列出话题ID
+        
+        Args:
+            user_id: 用户ID，如果为 None 则返回所有用户的话题
+        """
+        if user_id:
+            if user_id in self._data_3d:
+                return list(self._data_3d[user_id].keys())
+            return []
+        else:
+            topics = set()
+            for user_data in self._data_3d.values():
+                topics.update(user_data.keys())
+            return list(topics)
+    
+    def list_agents(
+        self, 
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None
+    ) -> List[str]:
+        """列出智能体ID
+        
+        Args:
+            user_id: 用户ID，如果为 None 则返回所有用户的智能体
+            topic_id: 话题ID，如果为 None 则返回所有话题的智能体
+        """
+        if user_id and topic_id:
+            if user_id in self._data_3d and topic_id in self._data_3d[user_id]:
+                return list(self._data_3d[user_id][topic_id].keys())
+            return []
+        elif user_id:
+            agents = set()
+            if user_id in self._data_3d:
+                for topic_data in self._data_3d[user_id].values():
+                    agents.update(topic_data.keys())
+            return list(agents)
+        else:
+            agents = set()
+            for user_data in self._data_3d.values():
+                for topic_data in user_data.values():
+                    agents.update(topic_data.keys())
+            return list(agents)
+    
+    def get_all_namespaces(self) -> List[str]:
+        """获取所有命名空间（向后兼容）"""
+        return list(self._data.keys())
 
     def delete_isolated_context(self, context_id: str) -> bool:
         """
@@ -1220,6 +1341,427 @@ class Pipeline:
             logger.debug(f"Pipeline[{self.pipeline_id}] 删除隔离上下文: {namespace}")
             return True
         return False
+
+    # ========== 三维信息提取（通过 LLM 提示词） ==========
+    
+    async def extract_user_knowledge(
+        self,
+        user_id: str,
+        context: Optional[Dict[str, Any]] = None,
+        max_tokens: int = 200,
+        llm_helper = None
+    ) -> str:
+        """
+        提取用户维度的知识（用户偏好、习惯、特征等）
+        
+        原则：用最少的 token 记录最大信息密度的知识
+        
+        Args:
+            user_id: 用户ID
+            context: 上下文字典
+            max_tokens: 最大 token 数（目标压缩后的大小）
+            llm_helper: LLM 助手实例，如果为 None 则使用默认实例
+            
+        Returns:
+            压缩后的用户知识（高信息密度）
+        """
+        # 收集该用户在所有话题和智能体下的数据
+        user_data_list = []
+        if user_id in self._data_3d:
+            for topic_id, topic_data in self._data_3d[user_id].items():
+                for agent_id, agent_data in topic_data.items():
+                    for key, value in agent_data.items():
+                        if key.endswith('_metadata'):
+                            continue
+                        value_str = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                        user_data_list.append(f"{key}: {value_str}")
+        
+        if not user_data_list:
+            return ""
+        
+        # 合并原始数据
+        raw_content = "\n".join(user_data_list)
+        
+        # 使用 LLM 提炼用户知识
+        system_prompt = """你是一个知识压缩专家。你的任务是从对话和交互数据中提取用户的特征、偏好和习惯。
+
+提取原则：
+1. 只提取可复用的、跨话题的用户特征（如：偏好简洁回答、喜欢技术细节、习惯用英文等）
+2. 使用最简洁的语言，去除冗余和重复
+3. 用关键词和短语，而非完整句子
+4. 信息密度最大化，token 数最小化
+5. 格式：用分号分隔的短语，如"偏好简洁回答;喜欢技术细节;习惯用英文"
+
+输出要求：
+- 只输出提炼后的知识，不要解释
+- 如果信息不足，输出空字符串
+- 目标：用 50-200 token 记录最大信息量"""
+
+        user_prompt = f"""请从以下数据中提取用户特征和偏好（跨话题的通用特征）：
+
+{raw_content}
+
+请用最简洁的方式提炼用户知识（目标：{max_tokens} token以内）。"""
+
+        try:
+            if llm_helper is None:
+                llm_helper = get_llm_helper()
+            
+            response = await llm_helper.call(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,  # 低温度确保输出稳定
+                max_tokens=max_tokens * 2  # 给 LLM 一些缓冲
+            )
+            
+            # 清理响应（去除可能的解释性文字）
+            knowledge = response.strip()
+            # 如果响应包含"提炼"、"总结"等词，可能是解释，尝试提取核心内容
+            if "：" in knowledge or ":" in knowledge:
+                lines = knowledge.split('\n')
+                # 取最后一行或包含实际内容的部分
+                knowledge = lines[-1] if lines else knowledge
+            
+            logger.debug(f"Pipeline[{self.pipeline_id}] 提取用户知识: {user_id} -> {len(knowledge)} 字符")
+            return knowledge
+        except Exception as e:
+            logger.error(f"Pipeline[{self.pipeline_id}] 提取用户知识失败: {e}")
+            # 降级：简单截取
+            return raw_content[:max_tokens * 3] if len(raw_content) > max_tokens * 3 else raw_content
+    
+    async def extract_topic_knowledge(
+        self,
+        user_id: str,
+        context: Optional[Dict[str, Any]] = None,
+        max_topics: int = 10,
+        llm_helper = None
+    ) -> List[str]:
+        """
+        从对话内容中提取话题列表（如：星座、编程、性格等）
+        
+        原则：用最少的 token 记录最大信息密度的知识
+        
+        Args:
+            user_id: 用户ID
+            context: 上下文字典
+            max_topics: 最大话题数量
+            llm_helper: LLM 助手实例，如果为 None 则使用默认实例
+            
+        Returns:
+            话题列表（已合并相似话题）
+        """
+        # 收集该用户所有话题下的对话数据
+        all_conversations = []
+        if user_id in self._data_3d:
+            for topic_id, topic_data in self._data_3d[user_id].items():
+                for agent_id, agent_data in topic_data.items():
+                    for key, value in agent_data.items():
+                        if key.endswith('_metadata'):
+                            continue
+                        # 提取对话相关的内容
+                        value_str = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                        # 过滤掉太短的内容，保留所有对话相关内容
+                        if len(value_str) > 10:
+                            # 优先提取包含对话关键词的内容
+                            if '用户' in value_str or '助手' in value_str or '消息' in value_str or '回复' in value_str or '对话' in value_str:
+                                all_conversations.append(value_str)
+                            # 也包含其他较长的文本内容（可能是对话的一部分）
+                            elif len(value_str) > 50:
+                                all_conversations.append(value_str)
+        
+        if not all_conversations:
+            return []
+        
+        # 合并对话内容（限制长度，避免超出 token 限制）
+        max_content_length = 5000  # 限制总长度
+        raw_content = "\n".join(all_conversations)
+        if len(raw_content) > max_content_length:
+            raw_content = raw_content[:max_content_length] + "..."
+        
+        # 使用 LLM 识别和提取话题
+        system_prompt = """你是一个话题识别专家。你的任务是从对话内容中识别出用户讨论的话题。
+
+识别原则：
+1. 识别对话中涉及的主要话题（如：星座、编程、性格、健康、工作、学习等）
+2. 合并相似话题（如："Python编程"和"编程"合并为"编程"）
+3. 只提取明确讨论的话题，忽略闲聊和无关内容
+4. 话题名称要简洁（1-4个字）
+5. 按话题出现频率或重要性排序
+
+输出格式（JSON）：
+{
+    "topics": ["话题1", "话题2", "话题3", ...]
+}
+
+要求：
+- topics 是一个字符串数组
+- 每个话题是简洁的中文名称（1-4个字）
+- 已合并相似话题
+- 最多返回 10 个话题
+- 只输出 JSON，不要其他解释"""
+
+        user_prompt = f"""请从以下对话内容中识别并提取话题：
+
+{raw_content}
+
+请识别出用户讨论的主要话题，合并相似话题，返回 JSON 格式的话题列表（最多 {max_topics} 个）。"""
+
+        try:
+            if llm_helper is None:
+                llm_helper = get_llm_helper()
+            
+            response = await llm_helper.call(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=500
+            )
+            
+            # 解析 JSON 响应
+            import re
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                result = json.loads(json_str)
+                topics = result.get('topics', [])
+                
+                # 验证和清理话题列表
+                topics = [t.strip() for t in topics if isinstance(t, str) and len(t.strip()) > 0]
+                topics = topics[:max_topics]  # 限制数量
+                
+                logger.debug(f"Pipeline[{self.pipeline_id}] 提取话题列表: {user_id} -> {len(topics)} 个话题: {topics}")
+                return topics
+            else:
+                # 如果无法解析 JSON，尝试提取话题关键词
+                logger.warning(f"Pipeline[{self.pipeline_id}] 无法解析话题 JSON，尝试提取关键词")
+                # 简单降级：返回空列表
+                return []
+        except Exception as e:
+            logger.error(f"Pipeline[{self.pipeline_id}] 提取话题列表失败: {e}")
+            return []
+    
+    async def extract_agent_knowledge(
+        self,
+        user_id: str,
+        topic_id: str,
+        agent_id: str,
+        context: Optional[Dict[str, Any]] = None,
+        max_tokens: int = 300,
+        llm_helper = None
+    ) -> str:
+        """
+        提取智能体维度的知识（提炼的聊天内容、关键对话等）
+        
+        原则：用最少的 token 记录最大信息密度的知识
+        
+        Args:
+            user_id: 用户ID
+            topic_id: 话题ID
+            agent_id: 智能体ID
+            context: 上下文字典
+            max_tokens: 最大 token 数（目标压缩后的大小）
+            llm_helper: LLM 助手实例，如果为 None 则使用默认实例
+            
+        Returns:
+            压缩后的智能体知识（高信息密度）
+        """
+        # 收集该智能体的所有数据
+        agent_data_list = []
+        if user_id in self._data_3d and topic_id in self._data_3d[user_id] and agent_id in self._data_3d[user_id][topic_id]:
+            agent_data = self._data_3d[user_id][topic_id][agent_id]
+            for key, value in agent_data.items():
+                if key.endswith('_metadata'):
+                    continue
+                value_str = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                agent_data_list.append(f"{key}: {value_str}")
+        
+        if not agent_data_list:
+            return ""
+        
+        # 合并原始数据
+        raw_content = "\n".join(agent_data_list)
+        
+        # 使用 LLM 提炼智能体知识
+        system_prompt = """你是一个知识压缩专家。你的任务是从对话和交互数据中提取智能体的关键输出和提炼内容。
+
+提取原则：
+1. 提取智能体的关键回复、重要信息和有价值的内容
+2. 去除闲聊、重复和无关内容
+3. 保留核心知识点、解决方案、重要结论
+4. 使用最简洁的语言，信息密度最大化
+5. 格式：简洁的提炼内容，用分号或换行分隔要点
+
+输出要求：
+- 只输出提炼后的知识，不要解释
+- 如果信息不足，输出空字符串
+- 目标：用 100-300 token 记录关键内容"""
+
+        user_prompt = f"""请从以下数据中提取智能体"{agent_id}"的关键内容：
+
+{raw_content}
+
+请用最简洁的方式提炼智能体知识（目标：{max_tokens} token以内）。"""
+
+        try:
+            if llm_helper is None:
+                llm_helper = get_llm_helper()
+            
+            response = await llm_helper.call(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=max_tokens * 2
+            )
+            
+            knowledge = response.strip()
+            # 清理响应
+            if "：" in knowledge or ":" in knowledge:
+                lines = knowledge.split('\n')
+                knowledge = "\n".join([line for line in lines if not line.startswith("提炼") and not line.startswith("总结")])
+            
+            logger.debug(f"Pipeline[{self.pipeline_id}] 提取智能体知识: {user_id}.{topic_id}.{agent_id} -> {len(knowledge)} 字符")
+            return knowledge
+        except Exception as e:
+            logger.error(f"Pipeline[{self.pipeline_id}] 提取智能体知识失败: {e}")
+            # 降级：简单截取
+            return raw_content[:max_tokens * 3] if len(raw_content) > max_tokens * 3 else raw_content
+    
+    async def extract_all_dimensions(
+        self,
+        user_id: str,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        llm_helper = None
+    ) -> Dict[str, Any]:
+        """
+        一次性提取所有三维信息
+        
+        Args:
+            user_id: 用户ID
+            topic_id: 话题ID（可选，已废弃，现在从对话中自动提取话题）
+            agent_id: 智能体ID（可选，如果为 None 则提取所有智能体）
+            context: 上下文字典
+            llm_helper: LLM 助手实例
+            
+        Returns:
+            {
+                'user': '用户知识',
+                'topics': ['话题1', '话题2', ...],  # 话题列表（从对话中提取）
+                'agents': {'agent1': '智能体知识1', 'agent2': '智能体知识2'}
+            }
+        """
+        result = {
+            'user': '',
+            'topics': [],
+            'agents': {}
+        }
+        
+        # 提取用户知识
+        result['user'] = await self.extract_user_knowledge(user_id, context, llm_helper=llm_helper)
+        
+        # 从对话内容中提取话题列表（自动识别和合并相似话题）
+        result['topics'] = await self.extract_topic_knowledge(user_id, context, llm_helper=llm_helper)
+        
+        # 提取智能体知识（基于实际存在的 topic_id 和 agent_id）
+        # 由于话题现在是列表，我们需要遍历所有实际的话题ID
+        actual_topics = self.list_topics(user_id) if user_id in self._data_3d else []
+        
+        if topic_id and topic_id in actual_topics:
+            # 如果指定了 topic_id，只提取该话题下的智能体
+            if agent_id:
+                agents = [(topic_id, agent_id)]
+            else:
+                agents = [(topic_id, a_id) for a_id in self.list_agents(user_id, topic_id)]
+        else:
+            # 提取所有话题下的智能体
+            agents = []
+            for t_id in actual_topics:
+                for a_id in self.list_agents(user_id, t_id):
+                    agents.append((t_id, a_id))
+        
+        for t_id, a_id in agents:
+            result['agents'][f"{t_id}.{a_id}"] = await self.extract_agent_knowledge(user_id, t_id, a_id, context, llm_helper=llm_helper)
+        
+        return result
+    
+    async def extract_and_store_dimensions(
+        self,
+        user_id: str,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        llm_helper = None,
+        auto_store: bool = True
+    ) -> Dict[str, str]:
+        """
+        提取并存储三维信息
+        
+        Args:
+            user_id: 用户ID
+            topic_id: 话题ID（可选）
+            agent_id: 智能体ID（可选）
+            context: 上下文字典
+            llm_helper: LLM 助手实例
+            auto_store: 是否自动存储到 Pipeline
+            
+        Returns:
+            提取的知识字典
+        """
+        # 提取知识
+        knowledge = await self.extract_all_dimensions(
+            user_id=user_id,
+            topic_id=topic_id,
+            agent_id=agent_id,
+            context=context,
+            llm_helper=llm_helper
+        )
+        
+        # 自动存储
+        if auto_store:
+            # 存储用户知识
+            if knowledge['user']:
+                self.put(
+                    key='user_knowledge',
+                    value=knowledge['user'],
+                    user_id=user_id,
+                    context=context
+                )
+            
+            # 存储话题列表（作为 JSON 字符串）
+            if knowledge['topics']:
+                topics_json = json.dumps(knowledge['topics'], ensure_ascii=False)
+                self.put(
+                    key='topics_list',
+                    value=topics_json,
+                    user_id=user_id,
+                    context=context
+                )
+            
+            # 存储智能体知识
+            for agent_key, agent_knowledge in knowledge['agents'].items():
+                if agent_knowledge:
+                    # agent_key 格式: "topic_id.agent_id"
+                    parts = agent_key.split('.', 1)
+                    if len(parts) == 2:
+                        t_id, a_id = parts
+                        self.put(
+                            key='agent_knowledge',
+                            value=agent_knowledge,
+                            user_id=user_id,
+                            topic_id=t_id,
+                            agent_id=a_id,
+                            context=context
+                        )
+        
+        logger.info(f"Pipeline[{self.pipeline_id}] 提取并存储三维信息: user={user_id}, topics={len(knowledge.get('topics', []))}, agents={len(knowledge.get('agents', {}))}")
+        return knowledge
 
 
 # ========== 便捷函数 ==========

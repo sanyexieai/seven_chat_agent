@@ -501,6 +501,20 @@ class GeneralAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"触发记忆提炼失败: {e}")
             
+            # 异步触发三维知识提取（不阻塞主流程）
+            try:
+                asyncio.create_task(
+                    self.extract_dimensions_knowledge(
+                        context=context,
+                        user_id=user_id,
+                        topic_id=context.get("session_id") if context else None,
+                        agent_id=self.name,
+                        auto_store=True
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"触发三维知识提取失败: {e}")
+            
             logger.info(f"通用智能体 {self.name} 处理消息完成，使用工具: {tools_used}")
             return response
             
@@ -755,6 +769,20 @@ class GeneralAgent(BaseAgent):
                 )
             except Exception as e:
                 logger.warning(f"触发记忆提炼失败: {e}")
+            
+            # 异步触发三维知识提取（不阻塞主流程）
+            try:
+                asyncio.create_task(
+                    self.extract_dimensions_knowledge(
+                        context=context,
+                        user_id=user_id,
+                        topic_id=context.get("session_id") if context else None,
+                        agent_id=self.name,
+                        auto_store=True
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"触发三维知识提取失败: {e}")
             
             logger.info(f"智能体 {self.name} 流式处理消息完成，响应长度: {len(full_response)}, 使用工具: {tools_used}")
             

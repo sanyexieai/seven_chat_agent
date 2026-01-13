@@ -141,7 +141,7 @@ def create_default_llm_configs():
                 "provider": "ollama",
                 "model_name": "llama3.2:latest",
                 "api_key": "",
-                "api_base": "http://192.168.1.48:11434",
+                "api_base": "http://192.168.1.48:11435",
                 "config": {
                     "temperature": 0.7,
                     "max_tokens": 2048

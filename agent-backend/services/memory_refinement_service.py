@@ -46,11 +46,11 @@ class MemoryRefinementService:
             提炼结果统计
         """
         try:
-            # 1) 直接查询未提炼的潜意识记忆（不依赖向量搜索）
+            # 1) 直接查询未提炼的记忆（不依赖向量搜索）
             from models.database_models import MemoryRecord
             q = db.query(MemoryRecord).filter(
                 MemoryRecord.is_active == True,
-                MemoryRecord.memory_type == Pipeline.MEMORY_TYPE_SUBCONSCIOUS,
+                MemoryRecord.memory_type == "conversation",  # 使用统一的 conversation 类型
                 MemoryRecord.user_id == user_id,
                 MemoryRecord.agent_name == agent_name,
             )
@@ -104,13 +104,13 @@ class MemoryRefinementService:
                             content = point.get("content", "")
                             category = point.get("category", "extracted")
                             
+                            # 统一使用 conversation 类型
+                            target_type = "conversation"
                             if importance in ["high", "critical"]:
-                                # 长期记忆：重要信息
-                                target_type = Pipeline.MEMORY_TYPE_LONG_TERM
+                                # 重要信息
                                 long_term_count += 1
                             else:
-                                # 短期记忆：一般信息
-                                target_type = Pipeline.MEMORY_TYPE_SHORT_TERM
+                                # 一般信息
                                 short_term_count += 1
                             
                             # 创建提炼后的记忆

@@ -160,28 +160,17 @@ class BaseAgent(ABC):
         pipeline = self.get_pipeline(context)
         return pipeline.get(key, default, namespace=namespace)
     
-    def pipeline_write_short_term_memory(self, context: Optional[Dict[str, Any]], content: Any, key: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
-        """写入短期记忆（针对当前任务的上下文，容量有限） - 底层封装，一般不直接在子类中调用。
+    def pipeline_write_memory(self, context: Optional[Dict[str, Any]], content: Any, key: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """写入记忆 - 底层封装，一般不直接在子类中调用。
         
         建议子类统一通过 remember_* 系列方法来写入记忆。
         """
         pipeline = self.get_pipeline(context)
         return pipeline.write_to_memory(
             content=content,
-            memory_type=Pipeline.MEMORY_TYPE_SHORT_TERM,
             key=key,
             metadata=metadata,
-        )
-    
-    def pipeline_write_long_term_memory(self, context: Optional[Dict[str, Any]], content: Any, key: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, quality_score: Optional[float] = None) -> str:
-        """写入长期记忆（高价值、可复用的知识）"""
-        pipeline = self.get_pipeline(context)
-        return pipeline.write_to_memory(
-            content=content,
-            memory_type=Pipeline.MEMORY_TYPE_LONG_TERM,
-            key=key,
-            metadata=metadata,
-            quality_score=quality_score,
+            context=context,
         )
     
     def pipeline_search_memory(
@@ -201,7 +190,12 @@ class BaseAgent(ABC):
         # 1) 先查 Pipeline 内部记忆
         results: List[Dict[str, Any]] = []
         try:
-            in_pipeline = pipeline.search_memory(query=query, limit=limit)
+            ctx = context or {}
+            in_pipeline = pipeline.search_memory(
+                query=query, 
+                limit=limit,
+                context=ctx
+            )
             for item in in_pipeline:
                 if "source" not in item:
                     item["source"] = "pipeline"
@@ -245,13 +239,13 @@ class BaseAgent(ABC):
         stream: bool = False,
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """记录用户消息到短期记忆。
+        """记录用户消息到记忆。
         
-        - 所有 Agent 统一通过此接口写入“用户输入”类记忆
+        - 所有 Agent 统一通过此接口写入"用户输入"类记忆
         - 如果需要覆盖策略，可在子类中重载此方法
         """
         try:
-            tags = ["user_message", "short_term"]
+            tags = ["user_message"]
             if stream:
                 tags.append("stream")
             metadata: Dict[str, Any] = {
@@ -265,24 +259,23 @@ class BaseAgent(ABC):
 
             ctx = context or {}
 
-            # 1) 写入 Pipeline 短期记忆
-            self.pipeline_write_short_term_memory(
+            # 1) 写入 Pipeline 记忆
+            self.pipeline_write_memory(
                 context=ctx,
                 content=f"用户消息: {message}",
                 metadata=metadata,
             )
 
-            # 2) 同步到数据库 memories 表（原始对话存为潜意识）
+            # 2) 同步到数据库 memories 表
             db_session = ctx.get("db_session")
             if db_session:
                 try:
                     memory_service = MemoryService()
-                    # 原始对话数据存为潜意识（subconscious）
                     record = MemoryRecordCreate(
                         user_id=user_id,
                         agent_name=self.name,
                         session_id=ctx.get("session_id"),
-                        memory_type=Pipeline.MEMORY_TYPE_SUBCONSCIOUS,  # 改为潜意识
+                        memory_type="conversation",  # 统一使用 conversation 类型
                         category="user_input",
                         source="conversation",
                         content=f"用户消息: {message}",
@@ -306,12 +299,12 @@ class BaseAgent(ABC):
         category: str = "agent_response",
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """记录智能体回复到短期记忆。
+        """记录智能体回复到记忆。
         
-        - 所有 Agent 统一通过此接口写入“助手输出”类记忆
+        - 所有 Agent 统一通过此接口写入"助手输出"类记忆
         """
         try:
-            tags = ["agent_response", "short_term"]
+            tags = ["agent_response"]
             if stream:
                 tags.append("stream")
             metadata: Dict[str, Any] = {
@@ -327,24 +320,23 @@ class BaseAgent(ABC):
 
             ctx = context or {}
 
-            # 1) 写入 Pipeline 短期记忆
-            self.pipeline_write_short_term_memory(
+            # 1) 写入 Pipeline 记忆
+            self.pipeline_write_memory(
                 context=ctx,
                 content=f"智能体回复: {response}",
                 metadata=metadata,
             )
 
-            # 2) 同步到数据库 memories 表（原始对话存为潜意识）
+            # 2) 同步到数据库 memories 表
             db_session = ctx.get("db_session")
             if db_session:
                 try:
                     memory_service = MemoryService()
-                    # 原始对话数据存为潜意识（subconscious）
                     record = MemoryRecordCreate(
                         user_id=user_id,
                         agent_name=self.name,
                         session_id=ctx.get("session_id"),
-                        memory_type=Pipeline.MEMORY_TYPE_SUBCONSCIOUS,  # 改为潜意识
+                        memory_type="conversation",  # 统一使用 conversation 类型
                         category=category,
                         source="conversation",
                         content=f"智能体回复: {response}",
@@ -367,15 +359,15 @@ class BaseAgent(ABC):
         category: str = "dialog_turn",
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """记录一整轮对话（用户 + 助手）到短期记忆。
+        """记录一整轮对话（用户 + 助手）到记忆。
         
-        - 默认用于“轮次摘要”型记忆写入
+        - 默认用于"轮次摘要"型记忆写入
         """
         try:
             base_prefix = "[流式对话轮次]" if stream else "[对话轮次]"
             summary_content = f"{base_prefix} 用户: {user_message}\n助手: {agent_response}"
 
-            tags = ["dialog", "short_term"]
+            tags = ["dialog"]
             if stream:
                 tags.append("stream")
             metadata: Dict[str, Any] = {
@@ -391,24 +383,23 @@ class BaseAgent(ABC):
 
             ctx = context or {}
 
-            # 1) 写入 Pipeline 短期记忆（轮次摘要）
-            self.pipeline_write_short_term_memory(
+            # 1) 写入 Pipeline 记忆（轮次摘要）
+            self.pipeline_write_memory(
                 context=ctx,
                 content=summary_content,
                 metadata=metadata,
             )
 
-            # 2) 同步到数据库 memories 表（原始对话存为潜意识）
+            # 2) 同步到数据库 memories 表
             db_session = ctx.get("db_session")
             if db_session:
                 try:
                     memory_service = MemoryService()
-                    # 原始对话数据存为潜意识（subconscious）
                     record = MemoryRecordCreate(
                         user_id=user_id,
                         agent_name=self.name,
                         session_id=ctx.get("session_id"),
-                        memory_type=Pipeline.MEMORY_TYPE_SUBCONSCIOUS,  # 改为潜意识
+                        memory_type="conversation",  # 统一使用 conversation 类型
                         category=category,
                         source="conversation",
                         content=summary_content,
@@ -520,14 +511,14 @@ class BaseAgent(ABC):
         user_id: Optional[str] = None,
         limit: int = 10,
     ) -> Dict[str, Any]:
-        """从潜意识记忆中提取重点，并存储为短期/长期记忆
+        """提炼记忆（从数据库记忆中提取重点）
         
         这个方法应该在对话结束后或定期调用，用于提炼记忆。
         
         Args:
             context: 上下文字典（需要包含 db_session 和 session_id）
             user_id: 用户ID（如果未提供，从 context 中获取）
-            limit: 每次处理的潜意识记忆数量
+            limit: 每次处理的记忆数量
             
         Returns:
             提炼结果统计
@@ -540,8 +531,7 @@ class BaseAgent(ABC):
             logger.warning("BaseAgent.refine_memories_from_subconscious: 缺少 db_session")
             return {
                 "processed": 0,
-                "short_term_created": 0,
-                "long_term_created": 0,
+                "created": 0,
                 "errors": 1,
             }
         
@@ -560,16 +550,68 @@ class BaseAgent(ABC):
             )
             logger.info(
                 f"BaseAgent {self.name} 记忆提炼完成: "
-                f"处理 {result['processed']} 条，"
-                f"创建短期记忆 {result['short_term_created']} 条，"
-                f"创建长期记忆 {result['long_term_created']} 条"
+                f"处理 {result.get('processed', 0)} 条，"
+                f"创建 {result.get('created', result.get('short_term_created', 0) + result.get('long_term_created', 0))} 条"
             )
             return result
         except Exception as e:
             logger.error(f"BaseAgent {self.name} 记忆提炼失败: {e}")
             return {
                 "processed": 0,
-                "short_term_created": 0,
-                "long_term_created": 0,
+                "created": 0,
                 "errors": 1,
+            }
+    
+    async def extract_dimensions_knowledge(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        auto_store: bool = True,
+    ) -> Dict[str, Any]:
+        """提取三维知识（用户、话题、智能体）
+        
+        这个方法应该在对话结束后调用，用于提取和压缩三维信息。
+        
+        Args:
+            context: 上下文字典
+            user_id: 用户ID（如果未提供，从 context 中获取）
+            topic_id: 话题ID（可选，如果为 None 则提取所有话题）
+            agent_id: 智能体ID（可选，如果为 None 则提取所有智能体）
+            auto_store: 是否自动存储到 Pipeline
+            
+        Returns:
+            提取的知识字典
+        """
+        ctx = context or {}
+        if not user_id:
+            user_id = ctx.get("user_id", "default_user")
+        
+        if not topic_id:
+            topic_id = ctx.get("topic_id") or ctx.get("session_id")
+        
+        if not agent_id:
+            agent_id = ctx.get("agent_id") or ctx.get("agent_name") or self.name
+        
+        try:
+            pipeline = self.get_pipeline(context)
+            knowledge = await pipeline.extract_and_store_dimensions(
+                user_id=user_id,
+                topic_id=topic_id,
+                agent_id=agent_id,
+                context=context,
+                auto_store=auto_store
+            )
+            logger.info(
+                f"BaseAgent {self.name} 提取三维知识完成: "
+                f"user={user_id}, topics={len(knowledge.get('topics', {}))}, agents={len(knowledge.get('agents', {}))}"
+            )
+            return knowledge
+        except Exception as e:
+            logger.error(f"BaseAgent {self.name} 提取三维知识失败: {e}")
+            return {
+                "user": "",
+                "topics": {},
+                "agents": {}
             } 

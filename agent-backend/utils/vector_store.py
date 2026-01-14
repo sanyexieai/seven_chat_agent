@@ -330,84 +330,56 @@ class SimpleVectorStore(VectorStore):
         """搜索相似向量"""
         if not self.vectors:
             return []
-        
+
         try:
-            # 对齐查询向量维度，避免历史数据与当前模型维度不一致导致报错
+            # 验证查询向量维度
             target_dim = len(self.vectors[0])
             if len(query_vector) != target_dim:
-                if len(query_vector) > target_dim:
-                    query_vector = query_vector[:target_dim]
-                else:
-                    # 使用0填充到目标维度
-                    query_vector = query_vector + [0.0] * (target_dim - len(query_vector))
-            # 数值清洗
-            query_vector = self._sanitize_vector(query_vector, target_dim)
-            
+                raise ValueError(f"查询向量维度 {len(query_vector)} 与存储向量维度 {target_dim} 不匹配")
+
             # 计算相似度
             similarities = []
             for i, vector in enumerate(self.vectors):
-                # 防御性：矫正存量向量维度
                 if len(vector) != target_dim:
-                    if len(vector) > target_dim:
-                        vector = vector[:target_dim]
-                    else:
-                        vector = vector + [0.0] * (target_dim - len(vector))
-                vector = self._sanitize_vector(vector, target_dim)
+                    logger.warning(f"向量 {i} 维度不匹配，跳过")
+                    continue
                 similarity = self._cosine_similarity(query_vector, vector)
                 similarities.append((similarity, i))
-            
+
             # 排序并返回top_k
             similarities.sort(key=lambda x: x[0], reverse=True)
-            
+
             results = []
             for similarity, idx in similarities[:top_k]:
                 result = self.metadata[idx].copy()
                 result['similarity'] = similarity
                 result['rank'] = len(results) + 1
                 results.append(result)
-            
+
             return results
-            
+
         except Exception as e:
-            logger.error(f"内存搜索失败: {str(e)}")
-            return []
+            logger.error(f"内存搜索失败: {e}")
+            raise
     
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         """计算余弦相似度"""
         try:
             vec1_np = np.asarray(vec1, dtype=np.float32)
             vec2_np = np.asarray(vec2, dtype=np.float32)
-            
+
             dot_product = np.dot(vec1_np, vec2_np)
             norm1 = np.linalg.norm(vec1_np)
             norm2 = np.linalg.norm(vec2_np)
-            
+
             if norm1 == 0 or norm2 == 0:
                 return 0.0
-            
-            return float(dot_product / (norm1 * norm2))
-            
-        except Exception as e:
-            logger.error(f"计算余弦相似度失败: {str(e)} | v1_type={type(vec1)}, v2_type={type(vec2)}")
-            return 0.0
 
-    def _sanitize_vector(self, vec: List[Any], target_dim: int) -> List[float]:
-        """将向量元素强制转换为float，替换非法/NaN为0，并保证长度一致。"""
-        clean: List[float] = []
-        for i in range(min(len(vec), target_dim)):
-            val = vec[i]
-            try:
-                f = float(val)
-                if not np.isfinite(f):
-                    f = 0.0
-                clean.append(f)
-            except Exception:
-                clean.append(0.0)
-        if len(clean) < target_dim:
-            clean += [0.0] * (target_dim - len(clean))
-        elif len(clean) > target_dim:
-            clean = clean[:target_dim]
-        return clean
+            return float(dot_product / (norm1 * norm2))
+
+        except Exception as e:
+            logger.error(f"计算余弦相似度失败: {e}")
+            raise
     
     def save(self, path: str) -> bool:
         """保存内存存储"""

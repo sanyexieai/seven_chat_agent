@@ -136,3 +136,4 @@ reports/*
 search_results/*
 documents/*
 tmpclaude*
+.claude/settings.local.json

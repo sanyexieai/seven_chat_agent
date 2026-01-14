@@ -27,6 +27,7 @@ interface Document {
   file_type: string;
   file_size?: number;
   content?: string;
+  document_metadata?: any;
   metadata?: any;
   status: string;
   is_active: boolean;
@@ -81,13 +82,62 @@ const KnowledgeBasePage: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         setDocuments(data);
+        
+        // 检查是否有处理中的文档，如果有则启动轮询
+        const hasProcessing = data.some((doc: Document) => doc.status === 'processing');
+        if (hasProcessing) {
+          startPollingDocuments(kbId);
+        }
       } else {
+        const errorText = await response.text();
+        console.error('获取文档列表失败:', errorText);
         message.error('获取文档列表失败');
       }
     } catch (error) {
+      console.error('获取文档列表错误:', error);
       message.error('网络错误');
     }
   };
+
+  // 轮询文档状态（用于实时显示处理进度）
+  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+
+  const startPollingDocuments = (kbId: number) => {
+    // 如果已经有轮询在运行，先清除
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+    }
+
+    const interval = setInterval(() => {
+      fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_DOCUMENTS(kbId)}`)
+        .then(res => res.json())
+        .then(data => {
+          setDocuments(data);
+          // 如果没有处理中的文档了，停止轮询
+          const hasProcessing = data.some((doc: Document) => doc.status === 'processing');
+          if (!hasProcessing) {
+            clearInterval(interval);
+            setPollingInterval(null);
+          }
+        })
+        .catch(err => {
+          console.error('轮询文档状态失败:', err);
+          clearInterval(interval);
+          setPollingInterval(null);
+        });
+    }, 3000); // 每3秒轮询一次
+
+    setPollingInterval(interval);
+  };
+
+  useEffect(() => {
+    // 组件卸载时清除轮询
+    return () => {
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+      }
+    };
+  }, [pollingInterval]);
 
   const handleCreateKb = () => {
     setEditingKb(null);
@@ -222,16 +272,33 @@ const KnowledgeBasePage: React.FC = () => {
       if (response.ok) {
         const result = await response.json();
         console.log('上传成功:', result);
-        message.success('文档上传成功');
+        message.success('文档上传成功，正在处理中...');
         setIsUploadModalVisible(false);
         uploadForm.resetFields();
         if (selectedKb) {
           fetchDocuments(selectedKb.id);
+          // 启动轮询以显示处理进度
+          setTimeout(() => {
+            if (selectedKb) {
+              startPollingDocuments(selectedKb.id);
+            }
+          }, 1000);
         }
       } else {
-        const errorText = await response.text();
-        console.error('上传失败:', errorText);
-        message.error(`上传失败: ${response.status} ${response.statusText}`);
+        let errorMessage = `上传失败: ${response.status} ${response.statusText}`;
+        try {
+          const errorData = await response.json();
+          if (errorData.detail) {
+            errorMessage = `上传失败: ${errorData.detail}`;
+          }
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) {
+            errorMessage = `上传失败: ${errorText}`;
+          }
+        }
+        console.error('上传失败:', errorMessage);
+        message.error(errorMessage);
       }
     } catch (error) {
       console.error('上传错误:', error);
@@ -359,33 +426,74 @@ const KnowledgeBasePage: React.FC = () => {
               <div className="documents-section">
                 <h3>文档列表</h3>
                 <div className="documents-list">
-                  {documents.map(doc => (
-                    <Card key={doc.id} className="document-item">
-                      <div className="document-header">
-                        <h4>{doc.name}</h4>
-                        <Space>
-                          <Tag color={getStatusColor(doc.status)}>
-                            {doc.status}
-                          </Tag>
-                          <Tag>{doc.file_type}</Tag>
-                        </Space>
-                      </div>
-                      <div className="document-content">
-                        <p><strong>大小:</strong> {doc.file_size ? `${doc.file_size} bytes` : '未知'}</p>
-                        <p><strong>创建时间:</strong> {new Date(doc.created_at).toLocaleString()}</p>
-                      </div>
-                      <div className="document-actions">
-                        <Popconfirm
-                          title="确定要删除这个文档吗？"
-                          onConfirm={() => handleDeleteDocument(doc.id)}
-                        >
-                          <Button size="small" danger icon={<DeleteOutlined />}>
-                            删除
-                          </Button>
-                        </Popconfirm>
-                      </div>
-                    </Card>
-                  ))}
+                  {documents.map(doc => {
+                    const metadata = doc.document_metadata || doc.metadata || {};
+                    const error = metadata.error;
+                    const chunkCount = metadata.chunk_count;
+                    
+                    return (
+                      <Card key={doc.id} className="document-item">
+                        <div className="document-header">
+                          <h4>{doc.name}</h4>
+                          <Space>
+                            <Tag color={getStatusColor(doc.status)}>
+                              {doc.status === 'processing' ? '处理中...' : 
+                               doc.status === 'completed' ? '已完成' : 
+                               doc.status === 'failed' ? '失败' : 
+                               doc.status === 'pending' ? '等待中' : doc.status}
+                            </Tag>
+                            <Tag>{doc.file_type}</Tag>
+                            {chunkCount && (
+                              <Tag color="blue">分块数: {chunkCount}</Tag>
+                            )}
+                          </Space>
+                        </div>
+                        <div className="document-content">
+                          <p><strong>大小:</strong> {doc.file_size ? `${doc.file_size} bytes` : '未知'}</p>
+                          <p><strong>创建时间:</strong> {new Date(doc.created_at).toLocaleString()}</p>
+                          {error && (
+                            <div style={{ 
+                              marginTop: '8px', 
+                              padding: '8px', 
+                              backgroundColor: '#fff2f0', 
+                              border: '1px solid #ffccc7',
+                              borderRadius: '4px'
+                            }}>
+                              <p style={{ color: '#ff4d4f', margin: 0, fontWeight: 'bold' }}>
+                                ❌ 处理失败:
+                              </p>
+                              <p style={{ color: '#cf1322', margin: '4px 0 0 0', fontSize: '12px' }}>
+                                {error}
+                              </p>
+                            </div>
+                          )}
+                          {doc.status === 'processing' && (
+                            <div style={{ 
+                              marginTop: '8px', 
+                              padding: '8px', 
+                              backgroundColor: '#e6f7ff', 
+                              border: '1px solid #91d5ff',
+                              borderRadius: '4px'
+                            }}>
+                              <p style={{ color: '#1890ff', margin: 0, fontSize: '12px' }}>
+                                ⏳ 正在处理文档，请稍候...
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                        <div className="document-actions">
+                          <Popconfirm
+                            title="确定要删除这个文档吗？"
+                            onConfirm={() => handleDeleteDocument(doc.id)}
+                          >
+                            <Button size="small" danger icon={<DeleteOutlined />}>
+                              删除
+                            </Button>
+                          </Popconfirm>
+                        </div>
+                      </Card>
+                    );
+                  })}
                 </div>
               </div>
             </div>

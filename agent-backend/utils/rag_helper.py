@@ -9,9 +9,11 @@ from langchain.retrievers.document_compressors import LLMChainExtractor
 
 from utils.llm_helper import get_llm_helper
 from utils.log_helper import get_logger
+from utils.embedding_service import EmbeddingService
+from utils.enhanced_chunker import EnhancedChunker
 from config import (
-    EMBEDDING_PROVIDER, EMBEDDING_MODEL, VECTOR_DB_TYPE, VECTOR_DB_PATH,
-    CHUNK_SIZE, CHUNK_OVERLAP, TOP_K, MAX_CONTEXT_LENGTH, BASE_URL,EMBEDDING_BASE_URL,EMBEDDING_API_KEY
+    VECTOR_DB_TYPE, VECTOR_DB_PATH,
+    CHUNK_SIZE, CHUNK_OVERLAP, TOP_K, MAX_CONTEXT_LENGTH
 )
 
 class RAGHelper:
@@ -21,135 +23,100 @@ class RAGHelper:
         self.logger = get_logger("RAGHelper")
         self.llm_helper = get_llm_helper()
         self.vectorstore = None
-        self.embeddings = None
-        self.text_splitter = None
+        self.embedding_service = EmbeddingService()
+        self.chunker = EnhancedChunker(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
         self._setup_components()
     
     def _setup_components(self):
         """初始化组件"""
         try:
-            # 初始化文本分割器
-            self.text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=CHUNK_SIZE,
-                chunk_overlap=CHUNK_OVERLAP,
-                length_function=len,
-                separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?"]
-            )
-            
-            # 初始化嵌入模型
-            if EMBEDDING_PROVIDER == "ollama":
-                # 使用Ollama的嵌入模型
-                self.embeddings = OllamaEmbeddings(
-                    model=EMBEDDING_MODEL,  # 使用配置的嵌入模型
-                    base_url=EMBEDDING_BASE_URL  # 使用配置的Ollama服务器地址
-                )
-            else:
-                # 使用OpenAI或其他嵌入模型
-                from langchain_community.embeddings import OpenAIEmbeddings
-                self.embeddings = OpenAIEmbeddings(
-                    openai_api_key= EMBEDDING_API_KEY,  
-                    openai_api_base=BASE_URL,
-                    model=EMBEDDING_MODEL  # 使用配置的嵌入模型
-                )
-            
-            self.logger.info(f"✅ RAG组件初始化成功 - 嵌入模型: {EMBEDDING_PROVIDER}/{EMBEDDING_MODEL}")
-            
+            self.logger.info(f"✅ RAG组件初始化成功")
+
             # 尝试加载已存在的向量数据库
             try:
                 import os
                 if os.path.exists(VECTOR_DB_PATH):
                     self.vectorstore = Chroma(
                         collection_name="company_research",
-                        embedding_function=self.embeddings,
+                        embedding_function=self.embedding_service.model,
                         persist_directory=VECTOR_DB_PATH
                     )
                     self.logger.info(f"✅ 成功加载已存在的向量数据库: {VECTOR_DB_PATH}")
             except Exception as e:
                 self.logger.warning(f"⚠️ 加载已存在向量数据库失败: {e}")
-            
+
         except Exception as e:
-            self.logger.warning(f"⚠️ RAG组件初始化失败，将使用模拟模式: {e}")
-            self.embeddings = None
+            self.logger.error(f"❌ RAG组件初始化失败: {e}")
+            raise
     
     def add_documents(self, documents: List[str], metadata: Optional[List[Dict[str, Any]]] = None):
         """添加文档到向量数据库"""
         try:
-            if not self.embeddings:
-                self.logger.warning("⚠️ 嵌入模型未初始化，跳过文档添加")
-                return
-            
-            # 创建文档对象
-            docs = []
-            for i, doc_text in enumerate(documents):
-                doc_metadata = metadata[i] if metadata and i < len(metadata) else {}
-                docs.append(Document(page_content=doc_text, metadata=doc_metadata))
-            
-            # 分割文档
-            split_docs = self.text_splitter.split_documents(docs)
-            
+            # 使用增强分块器分割文档
+            split_docs = self.chunker.chunk_documents(documents, metadata)
+
             # 确保向量数据库目录存在
             import os
             os.makedirs(VECTOR_DB_PATH, exist_ok=True)
-            
+
             # 创建或加载向量数据库
             if self.vectorstore is None:
                 # 首次创建向量数据库
                 self.vectorstore = Chroma.from_documents(
                     documents=split_docs,
-                    embedding=self.embeddings,
+                    embedding=self.embedding_service.model,
                     collection_name="company_research",
                     persist_directory=VECTOR_DB_PATH
                 )
-                self.vectorstore.persist()
             else:
                 # 向现有向量数据库添加文档
                 self.vectorstore.add_documents(split_docs)
-                self.vectorstore.persist()
-            
-            self.logger.info(f"✅ 成功添加{len(documents)}个文档到向量数据库")
-            
+
+            self.logger.info(f"✅ 成功添加{len(documents)}个文档到向量数据库，生成{len(split_docs)}个chunks")
+
         except Exception as e:
             self.logger.error(f"❌ 添加文档失败: {e}")
+            raise
     
-    def get_context_for_llm(self, query: str, max_tokens: int = None, top_k: int = None) -> Optional[str]:
+    def get_context_for_llm(self, query: str, max_chars: int = None, top_k: int = None) -> Optional[str]:
         """为LLM获取相关上下文"""
         try:
             if not self.vectorstore:
                 self.logger.warning("⚠️ 向量数据库未初始化，返回空上下文")
                 return None
-            
+
             # 使用配置的默认值
-            if max_tokens is None:
-                max_tokens = MAX_CONTEXT_LENGTH
+            if max_chars is None:
+                max_chars = MAX_CONTEXT_LENGTH
             if top_k is None:
                 top_k = TOP_K
-            
+
             # 检索相关文档
             docs = self.vectorstore.similarity_search(query, k=top_k)
-            
+
             # 合并文档内容
             context_parts = []
             current_length = 0
-            
+
             for doc in docs:
                 doc_content = doc.page_content
-                if current_length + len(doc_content) > max_tokens:
+                if current_length + len(doc_content) > max_chars:
                     break
                 context_parts.append(doc_content)
                 current_length += len(doc_content)
-            
+
             context = "\n\n".join(context_parts)
-            
+
             if context:
                 self.logger.info(f"✅ 成功获取上下文，长度: {len(context)}字符")
                 return context
             else:
                 self.logger.warning("⚠️ 未找到相关上下文")
                 return None
-                
+
         except Exception as e:
             self.logger.error(f"❌ 获取上下文失败: {e}")
-            return None
+            raise
     
     def search_similar(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         """搜索相似文档"""
@@ -281,7 +248,7 @@ class MockRAGHelper:
             "collection_name": "mock_company_research"
         }
 
-def get_rag_helper(use_mock: bool = True) -> RAGHelper:
+def get_rag_helper(use_mock: bool = False) -> RAGHelper:
     """获取RAG助手实例"""
     if use_mock:
         return MockRAGHelper()

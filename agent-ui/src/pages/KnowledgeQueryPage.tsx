@@ -92,7 +92,36 @@ const KnowledgeQueryPage: React.FC = () => {
         setQueryHistory(prev => [result, ...prev.slice(0, 9)]); // 保留最近10条记录
         message.success('查询完成');
       } else {
-        message.error('查询失败');
+        let errorMessage = '查询失败';
+        try {
+          const errorData = await response.json();
+          if (errorData.detail) {
+            errorMessage = `查询失败: ${errorData.detail}`;
+          }
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) {
+            try {
+              const errorJson = JSON.parse(errorText);
+              errorMessage = `查询失败: ${errorJson.detail || errorText}`;
+            } catch {
+              errorMessage = `查询失败: ${errorText}`;
+            }
+          }
+        }
+        console.error('查询失败:', errorMessage);
+        message.error(errorMessage);
+        
+        // 显示错误信息在结果区域
+        setQueryResult({
+          query: query.trim(),
+          response: `❌ 查询失败: ${errorMessage}`,
+          sources: [],
+          metadata: {
+            total_chunks: 0,
+            max_results: 0
+          }
+        });
       }
     } catch (error) {
       message.error('网络错误');

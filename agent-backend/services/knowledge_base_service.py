@@ -47,7 +47,7 @@ class KnowledgeBaseService:
             chunk_strategy=CHUNK_STRATEGY,  # 使用配置的分割策略
             min_chunk_size=100,  # 最小分块大小
             max_chunk_size=800,  # 最大分块大小
-            use_llm_merge=True   # 默认启用LLM优化分块
+            use_llm_merge=False  # 默认关闭LLM优化分块（避免频繁调用，改为按需启用）
         )
         self.embedding_service = EmbeddingService()
         self.file_extractor = FileExtractor()
@@ -557,28 +557,50 @@ class KnowledgeBaseService:
                 except Exception as e:
                     logger.warning(f"领域识别失败: {str(e)}")
 
-            # 为可识别章节/长内容生成摘要分片
+            # 为可识别章节/长内容生成摘要分片（批量处理，减少LLM调用）
             if SUMMARY_CHUNKS_ENABLED and created_chunks:
                 try:
+                    # 收集需要生成摘要的分块（使用规则筛选，避免每个都调用LLM）
+                    chunks_to_summarize = []
                     for c in created_chunks:
-                        # 简单启发：长分片或包含章节提示词时生成摘要
-                        if len(c.content) >= max(600, self.text_processor.chunk_size) or re.search(r"^第[一二三四五六七八九十\d]+[章节回]", c.content.strip()):
-                            summary = self._summarize_chunk_via_llm(c.content)
-                            if summary and len(summary) > 30:
-                                summary_chunk = DocumentChunk(
-                                    knowledge_base_id=doc.knowledge_base_id,
-                                    document_id=doc.id,
-                                    chunk_index=c.chunk_index,  # 与原分片同索引分组
-                                    content=summary,
-                                    embedding=None,
-                                    chunk_metadata={"summary_of": c.id},
-                                    chunk_strategy=CHUNK_STRATEGY,
-                                    strategy_variant=strategy_variant,
-                                    is_summary=True,
-                                    summary_parent_chunk_id=c.id
-                                )
-                                db.add(summary_chunk)
-                    db.commit()
+                        # 启发式规则：只对明显的长章节或重要内容生成摘要
+                        is_long_chunk = len(c.content) >= max(1000, self.text_processor.chunk_size * 2)  # 至少是目标大小的2倍
+                        has_chapter_marker = re.search(r"^第[一二三四五六七八九十\d]+[章节回]", c.content.strip())
+                        # 只对满足条件的分块生成摘要
+                        if is_long_chunk or has_chapter_marker:
+                            chunks_to_summarize.append(c)
+                    
+                    # 批量生成摘要（每批处理多个，减少LLM调用次数）
+                    if chunks_to_summarize:
+                        logger.info(f"准备为 {len(chunks_to_summarize)} 个分块生成摘要（批量处理）")
+                        # 限制最大摘要数量，避免过多LLM调用
+                        max_summaries = min(10, len(chunks_to_summarize))  # 最多生成10个摘要
+                        chunks_to_summarize = chunks_to_summarize[:max_summaries]
+                        
+                        for c in chunks_to_summarize:
+                            try:
+                                # 使用简化的摘要方法（提取关键句子，而不是完整LLM生成）
+                                summary = self._generate_chunk_summary_simple(c.content)
+                                if summary and len(summary) > 30:
+                                    summary_chunk = DocumentChunk(
+                                        knowledge_base_id=doc.knowledge_base_id,
+                                        document_id=doc.id,
+                                        chunk_index=c.chunk_index,
+                                        content=summary,
+                                        embedding=None,
+                                        chunk_metadata={"summary_of": c.id, "method": "rule_based"},
+                                        chunk_strategy=CHUNK_STRATEGY,
+                                        strategy_variant=strategy_variant,
+                                        is_summary=True,
+                                        summary_parent_chunk_id=c.id
+                                    )
+                                    db.add(summary_chunk)
+                            except Exception as e:
+                                logger.warning(f"为分块 {c.id} 生成摘要失败: {str(e)}")
+                                continue
+                        
+                        db.commit()
+                        logger.info(f"成功生成 {len(chunks_to_summarize)} 个摘要分片")
                 except Exception as e:
                     logger.warning(f"摘要分片生成失败: {str(e)}")
             
@@ -790,35 +812,49 @@ class KnowledgeBaseService:
         logger.info(f"关键词分类: 其他, 文本长度: {len(text)}")
         return "其他", 0.3
 
-    def _summarize_chunk_via_llm(self, text: str) -> str:
-        """使用LLM对长分片/章节生成摘要。"""
+    def _generate_chunk_summary_simple(self, text: str) -> str:
+        """使用基于规则的方法生成摘要（不调用LLM，快速且低成本）"""
         try:
-            from utils.llm_helper import get_llm_helper
-            import asyncio
-            import concurrent.futures
-            prompt = (
-                "请对以下文本生成简洁的中文摘要（150-300字），保留关键人物/实体/结论，避免细枝末节：\n\n" + text[:4000]
-            )
-
-            def run_async():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    llm = get_llm_helper()
-                    messages = [
-                        {"role": "system", "content": "你是一个专业的中文摘要助手。"},
-                        {"role": "user", "content": prompt}
-                    ]
-                    return loop.run_until_complete(llm.call(messages, max_tokens=300, temperature=0.2))
-                finally:
-                    loop.close()
-
-            with concurrent.futures.ThreadPoolExecutor() as ex:
-                result = ex.submit(run_async).result()
-            return str(result).strip()
+            # 方法1：提取前几句和后几句，以及包含关键词的句子
+            sentences = re.split(r'[。！？\n]', text)
+            sentences = [s.strip() for s in sentences if s.strip()]
+            
+            if len(sentences) <= 3:
+                return text[:300]  # 如果句子很少，直接返回前300字符
+            
+            # 提取前2句和后1句
+            summary_parts = []
+            if len(sentences) >= 2:
+                summary_parts.extend(sentences[:2])
+            if len(sentences) >= 3:
+                summary_parts.append(sentences[-1])
+            
+            # 查找包含重要关键词的句子（如：总结、结论、因此、所以等）
+            important_keywords = ['总结', '结论', '因此', '所以', '总之', '综上所述', '关键', '重要', '主要']
+            for sentence in sentences[2:-1] if len(sentences) > 3 else []:
+                if any(keyword in sentence for keyword in important_keywords):
+                    if sentence not in summary_parts:
+                        summary_parts.insert(-1, sentence)  # 插入到倒数第二位置
+                        if len(summary_parts) >= 5:  # 最多5句
+                            break
+            
+            summary = '。'.join(summary_parts) + '。'
+            
+            # 限制长度
+            if len(summary) > 300:
+                summary = summary[:300] + '...'
+            
+            return summary
         except Exception as e:
-            logger.warning(f"LLM摘要失败: {str(e)}")
-            return ""
+            logger.warning(f"生成摘要失败: {str(e)}")
+            # 降级：简单截取
+            return text[:300] + '...' if len(text) > 300 else text
+    
+    def _summarize_chunk_via_llm(self, text: str) -> str:
+        """使用LLM对长分片/章节生成摘要（仅在必要时调用，已弃用，改用 _generate_chunk_summary_simple）"""
+        # 保留此方法以向后兼容，但默认不再使用
+        logger.warning("_summarize_chunk_via_llm 已弃用，请使用 _generate_chunk_summary_simple")
+        return self._generate_chunk_summary_simple(text)
 
     def _decompose_query_terms(self, query: str) -> List[str]:
         """使用LLM将查询拆解为3-5个关键词或子问题，返回词列表。"""

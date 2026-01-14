@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from models.database_models import MCPTool, TemporaryTool
 from utils.embedding_service import EmbeddingService
+from utils.vector_store import create_vector_store
 from utils.log_helper import get_logger
 
 logger = get_logger("tool_rag_service")
@@ -10,7 +11,7 @@ logger = get_logger("tool_rag_service")
 
 class ToolRAGService:
     """工具向量检索服务
-    
+
     职责：
     - 为 MCP 工具 / 临时工具生成向量嵌入
     - 基于描述 / 元数据做相似度检索，为工具选择 / planner 提供 RAG 能力
@@ -18,6 +19,10 @@ class ToolRAGService:
 
     def __init__(self):
         self.embedding_service = EmbeddingService()
+        self.vector_store = create_vector_store(
+            store_type="simple",
+            embedding_dim=self.embedding_service.embedding_dim
+        )
 
     def _build_tool_text(self, tool: Any) -> str:
         """把工具的描述、元数据等拼接成适合做嵌入的文本"""
@@ -57,9 +62,52 @@ class ToolRAGService:
             embedding = self.embedding_service.get_embedding(text)
             tool.embedding = embedding
             db.commit()
+
+            # 重建索引以包含新的嵌入
+            self.rebuild_index(db)
         except Exception as e:
             db.rollback()
             logger.error(f"刷新工具嵌入失败: {e}")
+            raise
+
+    def rebuild_index(self, db: Session, include_temporary: bool = True):
+        """重建工具向量索引"""
+        try:
+            tools: List[Any] = (
+                db.query(MCPTool).filter(MCPTool.is_active == True, MCPTool.embedding.isnot(None)).all()
+            )
+            if include_temporary:
+                tools += (
+                    db.query(TemporaryTool)
+                    .filter(TemporaryTool.is_active == True, TemporaryTool.embedding.isnot(None))
+                    .all()
+                )
+
+            if not tools:
+                logger.warning("没有工具需要索引")
+                return
+
+            vectors = []
+            metadata = []
+            for t in tools:
+                if not getattr(t, "embedding", None):
+                    continue
+                vectors.append(t.embedding)
+                metadata.append({
+                    "id": t.id,
+                    "name": getattr(t, "name", ""),
+                    "display_name": getattr(t, "display_name", ""),
+                    "description": getattr(t, "description", ""),
+                    "tool_type": getattr(t, "tool_type", None) if hasattr(t, "tool_type") else "temporary",
+                    "server_id": getattr(t, "server_id", None),
+                    "is_temporary": isinstance(t, TemporaryTool),
+                })
+
+            self.vector_store.add_vectors(vectors, metadata)
+            logger.info(f"成功索引 {len(vectors)} 个工具")
+        except Exception as e:
+            logger.error(f"重建工具索引失败: {e}")
+            raise
 
     def search_tools(
         self,
@@ -74,44 +122,14 @@ class ToolRAGService:
 
         try:
             query_vec = self.embedding_service.get_embedding(query)
+            results = self.vector_store.search(query_vec, top_k=top_k)
 
-            tools: List[Any] = (
-                db.query(MCPTool).filter(MCPTool.is_active == True, MCPTool.embedding.isnot(None)).all()
-            )
-            if include_temporary:
-                tools += (
-                    db.query(TemporaryTool)
-                    .filter(TemporaryTool.is_active == True, TemporaryTool.embedding.isnot(None))
-                    .all()
-                )
+            if not include_temporary:
+                results = [r for r in results if not r.get("is_temporary", False)]
 
-            if not tools:
-                return []
-
-            scored: List[Dict[str, Any]] = []
-            for t in tools:
-                if not getattr(t, "embedding", None):
-                    continue
-                sim = self.embedding_service.calculate_similarity(query_vec, t.embedding)
-                scored.append(
-                    {
-                        "id": t.id,
-                        "name": getattr(t, "name", ""),
-                        "display_name": getattr(t, "display_name", ""),
-                        "description": getattr(t, "description", ""),
-                        "tool_type": getattr(t, "tool_type", None)
-                        if hasattr(t, "tool_type")
-                        else "temporary",
-                        "server_id": getattr(t, "server_id", None),
-                        "similarity": sim,
-                        "is_temporary": isinstance(t, TemporaryTool),
-                    }
-                )
-
-            scored.sort(key=lambda x: x["similarity"], reverse=True)
-            return scored[:top_k]
+            return results[:top_k]
         except Exception as e:
             logger.error(f"工具 RAG 检索失败: {e}")
-            return []
+            raise
 
 

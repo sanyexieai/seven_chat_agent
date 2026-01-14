@@ -520,109 +520,118 @@ class TextProcessor:
             return chunks
     
     def _should_merge_chunks(self, chunks: List[str]) -> bool:
-        """使用LLM判断是否应该合并分块"""
+        """使用基于规则的方法判断是否应该合并分块（不调用LLM）"""
         try:
-            from utils.llm_helper import get_llm_helper
-            import asyncio
-            import threading
-            import concurrent.futures
+            if len(chunks) <= 1:
+                return True
             
             combined_text = ' '.join(chunks)
+            combined_length = len(combined_text)
             
-            prompt = f"""请判断以下文本片段是否应该合并为一个分块。
-
-文本片段：
-{combined_text}
-
-判断标准：
-1. 内容是否相关和连贯
-2. 是否属于同一个主题或概念
-3. 合并后是否有助于理解
-
-请只回答"是"或"否"，不要其他解释。"""
+            # 规则1：如果合并后长度在合理范围内，倾向于合并
+            if combined_length <= self.max_chunk_size:
+                # 规则2：检查是否有明显的段落分隔（多个换行）
+                if combined_text.count('\n\n') <= 1:
+                    # 规则3：检查句子完整性（最后一个分块是否以句号结尾）
+                    if chunks[-1].strip().endswith(('。', '！', '？', '.', '!', '?')):
+                        return True
             
-            def run_async():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    llm_helper = get_llm_helper()
-                    messages = [
-                        {"role": "system", "content": "你是一个文本分析专家，擅长判断文本片段的相关性。"},
-                        {"role": "user", "content": prompt}
-                    ]
-                    return new_loop.run_until_complete(
-                        llm_helper.call(messages, max_tokens=10, temperature=0.0)
-                    )
-                finally:
-                    new_loop.close()
+            # 规则4：如果所有分块都很短，倾向于合并
+            if all(len(c) < self.min_chunk_size for c in chunks):
+                return True
             
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(run_async)
-                result = future.result()
+            # 规则5：检查是否有明显的主题连续性（简单关键词匹配）
+            # 提取每个分块的前几个词和后几个词
+            first_words = [c.split()[:3] for c in chunks if c.split()]
+            last_words = [c.split()[-3:] for c in chunks if c.split()]
             
-            return "是" in result or "yes" in result.lower()
+            # 如果相邻分块有共同词汇，倾向于合并
+            for i in range(len(chunks) - 1):
+                if first_words[i] and last_words[i]:
+                    common_words = set(first_words[i+1]) & set(last_words[i])
+                    if len(common_words) > 0:
+                        return True
+            
+            return False
             
         except Exception as e:
-            logger.warning(f"LLM合并判断失败: {str(e)}")
+            logger.warning(f"合并判断失败: {str(e)}")
+            # 默认不合并
             return False
     
     def _llm_split_long_chunk(self, text: str) -> List[str]:
-        """使用LLM智能分割长文本"""
+        """使用基于规则的方法分割长文本（不调用LLM）"""
         try:
-            from utils.llm_helper import get_llm_helper
-            import asyncio
-            import threading
-            import concurrent.futures
+            # 优先按段落分割
+            chunks = self._split_by_paragraphs(text)
             
-            prompt = f"""请将以下长文本智能分割成多个相关的短文本片段。
-
-文本：
-{text}
-
-要求：
-1. 保持语义完整性，不要截断句子
-2. 每个片段应该是一个完整的语义单元
-3. 片段长度控制在{self.chunk_size}字符左右
-4. 片段之间要有一定的重叠（{self.overlap}字符左右）
-5. 用"---SPLIT---"标记分割点
-
-请直接输出分割后的文本，用"---SPLIT---"分隔各个片段。"""
+            # 如果分割后还有太长的块，继续按句子分割
+            final_chunks = []
+            for chunk in chunks:
+                if len(chunk) <= self.max_chunk_size:
+                    final_chunks.append(chunk)
+                else:
+                    # 按句子进一步分割
+                    sentence_chunks = self._split_by_sentences(chunk)
+                    final_chunks.extend(sentence_chunks)
             
-            def run_async():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    llm_helper = get_llm_helper()
-                    messages = [
-                        {"role": "system", "content": "你是一个文本分割专家，擅长将长文本智能分割成语义完整的短片段。"},
-                        {"role": "user", "content": prompt}
-                    ]
-                    return new_loop.run_until_complete(
-                        llm_helper.call(messages, max_tokens=1024, temperature=0.0)
-                    )
-                finally:
-                    new_loop.close()
-            
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(run_async)
-                result = future.result()
-            
-            # 解析LLM返回的分割结果
-            chunks = []
-            parts = result.split("---SPLIT---")
-            
-            for part in parts:
-                part = part.strip()
-                if part and len(part) > 10:  # 过滤太短的片段
-                    chunks.append(part)
-            
-            # 如果LLM分割失败，回退到滑动窗口
-            if len(chunks) <= 1:
-                logger.warning("LLM分割失败，使用滑动窗口分割")
-                return self._sliding_window_split(text)
-            
-            return chunks
-            
+            return final_chunks if final_chunks else self._sliding_window_split(text)
+                
         except Exception as e:
-            logger.warning(f"LLM智能分割失败: {str(e)}")
-            return self._sliding_window_split(text) 
+            logger.warning(f"分割长文本失败: {str(e)}")
+            # 降级：使用滑动窗口分割
+            return self._sliding_window_split(text)
+    
+    def _split_by_paragraphs(self, text: str) -> List[str]:
+        """按段落分割文本"""
+        # 按双换行符分割
+        paragraphs = re.split(r'\n\n+', text)
+        chunks = []
+        current_chunk = ""
+        
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            
+            # 如果当前块加上新段落不超过最大长度，合并
+            if len(current_chunk) + len(para) + 2 <= self.max_chunk_size:
+                if current_chunk:
+                    current_chunk += "\n\n" + para
+                else:
+                    current_chunk = para
+            else:
+                # 保存当前块，开始新块
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = para
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
+    
+    def _split_by_sentences(self, text: str) -> List[str]:
+        """按句子分割文本"""
+        # 按句号、问号、感叹号分割
+        sentences = re.split(r'([。！？\n])', text)
+        chunks = []
+        current_chunk = ""
+        
+        for i in range(0, len(sentences), 2):
+            sentence = sentences[i] + (sentences[i+1] if i+1 < len(sentences) else "")
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            if len(current_chunk) + len(sentence) <= self.max_chunk_size:
+                current_chunk += sentence
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = sentence
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks 

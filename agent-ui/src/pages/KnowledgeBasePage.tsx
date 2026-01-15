@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { API_PATHS } from '../config/api';
-import { Button, Input, Modal, message, Card, Space, Tag, Popconfirm, Upload, Form, Select } from 'antd';
+import { Button, Input, Modal, message, Card, Space, Tag, Popconfirm, Upload, Form, Select, Progress } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import './KnowledgeBasePage.css';
 
@@ -30,9 +30,35 @@ interface Document {
   document_metadata?: any;
   metadata?: any;
   status: string;
+  kg_extraction_status?: string;
+  kg_extraction_progress?: {
+    total_chunks: number;
+    processed: number;
+    failed: number;
+  };
   is_active: boolean;
   created_at: string;
   updated_at: string;
+}
+
+interface DocumentStatus {
+  document_id: number;
+  status: string;
+  kg_extraction_status: string;
+  kg_extraction_progress: {
+    total_chunks: number;
+    processed: number;
+    failed: number;
+  };
+  chunk_stats: {
+    total: number;
+    pending: number;
+    processing: number;
+    completed: number;
+    failed: number;
+  };
+  total_triples: number;
+  is_processing: boolean;
 }
 
 const KnowledgeBasePage: React.FC = () => {
@@ -101,6 +127,21 @@ const KnowledgeBasePage: React.FC = () => {
 
   // 轮询文档状态（用于实时显示处理进度）
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const [documentStatuses, setDocumentStatuses] = useState<Record<number, DocumentStatus>>({});
+
+  const fetchDocumentStatus = async (kbId: number, docId: number) => {
+    try {
+      const response = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_DOCUMENT_STATUS(kbId, docId)}`);
+      if (response.ok) {
+        const status: DocumentStatus = await response.json();
+        setDocumentStatuses(prev => ({ ...prev, [docId]: status }));
+        return status;
+      }
+    } catch (error) {
+      console.error(`查询文档 ${docId} 状态失败:`, error);
+    }
+    return null;
+  };
 
   const startPollingDocuments = (kbId: number) => {
     // 如果已经有轮询在运行，先清除
@@ -108,23 +149,41 @@ const KnowledgeBasePage: React.FC = () => {
       clearInterval(pollingInterval);
     }
 
-    const interval = setInterval(() => {
-      fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_DOCUMENTS(kbId)}`)
-        .then(res => res.json())
-        .then(data => {
+    const interval = setInterval(async () => {
+      try {
+        // 更新文档列表
+        const docsResponse = await fetch(`${API_BASE}${API_PATHS.KNOWLEDGE_BASE_DOCUMENTS(kbId)}`);
+        if (docsResponse.ok) {
+          const data = await docsResponse.json();
           setDocuments(data);
+          
+          // 更新每个文档的状态（只更新处理中的文档）
+          const processingDocs = data.filter((doc: Document) => 
+            doc.status === 'processing' || 
+            doc.status === 'chunked' || 
+            (doc.kg_extraction_status && doc.kg_extraction_status === 'processing')
+          );
+          
+          for (const doc of processingDocs) {
+            await fetchDocumentStatus(kbId, doc.id);
+          }
+          
           // 如果没有处理中的文档了，停止轮询
-          const hasProcessing = data.some((doc: Document) => doc.status === 'processing');
+          const hasProcessing = data.some((doc: Document) => 
+            doc.status === 'processing' || 
+            doc.status === 'chunked' || 
+            (doc.kg_extraction_status && doc.kg_extraction_status === 'processing')
+          );
           if (!hasProcessing) {
             clearInterval(interval);
             setPollingInterval(null);
           }
-        })
-        .catch(err => {
-          console.error('轮询文档状态失败:', err);
-          clearInterval(interval);
-          setPollingInterval(null);
-        });
+        }
+      } catch (err) {
+        console.error('轮询文档状态失败:', err);
+        clearInterval(interval);
+        setPollingInterval(null);
+      }
     }, 3000); // 每3秒轮询一次
 
     setPollingInterval(interval);
@@ -467,7 +526,7 @@ const KnowledgeBasePage: React.FC = () => {
                               </p>
                             </div>
                           )}
-                          {doc.status === 'processing' && (
+                          {(doc.status === 'processing' || doc.status === 'chunking') && (
                             <div style={{ 
                               marginTop: '8px', 
                               padding: '8px', 
@@ -478,6 +537,63 @@ const KnowledgeBasePage: React.FC = () => {
                               <p style={{ color: '#1890ff', margin: 0, fontSize: '12px' }}>
                                 ⏳ 正在处理文档，请稍候...
                               </p>
+                            </div>
+                          )}
+                          {doc.status === 'chunked' && (
+                            <div style={{ 
+                              marginTop: '8px', 
+                              padding: '8px', 
+                              backgroundColor: '#f6ffed', 
+                              border: '1px solid #b7eb8f',
+                              borderRadius: '4px'
+                            }}>
+                              <p style={{ color: '#52c41a', margin: 0, fontSize: '12px', fontWeight: 'bold' }}>
+                                ✅ 分块完成
+                              </p>
+                              {doc.kg_extraction_status === 'processing' && (
+                                <>
+                                  {(() => {
+                                    const status = documentStatuses[doc.id];
+                                    const progress = status?.kg_extraction_progress || doc.kg_extraction_progress;
+                                    const percent = progress && progress.total_chunks > 0
+                                      ? Math.round((progress.processed / progress.total_chunks) * 100)
+                                      : 0;
+                                    return (
+                                      <>
+                                        <p style={{ color: '#52c41a', margin: '4px 0 0 0', fontSize: '11px' }}>
+                                          📊 正在抽取知识图谱...
+                                        </p>
+                                        {progress && (
+                                          <>
+                                            <Progress 
+                                              percent={percent}
+                                              size="small"
+                                              status="active"
+                                              style={{ marginTop: '4px' }}
+                                            />
+                                            <p style={{ color: '#52c41a', margin: '4px 0 0 0', fontSize: '11px' }}>
+                                              已处理: {progress.processed} / {progress.total_chunks}
+                                              {progress.failed > 0 && ` (失败: ${progress.failed})`}
+                                            </p>
+                                          </>
+                                        )}
+                                      </>
+                                    );
+                                  })()}
+                                </>
+                              )}
+                              {doc.kg_extraction_status === 'completed' && (
+                                <p style={{ color: '#52c41a', margin: '4px 0 0 0', fontSize: '11px' }}>
+                                  ✅ 知识图谱抽取完成
+                                  {(() => {
+                                    const status = documentStatuses[doc.id];
+                                    if (status && status.total_triples > 0) {
+                                      return ` (${status.total_triples} 个三元组)`;
+                                    }
+                                    return '';
+                                  })()}
+                                </p>
+                              )}
                             </div>
                           )}
                         </div>

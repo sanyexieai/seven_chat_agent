@@ -246,6 +246,132 @@ async def get_document(
         logger.error(f"获取文档详情失败: {str(e)}")
         raise HTTPException(status_code=500, detail="获取文档详情失败")
 
+@router.get("/{kb_id}/documents/{doc_id}/status")
+async def get_document_status(
+    kb_id: int,
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取文档处理状态（包括分块和三元组抽取进度）"""
+    try:
+        from models.database_models import Document, DocumentChunk
+        from services.kg_extraction_worker import get_kg_worker
+        
+        doc = db.query(Document).filter(
+            Document.id == doc_id,
+            Document.knowledge_base_id == kb_id
+        ).first()
+        
+        if not doc:
+            raise HTTPException(status_code=404, detail="文档不存在")
+        
+        # 统计分块的三元组抽取状态
+        chunks = db.query(DocumentChunk).filter(
+            DocumentChunk.document_id == doc_id
+        ).all()
+        
+        chunk_stats = {
+            "total": len(chunks),
+            "pending": sum(1 for c in chunks if c.kg_extraction_status == "pending"),
+            "processing": sum(1 for c in chunks if c.kg_extraction_status == "processing"),
+            "completed": sum(1 for c in chunks if c.kg_extraction_status == "completed"),
+            "failed": sum(1 for c in chunks if c.kg_extraction_status == "failed"),
+        }
+        
+        # 检查是否正在后台处理
+        kg_worker = get_kg_worker()
+        is_processing = kg_worker.is_document_processing(doc_id)
+        
+        return {
+            "document_id": doc.id,
+            "status": doc.status,  # pending, processing, chunking, chunked, completed, failed
+            "kg_extraction_status": doc.kg_extraction_status or "pending",  # pending, processing, completed, failed, skipped
+            "kg_extraction_progress": doc.kg_extraction_progress or {},
+            "chunk_stats": chunk_stats,
+            "total_triples": sum(c.kg_triples_count or 0 for c in chunks),
+            "is_processing": is_processing,
+            "kg_extraction_started_at": doc.kg_extraction_started_at.isoformat() if doc.kg_extraction_started_at else None,
+            "kg_extraction_completed_at": doc.kg_extraction_completed_at.isoformat() if doc.kg_extraction_completed_at else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取文档状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取文档状态失败")
+
+@router.get("/{kb_id}/documents/{doc_id}/kg/stats")
+async def get_document_kg_stats(
+    kb_id: int,
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取文档的知识图谱统计信息"""
+    try:
+        from models.database_models import KnowledgeTriple
+        
+        # 查询该文档的所有三元组
+        triples = db.query(KnowledgeTriple).filter(
+            KnowledgeTriple.document_id == doc_id,
+            KnowledgeTriple.knowledge_base_id == kb_id
+        ).all()
+        
+        # 统计实体和关系
+        entities = set()
+        relations = {}
+        for triple in triples:
+            entities.add(triple.subject)
+            entities.add(triple.object)
+            rel = triple.predicate
+            relations[rel] = relations.get(rel, 0) + 1
+        
+        return {
+            "total_triples": len(triples),
+            "unique_entities": len(entities),
+            "unique_relations": len(relations),
+            "top_relations": sorted(relations.items(), key=lambda x: x[1], reverse=True)[:10]
+        }
+    except Exception as e:
+        logger.error(f"获取知识图谱统计失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取知识图谱统计失败")
+
+@router.get("/{kb_id}/documents/{doc_id}/kg/triples")
+async def get_document_kg_triples(
+    kb_id: int,
+    doc_id: int,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """获取文档的实际三元组列表（用于调试和查看）"""
+    try:
+        from models.database_models import KnowledgeTriple
+        
+        # 查询该文档的所有三元组
+        triples = db.query(KnowledgeTriple).filter(
+            KnowledgeTriple.document_id == doc_id,
+            KnowledgeTriple.knowledge_base_id == kb_id
+        ).order_by(KnowledgeTriple.confidence.desc()).limit(limit).all()
+        
+        result = []
+        for triple in triples:
+            result.append({
+                "id": triple.id,
+                "subject": triple.subject,
+                "predicate": triple.predicate,
+                "object": triple.object,
+                "confidence": triple.confidence,
+                "source_text": triple.source_text[:100] if triple.source_text else "",
+                "chunk_id": triple.chunk_id,
+                "created_at": triple.created_at.isoformat() if triple.created_at else None
+            })
+        
+        return {
+            "total": len(result),
+            "triples": result
+        }
+    except Exception as e:
+        logger.error(f"获取三元组列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取三元组列表失败")
+
 @router.put("/documents/{doc_id}", response_model=DocumentResponse)
 async def update_document(
     doc_id: int,
@@ -322,4 +448,59 @@ async def get_document_chunks(
         return [DocumentChunkResponse.model_validate(chunk) for chunk in chunks]
     except Exception as e:
         logger.error(f"获取文档分块失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="获取文档分块失败") 
+        raise HTTPException(status_code=500, detail="获取文档分块失败")
+
+@router.get("/{kb_id}/graph/stats")
+async def get_knowledge_graph_stats(
+    kb_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取知识图谱统计信息"""
+    try:
+        from services.knowledge_graph_service import KnowledgeGraphService
+        kg_service = KnowledgeGraphService()
+        stats = kg_service.get_entity_statistics(db, kb_id)
+        return stats
+    except Exception as e:
+        logger.error(f"获取知识图谱统计失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取知识图谱统计失败")
+
+@router.get("/{kb_id}/graph/entities/{entity_name}")
+async def query_entity(
+    kb_id: int,
+    entity_name: str,
+    limit: int = 20,
+    db: Session = Depends(get_db)
+):
+    """查询实体相关的三元组"""
+    try:
+        from services.knowledge_graph_service import KnowledgeGraphService
+        kg_service = KnowledgeGraphService()
+        results = kg_service.query_entities(db, kb_id, entity_name, limit)
+        return {"entity": entity_name, "triples": results, "count": len(results)}
+    except Exception as e:
+        logger.error(f"查询实体失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="查询实体失败")
+
+@router.get("/{kb_id}/graph/path")
+async def query_relation_path(
+    kb_id: int,
+    start_entity: str,
+    end_entity: str,
+    max_hops: int = 3,
+    db: Session = Depends(get_db)
+):
+    """查询两个实体之间的关系路径"""
+    try:
+        from services.knowledge_graph_service import KnowledgeGraphService
+        kg_service = KnowledgeGraphService()
+        paths = kg_service.query_relation_path(db, kb_id, start_entity, end_entity, max_hops)
+        return {
+            "start_entity": start_entity,
+            "end_entity": end_entity,
+            "paths": paths,
+            "path_count": len(paths)
+        }
+    except Exception as e:
+        logger.error(f"查询关系路径失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="查询关系路径失败") 

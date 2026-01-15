@@ -105,6 +105,9 @@ def run_migrations():
         # 运行知识图谱相关表迁移
         run_knowledge_graph_migrations()
         
+        # 运行知识图谱抽取字段迁移（在知识库迁移中已包含，这里确保执行）
+        # 已在 run_knowledge_base_migrations 中处理
+        
         # 运行临时工具表迁移
         run_temporary_tools_migrations()
         
@@ -383,7 +386,7 @@ def run_chat_migrations():
                 logger.info("发现chat_messages表存在content字段，需要迁移到message_nodes表...")
                 # 注意：这里只是标记，实际的数据迁移需要更复杂的逻辑
                 # 暂时保留字段，避免数据丢失
-                logger.warning("chat_messages表的content字段暂时保留，建议手动迁移数据后删除")
+                logger.info("chat_messages表的content字段暂时保留，建议手动迁移数据后删除（这是正常的迁移过程）")
             
             if missing_chat_columns:
                 logger.info(f"发现缺失字段: {missing_chat_columns}")
@@ -558,6 +561,16 @@ def run_knowledge_base_migrations():
             if not check_column_exists('documents', 'is_active'):
                 missing_doc_columns.append('is_active')
             
+            # 知识图谱抽取相关字段
+            if not check_column_exists('documents', 'kg_extraction_status'):
+                missing_doc_columns.append('kg_extraction_status')
+            if not check_column_exists('documents', 'kg_extraction_progress'):
+                missing_doc_columns.append('kg_extraction_progress')
+            if not check_column_exists('documents', 'kg_extraction_started_at'):
+                missing_doc_columns.append('kg_extraction_started_at')
+            if not check_column_exists('documents', 'kg_extraction_completed_at'):
+                missing_doc_columns.append('kg_extraction_completed_at')
+            
             if missing_doc_columns:
                 logger.info(f"发现缺失字段: {missing_doc_columns}")
                 for column in missing_doc_columns:
@@ -576,6 +589,18 @@ def run_knowledge_base_migrations():
                     elif column == 'is_active':
                         conn.execute(text("ALTER TABLE documents ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
                         logger.info("添加 is_active 字段")
+                    elif column == 'kg_extraction_status':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN kg_extraction_status VARCHAR(50) DEFAULT 'pending';"))
+                        logger.info("添加 kg_extraction_status 字段")
+                    elif column == 'kg_extraction_progress':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN kg_extraction_progress JSON;"))
+                        logger.info("添加 kg_extraction_progress 字段")
+                    elif column == 'kg_extraction_started_at':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN kg_extraction_started_at DATETIME;"))
+                        logger.info("添加 kg_extraction_started_at 字段")
+                    elif column == 'kg_extraction_completed_at':
+                        conn.execute(text("ALTER TABLE documents ADD COLUMN kg_extraction_completed_at DATETIME;"))
+                        logger.info("添加 kg_extraction_completed_at 字段")
                 
                 logger.info("documents表迁移完成")
             else:
@@ -622,6 +647,13 @@ def run_knowledge_base_migrations():
                 missing_chunk_columns.append('source_query')
             if not check_column_exists('document_chunks', 'parent_chunk_ids'):
                 missing_chunk_columns.append('parent_chunk_ids')
+            # 知识图谱抽取相关字段
+            if not check_column_exists('document_chunks', 'kg_extraction_status'):
+                missing_chunk_columns.append('kg_extraction_status')
+            if not check_column_exists('document_chunks', 'kg_triples_count'):
+                missing_chunk_columns.append('kg_triples_count')
+            if not check_column_exists('document_chunks', 'kg_extraction_error'):
+                missing_chunk_columns.append('kg_extraction_error')
             
             if missing_chunk_columns:
                 logger.info(f"发现缺失字段: {missing_chunk_columns}")
@@ -674,6 +706,15 @@ def run_knowledge_base_migrations():
                     elif column == 'parent_chunk_ids':
                         conn.execute(text("ALTER TABLE document_chunks ADD COLUMN parent_chunk_ids JSON;"))
                         logger.info("添加 parent_chunk_ids 字段")
+                    elif column == 'kg_extraction_status':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN kg_extraction_status VARCHAR(50) DEFAULT 'pending';"))
+                        logger.info("添加 kg_extraction_status 字段")
+                    elif column == 'kg_triples_count':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN kg_triples_count INTEGER DEFAULT 0;"))
+                        logger.info("添加 kg_triples_count 字段")
+                    elif column == 'kg_extraction_error':
+                        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN kg_extraction_error TEXT;"))
+                        logger.info("添加 kg_extraction_error 字段")
                 
                 logger.info("document_chunks表迁移完成")
             else:

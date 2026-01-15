@@ -22,14 +22,17 @@ from utils.query_processor import QueryProcessor
 from utils.performance_optimizer import cached, timed, retry
 from utils.reranker import rerank as rerank_results  # 新增
 from utils.llm_helper import get_llm_helper
+from services.knowledge_graph_service import KnowledgeGraphService  # 新增知识图谱服务
 
 logger = get_logger("knowledge_base_service")
 
 RERANKER_AFTER_TOP_N = int(os.getenv("RERANKER_AFTER_TOP_N", "20"))
 RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
 RERANKER_ENABLED_ENV = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
-EXTRACT_TRIPLES_ENABLED = os.getenv("EXTRACT_TRIPLES_ENABLED", "false").lower() == "true"
-KNOWLEDGE_GRAPH_ENABLED = os.getenv("KNOWLEDGE_GRAPH_ENABLED", "false").lower() == "true"
+EXTRACT_TRIPLES_ENABLED = os.getenv("EXTRACT_TRIPLES_ENABLED", "true").lower() == "true"  # 默认启用
+KNOWLEDGE_GRAPH_ENABLED = os.getenv("KNOWLEDGE_GRAPH_ENABLED", "true").lower() == "true"  # 默认启用知识图谱
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.3"))  # 相似度阈值，低于此值的结果将被过滤
+LLM_QUERY_DECOMPOSE_ENABLED = os.getenv("LLM_QUERY_DECOMPOSE_ENABLED", "false").lower() == "true"  # 默认关闭LLM拆解
 CHUNK_STRATEGY = os.getenv("CHUNK_STRATEGY", "hierarchical")  # hierarchical, semantic, sentence, fixed
 USE_LLM_MERGE = os.getenv("USE_LLM_MERGE", "false").lower() == "true"
 MULTI_HOP_MAX_HOPS = int(os.getenv("MULTI_HOP_MAX_HOPS", "2"))  # 多跳查询最大跳数
@@ -52,6 +55,7 @@ class KnowledgeBaseService:
         self.embedding_service = EmbeddingService()
         self.file_extractor = FileExtractor()
         self.query_processor = QueryProcessor()
+        self.kg_service = KnowledgeGraphService()  # 知识图谱服务
         # 移除文件向量存储，改为纯数据库存储
     
     def _search_chunks_from_db(self, db: Session, kb_id: int, query_vector: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
@@ -71,10 +75,16 @@ class KnowledgeBaseService:
             for chunk in chunks:
                 if chunk.embedding:
                     similarity = self.embedding_service.calculate_similarity(query_vector, chunk.embedding)
-                    similarities.append((similarity, chunk))
+                    # 只保留超过阈值的相似度
+                    if similarity >= SIMILARITY_THRESHOLD:
+                        similarities.append((similarity, chunk))
             
             # 排序并返回top_k
             similarities.sort(key=lambda x: x[0], reverse=True)
+            
+            # 如果没有足够的结果，降低阈值（但记录警告）
+            if len(similarities) < top_k and len(similarities) > 0:
+                logger.warning(f"相似度阈值 {SIMILARITY_THRESHOLD} 过滤后只有 {len(similarities)} 个结果，需要 {top_k} 个")
             
             results = []
             for similarity, chunk in similarities[:top_k]:
@@ -93,6 +103,76 @@ class KnowledgeBaseService:
             
         except Exception as e:
             logger.error(f"数据库向量搜索失败: {str(e)}")
+            return []
+    
+    def _search_by_keywords(self, db: Session, kb_id: int, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """基于关键词的文本搜索（作为向量搜索的补充）"""
+        try:
+            # 提取查询中的关键词（去除停用词）
+            import re
+            # 简单的中文停用词
+            stopwords = {'的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这'}
+            
+            # 提取关键词（2-10个字符的连续中文字符）
+            keywords = re.findall(r'[\u4e00-\u9fa5]{2,10}', query)
+            keywords = [kw for kw in keywords if kw not in stopwords and len(kw) >= 2]
+            
+            if not keywords:
+                return []
+            
+            logger.debug(f"关键词搜索: {keywords}")
+            
+            # 在分块内容中搜索关键词
+            chunks = db.query(DocumentChunk).filter(
+                DocumentChunk.knowledge_base_id == kb_id,
+                DocumentChunk.content.isnot(None)
+            ).all()
+            
+            if not chunks:
+                return []
+            
+            # 计算每个分块的关键词匹配分数
+            scored_chunks = []
+            for chunk in chunks:
+                if not chunk.content:
+                    continue
+                
+                content_lower = chunk.content.lower()
+                score = 0
+                matched_keywords = []
+                
+                for keyword in keywords:
+                    # 计算关键词出现次数和位置权重
+                    count = content_lower.count(keyword.lower())
+                    if count > 0:
+                        # 位置权重：出现在前面的权重更高
+                        first_pos = content_lower.find(keyword.lower())
+                        position_weight = 1.0 - (first_pos / max(len(content_lower), 1)) * 0.5
+                        keyword_score = count * (1 + position_weight)
+                        score += keyword_score
+                        matched_keywords.append(keyword)
+                
+                if score > 0:
+                    scored_chunks.append({
+                        'content': chunk.content,
+                        'similarity': min(0.9, score / len(keywords)),  # 归一化到0-0.9
+                        'chunk_id': chunk.id,
+                        'document_id': chunk.document_id,
+                        'knowledge_base_id': chunk.knowledge_base_id,
+                        'chunk_index': chunk.chunk_index,
+                        'chunk_metadata': chunk.chunk_metadata or {},
+                        'matched_keywords': matched_keywords,
+                        'keyword_score': score
+                    })
+            
+            # 按分数排序
+            scored_chunks.sort(key=lambda x: x['keyword_score'], reverse=True)
+            
+            logger.debug(f"关键词搜索找到 {len(scored_chunks)} 个匹配分块")
+            return scored_chunks[:top_k]
+            
+        except Exception as e:
+            logger.error(f"关键词搜索失败: {str(e)}")
             return []
     
     def create_knowledge_base(self, db: Session, kb_data: KnowledgeBaseCreate) -> KnowledgeBase:
@@ -309,6 +389,7 @@ class KnowledgeBaseService:
             if LLM_QUERY_DECOMPOSE_ENABLED:
                 try:
                     decomposed_terms = self._decompose_query_terms(final_query)
+                    logger.info(f"查询拆解结果: {decomposed_terms}")
                 except Exception as e:
                     logger.warning(f"查询拆解失败: {str(e)}")
             
@@ -317,6 +398,17 @@ class KnowledgeBaseService:
             
             # 从数据库搜索相似分块（主查询 + 子查询合并去重）
             search_results = self._search_chunks_from_db(db, kb_id, query_embedding, top_k=max(RERANKER_AFTER_TOP_N, effective_max))
+            
+            # 如果向量搜索结果太少，尝试关键词匹配作为补充
+            if len(search_results) < effective_max:
+                keyword_results = self._search_by_keywords(db, kb_id, final_query, top_k=effective_max - len(search_results))
+                # 合并结果（去重）
+                existing_chunk_ids = {r.get('chunk_id') for r in search_results}
+                for kw_result in keyword_results:
+                    if kw_result.get('chunk_id') not in existing_chunk_ids:
+                        search_results.append(kw_result)
+                        existing_chunk_ids.add(kw_result.get('chunk_id'))
+                logger.info(f"关键词匹配补充了 {len(keyword_results)} 个结果")
             if decomposed_terms:
                 for term in decomposed_terms[:3]:
                     try:
@@ -391,13 +483,27 @@ class KnowledgeBaseService:
             
             context = "\n\n".join(context_parts)
             
+            # 使用知识图谱服务增强上下文
+            kg_enhancement = self.kg_service.enhance_rag_context(
+                db=db,
+                kb_id=kb_id,
+                query=query,
+                vector_results=search_results,
+                max_triples=10
+            )
+            
             # 构建图谱上下文
-            graph_context = ""
-            if graph_results:
+            graph_context = kg_enhancement.get('graph_context', '')
+            if not graph_context and graph_results:
+                # 回退到旧的方法
                 graph_context = "相关实体关系：\n"
                 for triple in graph_results[:10]:  # 取前10个三元组
                     hop_info = f" (跳数: {triple.get('hop', 0)})" if 'hop' in triple else ""
                     graph_context += f"- {triple['subject']} {triple['predicate']} {triple['object']}{hop_info}\n"
+            
+            # 合并知识图谱增强的上下文
+            if kg_enhancement.get('enhanced', False):
+                graph_context = kg_enhancement['graph_context']
             
             response = self._generate_response(query, context, graph_context)
             
@@ -445,6 +551,7 @@ class KnowledgeBaseService:
             
             # 更新状态为处理中
             doc.status = "processing"
+            doc.kg_extraction_status = "pending"  # 初始化KG抽取状态
             db.commit()
             
             # 检查内容是否为空
@@ -485,17 +592,7 @@ class KnowledgeBaseService:
                     "knowledge_base_id": doc.knowledge_base_id,
                     "content": chunk_content
                 }
-
-                # 可选：抽取实体-关系三元组
-                if EXTRACT_TRIPLES_ENABLED:
-                    try:
-                        triples = self._extract_triples_sync(chunk_content)
-                        if triples:
-                            chunk_metadata["triples"] = triples
-                            # 存储三元组到数据库
-                            self._store_triples_to_db(db, doc.knowledge_base_id, doc.id, i, triples, chunk_content)
-                    except Exception as e:
-                        logger.warning(f"分块三元组抽取失败(idx={i}): {str(e)}")
+                # 三元组抽取将在后台异步进行，这里不再同步处理
                 chunk_contents.append(chunk_content)
                 chunk_metadata_list.append(chunk_metadata)
             
@@ -517,10 +614,13 @@ class KnowledgeBaseService:
                         embedding=embedding,
                         chunk_metadata=metadata,
                         chunk_strategy=CHUNK_STRATEGY,
-                        strategy_variant=strategy_variant
+                        strategy_variant=strategy_variant,
+                        kg_extraction_status="pending"  # 初始状态，等待后台处理
                     )
                     db.add(chunk)
+                    db.flush()  # 获取chunk.id
                     created_chunks.append(chunk)
+                    
                     logger.info(f"第{i+1}个分块创建成功")
                     
                 except Exception as e:
@@ -530,15 +630,23 @@ class KnowledgeBaseService:
             # 提交所有分块
             db.commit()
             
-            # 更新文档状态
-            doc.status = "completed"
+            # 更新文档状态为分块完成（三元组抽取将在后台异步进行）
+            doc.status = "chunked"  # 新增状态：分块完成但三元组未抽取
             doc.document_metadata = doc.document_metadata or {}
             doc.document_metadata["chunk_count"] = len(chunks)
             doc.document_metadata["processing_time"] = datetime.utcnow().isoformat()
+            db.commit()
             
-            # 如果启用了三元组提取，更新chunk_id关联
+            # 提交后台任务：异步抽取三元组
             if EXTRACT_TRIPLES_ENABLED:
-                self._update_triple_chunk_ids(db, doc.id)
+                try:
+                    from services.kg_extraction_worker import get_kg_worker
+                    kg_worker = get_kg_worker()
+                    kg_worker.submit_document_extraction(doc.id)
+                    logger.info(f"已提交文档 {doc.id} 的三元组抽取后台任务")
+                except Exception as e:
+                    logger.error(f"提交三元组抽取任务失败: {str(e)}", exc_info=True)
+                    # 即使提交失败，也不影响分块完成状态
 
             # 文档级别领域识别（随机抽样分片）
             if DOMAIN_CLASSIFY_ENABLED and created_chunks:

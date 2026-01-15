@@ -784,8 +784,13 @@ class Document(Base):
     content = Column(Text, nullable=True)  # 文档内容
     document_metadata = Column(JSON, nullable=True)  # 元数据
     knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)
-    status = Column(String(50), default="pending")  # 文档状态：pending, processing, completed, failed
+    status = Column(String(50), default="pending")  # 文档状态：pending, processing, chunking, chunked, completed, failed
     is_active = Column(Boolean, default=True)
+    # 知识图谱抽取相关字段
+    kg_extraction_status = Column(String(50), default="pending")  # pending, processing, completed, failed, skipped
+    kg_extraction_progress = Column(JSON, nullable=True)  # {"total_chunks": 10, "processed": 5, "failed": 0}
+    kg_extraction_started_at = Column(DateTime, nullable=True)
+    kg_extraction_completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -815,6 +820,10 @@ class DocumentChunk(Base):
     chunk_type = Column(String(50), default="原文")  # 分片类型：原文/LLM整理/摘要/其他
     source_query = Column(String(1000), nullable=True)  # 如果是LLM整理结果，记录原始查询
     parent_chunk_ids = Column(JSON, nullable=True)  # 如果是LLM整理结果，记录来源分片ID列表
+    # 知识图谱抽取相关字段
+    kg_extraction_status = Column(String(50), default="pending")  # pending, processing, completed, failed, skipped
+    kg_triples_count = Column(Integer, default=0)  # 该分块抽取到的三元组数量
+    kg_extraction_error = Column(Text, nullable=True)  # 抽取失败时的错误信息
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # 关联关系

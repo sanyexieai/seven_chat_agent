@@ -52,6 +52,8 @@ export const API_PATHS = {
   KNOWLEDGE_BASE_QUERY: (id: number | string) => `/api/knowledge-base/${id}/query`,
   KNOWLEDGE_BASE_UPLOAD: (id: number | string) => `/api/knowledge-base/${id}/documents/upload`,
   KNOWLEDGE_BASE_DOCUMENT: (id: number | string) => `/api/knowledge-base/documents/${id}`,
+  KNOWLEDGE_BASE_DOCUMENT_STATUS: (kbId: number | string, docId: number | string) => `/api/knowledge-base/${kbId}/documents/${docId}/status`,
+  KNOWLEDGE_BASE_DOCUMENT_KG_STATS: (kbId: number | string, docId: number | string) => `/api/knowledge-base/${kbId}/documents/${docId}/kg/stats`,
   
   // 工具相关
   TOOLS: '/api/tools',

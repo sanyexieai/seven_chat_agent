@@ -588,7 +588,7 @@ class TextProcessor:
         paragraphs = re.split(r'\n\n+', text)
         chunks = []
         current_chunk = ""
-        
+            
         for para in paragraphs:
             para = para.strip()
             if not para:
@@ -608,9 +608,9 @@ class TextProcessor:
         
         if current_chunk:
             chunks.append(current_chunk)
-        
-        return chunks
-    
+            
+            return chunks
+            
     def _split_by_sentences(self, text: str) -> List[str]:
         """按句子分割文本"""
         # 按句号、问号、感叹号分割

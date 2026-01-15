@@ -676,26 +676,14 @@ async def create_chat_message(message: MessageCreate, db: Session = Depends(get_
         )
 
 
-@router.post("/sessions")
-async def create_session(user_id: str, agent_id: int, db: Session = Depends(get_db)):
-    """创建新会话（兼容性端点）"""
-    try:
-        # 创建会话数据
-        from models.database_models import SessionCreate
-        session_data = SessionCreate(
-            user_id=user_id,
-            session_name="新对话",
-            agent_id=agent_id
-        )
-        session = SessionService.create_session(db, session_data)
-        logger.info(f"创建会话: {session.session_id}")
-        return session
-    except Exception as e:
-        logger.error(f"创建会话失败: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"创建会话失败: {str(e)}"
-        )
+# 注意：此路由已与上面的 create_chat_session 合并，保留此注释以说明历史
+# 如果需要兼容旧API，可以考虑使用不同的路径或参数处理
+# @router.post("/sessions")
+# async def create_session(user_id: str, agent_id: int, db: Session = Depends(get_db)):
+#     """创建新会话（兼容性端点）"""
+#     # 已移除：与 create_chat_session 路由冲突
+#     # 请使用 POST /api/chat/sessions 并传递 {"user_id": "...", "agent_id": ...}
+#     pass
 
 @router.delete("/sessions/{session_id}")
 async def deactivate_session(session_id: str, db: Session = Depends(get_db)):

@@ -287,7 +287,7 @@ class ConnectionManager:
                 self.disconnect(session_id)
 
 manager = ConnectionManager()
-
+ 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket端点"""

@@ -103,7 +103,7 @@ class EmbeddingService:
                     from langchain_community.embeddings import OllamaEmbeddings
                     use_langchain = True
                 except ImportError:
-                    logger.warning("langchain_community 不可用，将使用直接 Ollama API 调用")
+                    logger.info("langchain_community 不可用，将使用直接 Ollama API 调用（这是正常的fallback机制）")
                     use_langchain = False
                     import requests
                 

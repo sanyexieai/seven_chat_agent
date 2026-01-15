@@ -288,10 +288,31 @@ class KnowledgeGraphService:
         - 结构比较规整的文本
         - 常见模式：X 是 Y、X 位于 Y、X 属于 Y、X 使用 Y 等
         - 小说/历史文本：X和Y结义、X在Y地、X与Y等
+        - 支持事件实体识别和事件-参与者关系
         """
         triples: List[Tuple[str, str, str, float]] = []
         if not text:
             return triples
+        
+        # 先识别事件实体（即使NER未加载也能工作）
+        event_entities = self._extract_event_entities_rule_based(text)
+        if event_entities:
+            logger.debug(f"规则模式识别到 {len(event_entities)} 个事件实体")
+            # 为事件建立三元组
+            for event_info in event_entities:
+                event_name = event_info["text"]
+                location = event_info.get("location", "")
+                participants = event_info.get("participants", [])
+                
+                # 事件类型
+                triples.append((event_name, "类型", "结义事件", 0.9))
+                # 事件地点
+                if location:
+                    triples.append((event_name, "发生地点", location, 0.9))
+                # 参与者关系
+                for participant in participants:
+                    if participant:
+                        triples.append((participant, "参与", event_name, 0.9))
         
         # 按句子粗略切分
         sentences = re.split(r"[。！？\n]", text)
@@ -405,6 +426,91 @@ class KnowledgeGraphService:
         if triples:
             logger.debug(f"规则抽取得到 {len(triples)} 个三元组")
         return triples
+    
+    def _extract_event_entities_rule_based(self, text: str) -> List[Dict[str, Any]]:
+        """
+        使用规则识别事件实体（不依赖NER模型）
+        """
+        import re
+        event_entities = []
+        
+        # 事件模式1：X、Y、Z在W地结义/结拜
+        pattern1 = r"(.+?)[、，,](.+?)[、，,](.+?)在(.+?)(结义|结拜)"
+        matches1 = re.finditer(pattern1, text)
+        for match in matches1:
+            participants = [match.group(1).strip(), match.group(2).strip(), match.group(3).strip()]
+            location = match.group(4).strip()
+            action = match.group(5).strip()
+            event_name = f"{location}{action}"  # "桃园结义"
+            
+            event_entities.append({
+                "text": event_name,
+                "location": location,
+                "action": action,
+                "participants": participants,
+                "event_type": "结义事件"
+            })
+            logger.debug(f"识别到事件实体: {event_name} (地点: {location}, 参与者: {participants})")
+        
+        # 事件模式2：X和Y在W地结义/结拜
+        pattern2 = r"(.+?)(和|与|同)(.+?)在(.+?)(结义|结拜)"
+        matches2 = re.finditer(pattern2, text)
+        for match in matches2:
+            participant1 = match.group(1).strip()
+            participant2 = match.group(3).strip()
+            location = match.group(4).strip()
+            action = match.group(5).strip()
+            event_name = f"{location}{action}"
+            
+            event_entities.append({
+                "text": event_name,
+                "location": location,
+                "action": action,
+                "participants": [participant1, participant2],
+                "event_type": "结义事件"
+            })
+            logger.debug(f"识别到事件实体: {event_name} (地点: {location}, 参与者: [{participant1}, {participant2}])")
+        
+        # 事件模式3：在W地结义/结拜（参与者在前文）
+        pattern3 = r"在(.+?)(结义|结拜)"
+        matches3 = re.finditer(pattern3, text)
+        for match in matches3:
+            location = match.group(1).strip()
+            action = match.group(2).strip()
+            event_name = f"{location}{action}"
+            
+            # 查找前文中的参与者（在事件前50个字符内）
+            context_start = max(0, match.start() - 50)
+            context_text = text[context_start:match.start()]
+            
+            # 简单提取人名（2-4个中文字符，以常见姓氏开头）
+            common_surnames = ['刘', '关', '张', '赵', '马', '黄', '曹', '孙', '周', '吴', '郑', '王', '李', '陈', '杨', '林', '何', '郭', '罗', '高']
+            person_pattern = r"([\u4e00-\u9fa5]{2,4})(?=[，、。！？\s]|$)"
+            participants = []
+            for person_match in re.finditer(person_pattern, context_text):
+                person = person_match.group(1)
+                if person[0] in common_surnames:
+                    participants.append(person)
+            
+            if participants or location:
+                event_entities.append({
+                    "text": event_name,
+                    "location": location,
+                    "action": action,
+                    "participants": participants,
+                    "event_type": "结义事件"
+                })
+                logger.debug(f"识别到事件实体: {event_name} (地点: {location}, 参与者: {participants})")
+        
+        # 去重（相同事件只保留一个）
+        seen_events = set()
+        unique_events = []
+        for event in event_entities:
+            if event["text"] not in seen_events:
+                seen_events.add(event["text"])
+                unique_events.append(event)
+        
+        return unique_events
     
     def _sample_text(self, text: str, max_length: int = None) -> str:
         """
@@ -1118,12 +1224,18 @@ class KnowledgeGraphService:
             return triples
         
         # 1. 使用NER模型提取实体
-        entities = self.ie_model_service.extract_entities(text)
-        if not entities:
-            logger.debug("NER未识别到实体，回退到纯规则模式")
-            return self._extract_triples_rule_based(text)
+        entities = []
+        if self.ie_model_service and self.ie_model_service.is_available():
+            entities = self.ie_model_service.extract_entities(text)
+            logger.debug(f"NER识别到 {len(entities)} 个实体")
+        else:
+            logger.debug("NER模型未加载，使用规则模式识别实体和事件")
+            # 即使NER未加载，也尝试用简单规则识别实体（用于事件识别）
+            entities = self._extract_entities_by_rules(text)
         
-        logger.debug(f"NER识别到 {len(entities)} 个实体")
+        if not entities:
+            logger.debug("未识别到任何实体，回退到纯规则模式")
+            return self._extract_triples_rule_based(text)
         
         # 2. 使用文档级别的分析和规则（如果提供）
         dynamic_rules = []
@@ -1387,7 +1499,41 @@ class KnowledgeGraphService:
                             if subj and obj:
                                 triples.append((subj, "结义", obj, 0.9))
         
-        # 8. 去重
+        # 8. 处理事件实体（EVENT标签）和事件-参与者关系
+        event_entities = {e["text"]: e for e in entities if e.get("label") == "EVENT"}
+        if event_entities:
+            logger.debug(f"发现 {len(event_entities)} 个事件实体，开始建立事件-参与者关系")
+            
+            for event_name, event_info in event_entities.items():
+                event_metadata = event_info.get("metadata", {})
+                location = event_metadata.get("location", "")
+                participants = event_metadata.get("participants", [])
+                event_type = event_metadata.get("event_type", "事件")
+                
+                # 8.1 建立事件类型关系
+                if event_type:
+                    triples.append((event_name, "类型", event_type, 0.95))
+                
+                # 8.2 建立事件-地点关系
+                if location and location in entity_texts:
+                    triples.append((event_name, "发生地点", location, 0.95))
+                
+                # 8.3 建立事件-参与者关系
+                for participant in participants:
+                    participant_normalized = self._normalize_entity(participant)
+                    if participant_normalized and participant_normalized in entity_texts:
+                        triples.append((participant_normalized, "参与", event_name, 0.95))
+                        logger.debug(f"建立事件-参与者关系: ({participant_normalized}, 参与, {event_name})")
+                
+                # 8.4 如果事件名中包含地点，也建立关系
+                # 例如："桃园结义" -> (桃园结义, 包含地点, 桃园)
+                if location and location in event_name:
+                    # 提取地点部分
+                    location_part = location
+                    if location_part in entity_texts:
+                        triples.append((event_name, "包含地点", location_part, 0.9))
+        
+        # 9. 去重
         seen = set()
         unique_triples = []
         for triple in triples:
@@ -1536,16 +1682,34 @@ class KnowledgeGraphService:
         entity_name: str,
         limit: int = 20
     ) -> List[Dict[str, Any]]:
-        """查询与指定实体相关的所有三元组"""
+        """查询与指定实体相关的所有三元组（支持事件查询）"""
         try:
-            # 模糊匹配实体名
+            # 先尝试精确匹配
             triples = db.query(KnowledgeTriple).filter(
                 KnowledgeTriple.knowledge_base_id == kb_id,
                 or_(
-                    KnowledgeTriple.subject.contains(entity_name),
-                    KnowledgeTriple.object.contains(entity_name)
+                    KnowledgeTriple.subject == entity_name,
+                    KnowledgeTriple.object == entity_name
                 )
             ).limit(limit).all()
+            
+            # 如果精确匹配结果不足，使用模糊匹配
+            if len(triples) < limit:
+                fuzzy_triples = db.query(KnowledgeTriple).filter(
+                    KnowledgeTriple.knowledge_base_id == kb_id,
+                    and_(
+                        or_(
+                            KnowledgeTriple.subject.contains(entity_name),
+                            KnowledgeTriple.object.contains(entity_name)
+                        ),
+                        # 排除已经精确匹配的
+                        ~or_(
+                            KnowledgeTriple.subject == entity_name,
+                            KnowledgeTriple.object == entity_name
+                        )
+                    )
+                ).limit(limit - len(triples)).all()
+                triples.extend(fuzzy_triples)
             
             results = []
             for triple in triples:
@@ -1563,6 +1727,54 @@ class KnowledgeGraphService:
             
         except Exception as e:
             logger.error(f"查询实体失败: {str(e)}")
+            return []
+    
+    def query_event_participants(
+        self,
+        db: Session,
+        kb_id: int,
+        event_name: str,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """
+        查询事件的参与者
+        
+        例如：query_event_participants(db, kb_id, "桃园结义")
+        返回：所有参与"桃园结义"的实体
+        """
+        try:
+            # 查询所有 (X, 参与, event_name) 的三元组
+            triples = db.query(KnowledgeTriple).filter(
+                KnowledgeTriple.knowledge_base_id == kb_id,
+                KnowledgeTriple.object == event_name,
+                KnowledgeTriple.predicate == "参与"
+            ).limit(limit).all()
+            
+            # 如果精确匹配失败，尝试模糊匹配
+            if not triples:
+                triples = db.query(KnowledgeTriple).filter(
+                    KnowledgeTriple.knowledge_base_id == kb_id,
+                    KnowledgeTriple.object.contains(event_name),
+                    KnowledgeTriple.predicate == "参与"
+                ).limit(limit).all()
+            
+            results = []
+            for triple in triples:
+                results.append({
+                    'participant': triple.subject,
+                    'event': triple.object,
+                    'relation': triple.predicate,
+                    'confidence': triple.confidence,
+                    'source_text': triple.source_text,
+                    'chunk_id': triple.chunk_id,
+                    'document_id': triple.document_id
+                })
+            
+            logger.debug(f"查询事件 {event_name} 的参与者，找到 {len(results)} 个")
+            return results
+            
+        except Exception as e:
+            logger.error(f"查询事件参与者失败: {str(e)}")
             return []
     
     def query_relation_path(

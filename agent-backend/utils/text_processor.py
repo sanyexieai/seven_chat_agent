@@ -42,18 +42,18 @@ class TextProcessor:
             return self._fixed_split(text)
     
     def _hierarchical_split(self, text: str) -> List[str]:
-        """分层分割策略：结构 -> 段落 -> 句子 -> 滑动窗口"""
+        """分层分割策略：目录 -> 章节 -> 细粒度分片"""
         logger.info("开始分层分割处理...")
         
         # 步骤1：预处理文档，提取结构
         structure_info = self._extract_document_structure(text)
         
         if structure_info['has_structure']:
-            # 步骤2：按章节分割
-            logger.info("检测到文档结构，按章节分割")
-            chunks = self._split_by_sections(text, structure_info['sections'])
+            # 步骤2：按分层策略分割（目录、章节、细粒度）
+            logger.info("检测到文档结构，使用分层分片策略")
+            chunks = self._split_hierarchical_with_structure(text, structure_info['sections'])
         else:
-            # 步骤5：没有结构，直接按段落分割
+            # 步骤3：没有结构，直接按段落分割
             logger.info("未检测到明显结构，按段落分割")
             chunks = self._split_by_paragraphs_hierarchical(text)
         
@@ -65,6 +65,99 @@ class TextProcessor:
             chunks = self._llm_optimize_chunks(chunks)
         
         logger.info(f"分层分割完成，共生成 {len(chunks)} 个分块")
+        return chunks
+    
+    def _split_hierarchical_with_structure(self, text: str, sections: List[Dict]) -> List[str]:
+        """分层分片：目录单独分片，章节单独分片，章节内细粒度分片"""
+        lines = text.split('\n')
+        chunks = []
+        
+        # 提取目录（通常在文档开头，包含章节标题）
+        toc_chunks = self._extract_table_of_contents(text, sections)
+        if toc_chunks:
+            chunks.extend(toc_chunks)
+            logger.info(f"提取到 {len(toc_chunks)} 个目录分片")
+        
+        # 处理每个章节
+        for i, section in enumerate(sections):
+            start_line = section['start_line']
+            end_line = section['end_line']
+            section_text = '\n'.join(lines[start_line:end_line + 1]).strip()
+            section_title = section.get('title', '').strip()
+            
+            if not section_text:
+                continue
+            
+            # 1. 章节标题单独作为一个分片（如果标题存在）
+            if section_title and len(section_title) >= 2:
+                chunks.append(section_title)
+                logger.debug(f"章节标题分片: {section_title[:50]}")
+            
+            # 2. 章节内容按细粒度分割（段落/句子级别）
+            section_content = section_text[len(section_title):].strip() if section_text.startswith(section_title) else section_text
+            if section_content:
+                # 对章节内容进行细粒度分割
+                section_chunks = self._split_section_content_fine_grained(section_content)
+                chunks.extend(section_chunks)
+                logger.debug(f"章节 {i+1} 细粒度分片: {len(section_chunks)} 个")
+        
+        return chunks
+    
+    def _extract_table_of_contents(self, text: str, sections: List[Dict]) -> List[str]:
+        """提取目录（通常在文档开头，包含多个章节标题）"""
+        toc_chunks = []
+        lines = text.split('\n')
+        
+        # 查找目录区域（通常在前100行，包含多个章节标题）
+        toc_candidates = []
+        for i, line in enumerate(lines[:100]):
+            line = line.strip()
+            if not line:
+                continue
+            # 检查是否匹配章节标题模式
+            section_patterns = [
+                r'^第[一二三四五六七八九十\d]+[章节回]',
+                r'^\d+\.',
+                r'^[一二三四五六七八九十]+、',
+            ]
+            for pattern in section_patterns:
+                if re.match(pattern, line, re.MULTILINE):
+                    toc_candidates.append(line)
+                    break
+        
+        # 如果找到多个连续的章节标题，认为是目录
+        if len(toc_candidates) >= 2:
+            # 合并目录为一个分片（如果不太长）或分割为多个分片
+            toc_text = '\n'.join(toc_candidates)
+            if len(toc_text) <= self.max_chunk_size:
+                toc_chunks.append(toc_text)
+            else:
+                # 目录太长，按行分割
+                for toc_line in toc_candidates:
+                    if len(toc_line) >= 2:
+                        toc_chunks.append(toc_line)
+        
+        return toc_chunks
+    
+    def _split_section_content_fine_grained(self, section_content: str) -> List[str]:
+        """对章节内容进行细粒度分割（段落 -> 句子）"""
+        chunks = []
+        
+        # 先按段落分割
+        paragraphs = self.split_by_paragraphs(section_content)
+        
+        for para in paragraphs:
+            if len(para) <= self.chunk_size:
+                # 段落长度合适，直接使用
+                chunks.append(para)
+            elif len(para) <= self.max_chunk_size:
+                # 段落稍长但可接受
+                chunks.append(para)
+            else:
+                # 段落太长，按句子分割并合并
+                sentence_chunks = self._split_long_paragraph_by_sentences(para)
+                chunks.extend(sentence_chunks)
+        
         return chunks
     
     def _clean_text(self, text: str) -> str:

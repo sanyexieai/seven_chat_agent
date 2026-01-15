@@ -31,14 +31,15 @@ RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
 RERANKER_ENABLED_ENV = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
 EXTRACT_TRIPLES_ENABLED = os.getenv("EXTRACT_TRIPLES_ENABLED", "true").lower() == "true"  # 默认启用
 KNOWLEDGE_GRAPH_ENABLED = os.getenv("KNOWLEDGE_GRAPH_ENABLED", "true").lower() == "true"  # 默认启用知识图谱
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.3"))  # 相似度阈值，低于此值的结果将被过滤
-LLM_QUERY_DECOMPOSE_ENABLED = os.getenv("LLM_QUERY_DECOMPOSE_ENABLED", "false").lower() == "true"  # 默认关闭LLM拆解
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.0"))  # 相似度阈值，默认0.0（不过滤），让重排序处理
+SIMILARITY_THRESHOLD_MIN = float(os.getenv("SIMILARITY_THRESHOLD_MIN", "0.1"))  # 最低相似度阈值（用于最终过滤）
+LLM_QUERY_DECOMPOSE_ENABLED = os.getenv("LLM_QUERY_DECOMPOSE_ENABLED", "true").lower() == "true"  # 默认启用LLM拆解
 CHUNK_STRATEGY = os.getenv("CHUNK_STRATEGY", "hierarchical")  # hierarchical, semantic, sentence, fixed
 USE_LLM_MERGE = os.getenv("USE_LLM_MERGE", "false").lower() == "true"
 MULTI_HOP_MAX_HOPS = int(os.getenv("MULTI_HOP_MAX_HOPS", "2"))  # 多跳查询最大跳数
 DOMAIN_CLASSIFY_ENABLED = os.getenv("DOMAIN_CLASSIFY_ENABLED", "true").lower() == "true"
 SUMMARY_CHUNKS_ENABLED = os.getenv("SUMMARY_CHUNKS_ENABLED", "true").lower() == "true"
-LLM_QUERY_DECOMPOSE_ENABLED = os.getenv("LLM_QUERY_DECOMPOSE_ENABLED", "true").lower() == "true"
+MULTI_ROUTE_RECALL_ENABLED = os.getenv("MULTI_ROUTE_RECALL_ENABLED", "true").lower() == "true"  # 多路召回：向量+关键词并行
 
 class KnowledgeBaseService:
     """知识库服务"""
@@ -59,7 +60,7 @@ class KnowledgeBaseService:
         # 移除文件向量存储，改为纯数据库存储
     
     def _search_chunks_from_db(self, db: Session, kb_id: int, query_vector: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
-        """从数据库搜索相似分块"""
+        """从数据库搜索相似分块（优化版：先计算所有相似度，再动态调整阈值）"""
         try:
             # 获取所有分块的嵌入向量
             chunks = db.query(DocumentChunk).filter(
@@ -68,26 +69,48 @@ class KnowledgeBaseService:
             ).all()
             
             if not chunks:
+                logger.warning(f"知识库 {kb_id} 没有找到分块")
                 return []
             
-            # 计算相似度
+            logger.debug(f"开始计算 {len(chunks)} 个分块的相似度")
+            
+            # 计算所有分块的相似度（不过滤，先全部计算）
             similarities = []
             for chunk in chunks:
                 if chunk.embedding:
-                    similarity = self.embedding_service.calculate_similarity(query_vector, chunk.embedding)
-                    # 只保留超过阈值的相似度
-                    if similarity >= SIMILARITY_THRESHOLD:
+                    try:
+                        similarity = self.embedding_service.calculate_similarity(query_vector, chunk.embedding)
+                        # 记录所有相似度，不过滤
                         similarities.append((similarity, chunk))
+                    except Exception as e:
+                        logger.warning(f"计算分块 {chunk.id} 相似度失败: {str(e)}")
+                        continue
             
-            # 排序并返回top_k
+            if not similarities:
+                logger.warning(f"没有计算出任何相似度结果")
+                return []
+            
+            # 排序（按相似度降序）
             similarities.sort(key=lambda x: x[0], reverse=True)
             
-            # 如果没有足够的结果，降低阈值（但记录警告）
-            if len(similarities) < top_k and len(similarities) > 0:
-                logger.warning(f"相似度阈值 {SIMILARITY_THRESHOLD} 过滤后只有 {len(similarities)} 个结果，需要 {top_k} 个")
+            # 动态调整阈值：如果结果不够，降低阈值
+            effective_threshold = SIMILARITY_THRESHOLD
+            filtered_similarities = [(s, c) for s, c in similarities if s >= effective_threshold]
             
+            # 如果过滤后结果不够，动态降低阈值
+            if len(filtered_similarities) < top_k:
+                # 尝试使用最低阈值
+                filtered_similarities = [(s, c) for s, c in similarities if s >= SIMILARITY_THRESHOLD_MIN]
+                if len(filtered_similarities) < top_k:
+                    # 如果还是不够，使用所有结果（但记录警告）
+                    filtered_similarities = similarities[:top_k * 2]  # 取前2倍，让重排序处理
+                    logger.warning(f"相似度阈值过滤后结果不足，使用前 {len(filtered_similarities)} 个结果（最低相似度: {filtered_similarities[-1][0]:.4f}）")
+                else:
+                    logger.info(f"使用最低阈值 {SIMILARITY_THRESHOLD_MIN}，找到 {len(filtered_similarities)} 个结果")
+            
+            # 取前top_k（或更多，用于重排序）
             results = []
-            for similarity, chunk in similarities[:top_k]:
+            for similarity, chunk in filtered_similarities[:top_k]:
                 result = {
                     'content': chunk.content,
                     'similarity': similarity,
@@ -99,10 +122,18 @@ class KnowledgeBaseService:
                 }
                 results.append(result)
             
+            # 记录统计信息
+            if results:
+                max_sim = results[0]['similarity']
+                min_sim = results[-1]['similarity']
+                logger.info(f"向量搜索完成: 返回 {len(results)} 个结果，相似度范围: {min_sim:.4f} - {max_sim:.4f}")
+            else:
+                logger.warning(f"向量搜索未返回任何结果")
+            
             return results
             
         except Exception as e:
-            logger.error(f"数据库向量搜索失败: {str(e)}")
+            logger.error(f"数据库向量搜索失败: {str(e)}", exc_info=True)
             return []
     
     def _search_by_keywords(self, db: Session, kb_id: int, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
@@ -384,7 +415,10 @@ class KnowledgeBaseService:
             processed_query_info = self.query_processor.process_query(query, user_id)
             final_query = processed_query_info["rewritten_query"]
             
-            # 查询前可选：用LLM拆解为子问题/关键词（增强检索召回）
+            # 多路召回策略：向量搜索 + 关键词搜索并行
+            search_results = []
+            
+            # 1. 查询拆解（如果启用）
             decomposed_terms: List[str] = []
             if LLM_QUERY_DECOMPOSE_ENABLED:
                 try:
@@ -393,46 +427,148 @@ class KnowledgeBaseService:
                 except Exception as e:
                     logger.warning(f"查询拆解失败: {str(e)}")
             
-            # 获取查询的向量嵌入
-            query_embedding = self.embedding_service.get_embedding(final_query)
+            # 2. 并行执行多路召回
+            import concurrent.futures
             
-            # 从数据库搜索相似分块（主查询 + 子查询合并去重）
-            search_results = self._search_chunks_from_db(db, kb_id, query_embedding, top_k=max(RERANKER_AFTER_TOP_N, effective_max))
+            def vector_search_main():
+                """主查询向量搜索"""
+                query_embedding = self.embedding_service.get_embedding(final_query, is_query=True)
+                return self._search_chunks_from_db(db, kb_id, query_embedding, top_k=max(RERANKER_AFTER_TOP_N, effective_max * 2))
             
-            # 如果向量搜索结果太少，尝试关键词匹配作为补充
-            if len(search_results) < effective_max:
-                keyword_results = self._search_by_keywords(db, kb_id, final_query, top_k=effective_max - len(search_results))
-                # 合并结果（去重）
-                existing_chunk_ids = {r.get('chunk_id') for r in search_results}
-                for kw_result in keyword_results:
-                    if kw_result.get('chunk_id') not in existing_chunk_ids:
-                        search_results.append(kw_result)
-                        existing_chunk_ids.add(kw_result.get('chunk_id'))
-                logger.info(f"关键词匹配补充了 {len(keyword_results)} 个结果")
+            def keyword_search_main():
+                """主查询关键词搜索"""
+                if MULTI_ROUTE_RECALL_ENABLED:
+                    return self._search_by_keywords(db, kb_id, final_query, top_k=effective_max * 2)
+                return []
+            
+            def vector_search_sub(term):
+                """子查询向量搜索"""
+                try:
+                    emb = self.embedding_service.get_embedding(term, is_query=True)
+                    return self._search_chunks_from_db(db, kb_id, emb, top_k=RERANKER_AFTER_TOP_N)
+                except Exception as e:
+                    logger.warning(f"子查询向量检索失败: {str(e)}")
+                    return []
+            
+            # 并行执行主查询的向量搜索和关键词搜索
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                future_vector = executor.submit(vector_search_main)
+                future_keyword = executor.submit(keyword_search_main)
+                
+                vector_results = future_vector.result()
+                keyword_results = future_keyword.result()
+                
+                logger.info(f"主查询向量搜索结果: {len(vector_results)} 个")
+                logger.info(f"主查询关键词搜索结果: {len(keyword_results)} 个")
+            
+            # 合并主查询结果（改进版：加权融合）
+            all_results = {}
+            
+            # 1. 先添加向量搜索结果（权重1.0）
+            for result in vector_results:
+                cid = result.get('chunk_id')
+                if cid:
+                    result['source'] = 'vector'
+                    result['weighted_score'] = result.get('similarity', 0.0) * 1.0
+                    if cid not in all_results:
+                        all_results[cid] = result
+                    else:
+                        # 保留最高分
+                        if result.get('similarity', 0.0) > all_results[cid].get('similarity', 0.0):
+                            all_results[cid] = result
+            
+            # 2. 添加关键词搜索结果（权重0.8，但精确匹配时提升权重）
+            for result in keyword_results:
+                cid = result.get('chunk_id')
+                if cid:
+                    result['source'] = 'keyword'
+                    kw_score = result.get('similarity', 0.0)
+                    # 检查是否是精确匹配（所有关键词都出现）
+                    matched_keywords = result.get('matched_keywords', [])
+                    keyword_count = len(matched_keywords)
+                    if keyword_count >= 2:  # 多个关键词匹配，提升权重
+                        kw_score *= 1.2  # 提升20%
+                    result['weighted_score'] = kw_score * 0.8  # 关键词搜索基础权重0.8
+                    
+                    if cid not in all_results:
+                        all_results[cid] = result
+                    else:
+                        # 融合策略：如果关键词匹配度足够高，提升总分
+                        existing = all_results[cid]
+                        vec_score = existing.get('similarity', 0.0) * 1.0
+                        # 如果关键词匹配度超过向量相似度的70%，进行加权融合
+                        if kw_score > vec_score * 0.7:
+                            # 加权融合：向量0.6 + 关键词0.4
+                            fused_score = vec_score * 0.6 + kw_score * 0.4
+                            existing['similarity'] = min(1.0, fused_score)
+                            existing['weighted_score'] = fused_score
+                            existing['source'] = 'hybrid'  # 标记为混合来源
+                            existing['keyword_boost'] = True
+                        # 如果关键词匹配度特别高（>0.8），直接使用关键词结果
+                        elif kw_score > 0.8:
+                            all_results[cid] = result
+            
+            # 3. 子查询向量搜索（如果拆解成功）
             if decomposed_terms:
-                for term in decomposed_terms[:3]:
-                    try:
-                        emb = self.embedding_service.get_embedding(term)
-                        sub_results = self._search_chunks_from_db(db, kb_id, emb, top_k=RERANKER_AFTER_TOP_N)
-                        search_results.extend(sub_results)
-                    except Exception as e:
-                        logger.warning(f"子查询检索失败: {str(e)}")
-                # 按chunk_id去重
-                dedup: Dict[Any, Dict[str, Any]] = {}
-                for r in search_results:
-                    cid = r.get('chunk_id')
-                    if cid is None:
-                        continue
-                    if cid not in dedup or r.get('similarity', 0.0) > dedup[cid].get('similarity', 0.0):
-                        dedup[cid] = r
-                search_results = list(dedup.values())
+                logger.info(f"开始子查询向量搜索，共 {len(decomposed_terms[:3])} 个子查询")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    sub_futures = [executor.submit(vector_search_sub, term) for term in decomposed_terms[:3]]
+                    for future in concurrent.futures.as_completed(sub_futures):
+                        sub_results = future.result()
+                        for result in sub_results:
+                            cid = result.get('chunk_id')
+                            if cid:
+                                # 子查询结果的权重稍低（乘以0.9）
+                                result['similarity'] = result.get('similarity', 0.0) * 0.9
+                                if cid not in all_results or result.get('similarity', 0.0) > all_results[cid].get('similarity', 0.0):
+                                    all_results[cid] = result
+                        logger.info(f"子查询完成，当前总结果数: {len(all_results)}")
             
-            # 如果启用了知识图谱，同时搜索相关三元组
+            # 转换为列表并按加权分数排序（优先使用weighted_score，如果没有则使用similarity）
+            search_results = list(all_results.values())
+            search_results.sort(key=lambda x: x.get('weighted_score', x.get('similarity', 0.0)), reverse=True)
+            
+            logger.info(f"多路召回完成，总结果数: {len(search_results)} (向量: {len(vector_results)}, 关键词: {len(keyword_results)}, 子查询: {len(decomposed_terms[:3]) if decomposed_terms else 0})")
+            
+            # 如果启用了知识图谱，同时搜索相关三元组并增强搜索结果
             graph_results = []
+            graph_enhanced_chunks = []
             if KNOWLEDGE_GRAPH_ENABLED:
-                # 使用多跳查询获取更丰富的关系信息
-                graph_results = self._multi_hop_triple_search(db, kb_id, query, max_hops=MULTI_HOP_MAX_HOPS)
-                logger.info(f"KB[{kb_id}] 多跳图谱搜索结果: {len(graph_results)} 个三元组")
+                try:
+                    # 使用多跳查询获取更丰富的关系信息
+                    graph_results = self._multi_hop_triple_search(db, kb_id, query, max_hops=MULTI_HOP_MAX_HOPS)
+                    logger.info(f"KB[{kb_id}] 多跳图谱搜索结果: {len(graph_results)} 个三元组")
+                    
+                    # 从图谱结果中提取相关分块ID，提升这些分块的排序
+                    if graph_results:
+                        # 提取图谱中涉及的分块ID
+                        graph_chunk_ids = set()
+                        for triple in graph_results:
+                            # 从三元组中查找相关的分块
+                            related_chunks = db.query(KnowledgeTriple).filter(
+                                KnowledgeTriple.knowledge_base_id == kb_id
+                            ).filter(
+                                or_(
+                                    KnowledgeTriple.subject == triple.get('subject', ''),
+                                    KnowledgeTriple.object == triple.get('object', '')
+                                )
+                            ).all()
+                            for chunk_rel in related_chunks:
+                                if chunk_rel.chunk_id:
+                                    graph_chunk_ids.add(chunk_rel.chunk_id)
+                        
+                        # 提升图谱相关分块的相似度
+                        for result in search_results:
+                            if result.get('chunk_id') in graph_chunk_ids:
+                                # 提升相似度（增加0.1，但不超过1.0）
+                                result['similarity'] = min(1.0, result.get('similarity', 0.0) + 0.1)
+                                result['graph_boosted'] = True
+                                graph_enhanced_chunks.append(result.get('chunk_id'))
+                        
+                        logger.info(f"KB[{kb_id}] 图谱增强了 {len(graph_enhanced_chunks)} 个分块的排序")
+                except Exception as e:
+                    logger.warning(f"知识图谱搜索失败: {str(e)}")
+                    graph_results = []
             
             if not search_results:
                 return {
@@ -970,8 +1106,10 @@ class KnowledgeBaseService:
             from utils.llm_helper import get_llm_helper
             import asyncio
             import concurrent.futures
+            import re
+            
             prompt = (
-                "请将以下问题拆解为3-5个中文关键词或子问题，每行一个，不要编号：\n\n" + query
+                "请将以下问题拆解为3-5个中文关键词或子问题，每行一个，不要编号，直接输出关键词：\n\n" + query
             )
 
             def run_async():
@@ -980,7 +1118,7 @@ class KnowledgeBaseService:
                 try:
                     llm = get_llm_helper()
                     messages = [
-                        {"role": "system", "content": "你是检索优化助手，负责将查询拆解为关键词或子问题以提升召回。"},
+                        {"role": "system", "content": "你是检索优化助手，负责将查询拆解为关键词或子问题以提升召回。只输出关键词，每行一个，不要编号、不要解释。"},
                         {"role": "user", "content": prompt}
                     ]
                     return loop.run_until_complete(llm.call(messages, max_tokens=128, temperature=0.0))
@@ -988,14 +1126,36 @@ class KnowledgeBaseService:
                     loop.close()
 
             with concurrent.futures.ThreadPoolExecutor() as ex:
-                result = ex.submit(run_async).result()
-            lines = [l.strip('- ').strip() for l in str(result).splitlines() if l.strip()]
-            # 过滤过短内容
-            lines = [l for l in lines if len(l) >= 2]
+                result = ex.submit(run_async).result(timeout=10)
+            
+            result_str = str(result).strip()
+            # 提取中文关键词（2-20个字符）
+            lines = re.findall(r'[\u4e00-\u9fa5]{2,20}', result_str)
+            
+            # 如果LLM返回的是列表格式，也尝试解析
+            if not lines:
+                # 尝试按行分割
+                lines = [l.strip('- ').strip().strip('1234567890.）)').strip() 
+                        for l in result_str.splitlines() if l.strip()]
+                # 过滤过短内容和只保留中文
+                lines = [l for l in lines if len(l) >= 2 and re.match(r'^[\u4e00-\u9fa5]+$', l)]
+            
+            # 如果还是没有结果，使用简单的关键词提取作为后备
+            if not lines:
+                # 提取查询中的关键词（去除停用词）
+                stopwords = {'的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这', '什么', '怎么', '如何', '为什么'}
+                keywords = re.findall(r'[\u4e00-\u9fa5]{2,10}', query)
+                lines = [kw for kw in keywords if kw not in stopwords and len(kw) >= 2][:5]
+            
+            logger.info(f"查询拆解成功: {lines[:5]}")
             return lines[:5]
         except Exception as e:
-            logger.warning(f"LLM查询拆解失败: {str(e)}")
-            return []
+            logger.warning(f"LLM查询拆解失败: {str(e)}，使用简单关键词提取")
+            # 后备方案：简单关键词提取
+            import re
+            stopwords = {'的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这', '什么', '怎么', '如何', '为什么'}
+            keywords = re.findall(r'[\u4e00-\u9fa5]{2,10}', query)
+            return [kw for kw in keywords if kw not in stopwords and len(kw) >= 2][:5]
 
     def _extract_triples_sync(self, text: str) -> List[List[str]]:
         """使用LLM从文本中抽取(主语, 关系, 宾语)三元组，返回列表。
@@ -1146,30 +1306,89 @@ class KnowledgeBaseService:
             logger.error(f"更新三元组chunk_id失败: {str(e)}")
     
     def _search_triples_from_db(self, db: Session, kb_id: int, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """从数据库搜索相关三元组"""
+        """从数据库搜索相关三元组（改进版：支持事件查询和实体提取）"""
         try:
-            # 简单的关键词匹配搜索
-            triples = db.query(KnowledgeTriple).filter(
-                KnowledgeTriple.knowledge_base_id == kb_id,
-                or_(
-                    KnowledgeTriple.subject.contains(query),
-                    KnowledgeTriple.predicate.contains(query),
-                    KnowledgeTriple.object.contains(query)
-                )
-            ).limit(limit).all()
+            import re
             
-            results = []
+            # 1. 检查是否是事件参与者查询（"X的是谁"模式）
+            event_query_pattern = r"(.+?)的是谁"
+            event_match = re.search(event_query_pattern, query)
+            if event_match:
+                event_name = event_match.group(1).strip()
+                logger.info(f"检测到事件参与者查询: {event_name}")
+                
+                # 使用知识图谱服务查询事件参与者
+                event_participants = self.kg_service.query_event_participants(db, kb_id, event_name, limit=limit)
+                if event_participants:
+                    # 转换为标准格式
+                    results = []
+                    for participant_info in event_participants:
+                        results.append({
+                            'subject': participant_info['participant'],
+                            'predicate': participant_info['relation'],
+                            'object': participant_info['event'],
+                            'confidence': participant_info['confidence'],
+                            'source_text': participant_info.get('source_text', ''),
+                            'chunk_id': participant_info.get('chunk_id'),
+                            'document_id': participant_info.get('document_id'),
+                            'relevance_score': participant_info['confidence'] + 0.3  # 事件查询结果权重更高
+                        })
+                    logger.info(f"通过事件查询找到 {len(results)} 个参与者")
+                    return results
+            
+            # 2. 普通实体查询（原有逻辑）
+            # 从查询中提取实体（2-10个字符的中文词）
+            query_entities = re.findall(r'[\u4e00-\u9fa5]{2,10}', query)
+            query_entities = [e for e in query_entities if len(e) >= 2][:5]  # 最多5个实体
+            
+            if not query_entities:
+                # 如果没有提取到实体，使用原始查询
+                query_entities = [query]
+            
+            logger.debug(f"从查询中提取的实体: {query_entities}")
+            
+            # 使用OR条件匹配多个实体
+            conditions = []
+            for entity in query_entities:
+                conditions.append(KnowledgeTriple.subject.contains(entity))
+                conditions.append(KnowledgeTriple.predicate.contains(entity))
+                conditions.append(KnowledgeTriple.object.contains(entity))
+            
+            if conditions:
+                triples = db.query(KnowledgeTriple).filter(
+                    KnowledgeTriple.knowledge_base_id == kb_id,
+                    or_(*conditions)
+                ).order_by(KnowledgeTriple.confidence.desc()).limit(limit * 2).all()  # 获取更多候选
+            else:
+                return []
+            
+            # 计算每个三元组的相关性分数
+            scored_triples = []
             for triple in triples:
-                results.append({
+                score = triple.confidence or 0.5
+                # 如果实体在subject或object中，分数更高
+                for entity in query_entities:
+                    if entity in triple.subject or entity in triple.object:
+                        score += 0.2
+                    elif entity in triple.predicate:
+                        score += 0.1
+                
+                scored_triples.append({
                     'subject': triple.subject,
                     'predicate': triple.predicate,
                     'object': triple.object,
-                    'confidence': triple.confidence,
+                    'confidence': min(1.0, score),
                     'source_text': triple.source_text,
                     'chunk_id': triple.chunk_id,
-                    'document_id': triple.document_id
+                    'document_id': triple.document_id,
+                    'relevance_score': score
                 })
             
+            # 按相关性排序并返回top_k
+            scored_triples.sort(key=lambda x: x['relevance_score'], reverse=True)
+            
+            results = scored_triples[:limit]
+            logger.debug(f"找到 {len(results)} 个相关三元组")
             return results
             
         except Exception as e:

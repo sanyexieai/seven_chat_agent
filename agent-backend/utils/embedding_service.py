@@ -19,8 +19,13 @@ class EmbeddingService:
         self.model = None
         self._initialize_model()
     
-    def get_embedding(self, text: str) -> List[float]:
-        """获取文本的向量嵌入"""
+    def get_embedding(self, text: str, is_query: bool = True) -> List[float]:
+        """获取文本的向量嵌入
+        
+        Args:
+            text: 要嵌入的文本
+            is_query: 是否为查询文本（某些模型对查询和文档有不同的处理方式）
+        """
         if not self.model:
             error_msg = (
                 f"嵌入模型未初始化。请检查配置：\n"
@@ -31,17 +36,48 @@ class EmbeddingService:
             )
             logger.error(error_msg)
             raise RuntimeError(error_msg)
+        
+        if not text or not text.strip():
+            logger.warning("输入文本为空，返回零向量")
+            # 返回零向量（维度需要根据模型确定，这里先返回空列表，实际应该返回正确维度的零向量）
+            return []
+        
         try:
             # 兼容不同的模型接口
             if hasattr(self.model, 'embed_query'):
-                embedding = self.model.embed_query(text)
+                # 优先使用 embed_query（适用于查询）
+                if is_query:
+                    embedding = self.model.embed_query(text)
+                else:
+                    # 对于文档，某些模型可能需要使用 embed_documents
+                    if hasattr(self.model, 'embed_documents'):
+                        embeddings = self.model.embed_documents([text])
+                        embedding = embeddings[0] if embeddings else self.model.embed_query(text)
+                    else:
+                        embedding = self.model.embed_query(text)
             elif hasattr(self.model, 'encode'):
+                # 使用 encode 方法（通常不区分查询和文档）
                 embedding = self.model.encode(text).tolist()
             else:
                 raise RuntimeError(f"模型对象不支持嵌入操作: {type(self.model)}")
-            return embedding
+            
+            # 验证嵌入向量
+            if not embedding or len(embedding) == 0:
+                logger.error(f"生成的嵌入向量为空")
+                raise ValueError("嵌入向量为空")
+            
+            # 归一化向量（某些模型可能不自动归一化）
+            embedding_array = np.array(embedding)
+            norm = np.linalg.norm(embedding_array)
+            if norm > 0:
+                embedding_array = embedding_array / norm
+            else:
+                logger.warning("嵌入向量范数为0，可能存在问题")
+            
+            return embedding_array.tolist()
+            
         except Exception as e:
-            logger.error(f"生成嵌入失败: {str(e)}")
+            logger.error(f"生成嵌入失败: {str(e)}", exc_info=True)
             raise
     
     def calculate_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:

@@ -9,6 +9,7 @@ import concurrent.futures
 import random
 import json
 import threading
+import time
 from typing import List, Dict, Any, Optional, Set, Tuple
 from collections import defaultdict
 from sqlalchemy.orm import Session
@@ -33,6 +34,8 @@ KG_EXTRACT_MODE = os.getenv("KG_EXTRACT_MODE", "ner_rule").lower()
 KG_DYNAMIC_RULES_ENABLED = os.getenv("KG_DYNAMIC_RULES_ENABLED", "true").lower() == "true"  # 是否启用动态规则生成
 KG_SAMPLE_TEXT_LENGTH = int(os.getenv("KG_SAMPLE_TEXT_LENGTH", "2000"))  # 采样文本长度
 KG_SAMPLE_METHOD = os.getenv("KG_SAMPLE_METHOD", "mixed").lower()  # 采样方法：fixed（固定开头）、random（随机）、mixed（混合）
+KG_DYNAMIC_RULES_RETRY_COUNT = int(os.getenv("KG_DYNAMIC_RULES_RETRY_COUNT", "3"))  # 动态规则生成重试次数
+KG_DYNAMIC_RULES_RETRY_DELAY = float(os.getenv("KG_DYNAMIC_RULES_RETRY_DELAY", "1.0"))  # 重试延迟（秒）
 
 
 class KnowledgeGraphService:
@@ -797,97 +800,159 @@ class KnowledgeGraphService:
                 cleaned = re.sub(r'```\s*', '', cleaned)
                 cleaned = cleaned.strip()
                 
-                # 尝试直接解析清理后的字符串
-                try:
-                    rules_data = json.loads(cleaned)
-                    logger.debug("策略4成功: 清理后直接解析")
-                except json.JSONDecodeError:
-                    # 如果还是失败，尝试手动提取rules数组
-                    try:
-                        # 使用更精确的正则，考虑嵌套结构
-                        rules_match = re.search(r'"rules"\s*:\s*\[', cleaned)
-                        if rules_match:
-                            start_pos = rules_match.end()
-                            # 使用栈匹配找到数组的结束位置
-                            bracket_count = 0
-                            in_string = False
+                # 尝试修复正则表达式中的转义字符问题
+                # LLM可能返回 \W, \d, \s 等，在JSON字符串中需要转义为 \\W, \\d, \\s
+                # 但要注意：已经在字符串内的 \\ 不应该再转义
+                def fix_regex_escapes(json_str: str) -> str:
+                    """修复JSON字符串中正则表达式的转义字符"""
+                    # 方法：在字符串值中，将单个反斜杠后跟字母/数字/特殊字符的转义为双反斜杠
+                    # 但要注意：已经是 \\ 的不要重复转义
+                    result = []
+                    i = 0
+                    in_string = False
+                    escape_next = False
+                    
+                    while i < len(json_str):
+                        char = json_str[i]
+                        
+                        if escape_next:
                             escape_next = False
-                            end_pos = start_pos
-                            
-                            for i in range(start_pos, len(cleaned)):
-                                char = cleaned[i]
+                            # 如果是在字符串内，且是单个反斜杠后跟字母/数字/特殊字符，需要转义
+                            if in_string:
+                                # 检查是否是正则转义字符（\W, \d, \s, \w, \D, \S, \u等）
+                                # 或者是Unicode转义（\u4e00等）
+                                if (char.isalnum() or 
+                                    (char == 'u' and i + 4 < len(json_str) and 
+                                     all(c in '0123456789abcdefABCDEF' for c in json_str[i+1:i+5]))):
+                                    result.append('\\')  # 添加额外的反斜杠
+                            result.append(char)
+                            i += 1
+                            continue
+                        
+                        if char == '\\':
+                            escape_next = True
+                            result.append(char)
+                            i += 1
+                            continue
+                        
+                        if char == '"':
+                            in_string = not in_string
+                            result.append(char)
+                            i += 1
+                            continue
+                        
+                        result.append(char)
+                        i += 1
+                    
+                    return ''.join(result)
+                
+                # 尝试修复转义字符后解析
+                try:
+                    fixed_json = fix_regex_escapes(cleaned)
+                    rules_data = json.loads(fixed_json)
+                    logger.debug("策略4成功: 修复转义字符后解析")
+                except (json.JSONDecodeError, Exception) as e:
+                    logger.debug(f"策略4修复转义字符后仍失败: {str(e)}")
+                
+                # 如果还是失败，尝试直接解析清理后的字符串
+                if not rules_data:
+                    try:
+                        rules_data = json.loads(cleaned)
+                        logger.debug("策略4成功: 清理后直接解析")
+                    except json.JSONDecodeError:
+                        # 如果还是失败，尝试手动提取rules数组
+                        try:
+                            # 使用更精确的正则，考虑嵌套结构
+                            rules_match = re.search(r'"rules"\s*:\s*\[', cleaned)
+                            if rules_match:
+                                start_pos = rules_match.end()
+                                # 使用栈匹配找到数组的结束位置
+                                bracket_count = 0
+                                in_string = False
+                                escape_next = False
+                                end_pos = start_pos
                                 
-                                if escape_next:
-                                    escape_next = False
-                                    continue
-                                
-                                if char == '\\':
-                                    escape_next = True
-                                    continue
-                                
-                                if char == '"' and not escape_next:
-                                    in_string = not in_string
-                                    continue
-                                
-                                if not in_string:
-                                    if char == '[':
-                                        bracket_count += 1
-                                    elif char == ']':
-                                        bracket_count -= 1
-                                        if bracket_count == 0:
-                                            end_pos = i
-                                            break
-                            
-                            if bracket_count == 0:
-                                rules_content = cleaned[start_pos:end_pos]
-                                # 尝试解析整个JSON（包含rules数组）
-                                try:
-                                    full_json = '{"rules": [' + rules_content + ']}'
-                                    rules_data = json.loads(full_json)
-                                    logger.debug("策略4成功: 手动构建完整JSON")
-                                except json.JSONDecodeError:
-                                    # 如果还是失败，尝试逐个解析规则对象
-                                    rule_objects = []
-                                    # 使用改进的规则对象匹配（考虑嵌套和转义）
-                                    obj_start = -1
-                                    obj_brace_count = 0
-                                    obj_in_string = False
-                                    obj_escape_next = False
+                                for i in range(start_pos, len(cleaned)):
+                                    char = cleaned[i]
                                     
-                                    for i, char in enumerate(rules_content):
-                                        if obj_escape_next:
-                                            obj_escape_next = False
-                                            continue
-                                        
-                                        if char == '\\':
-                                            obj_escape_next = True
-                                            continue
-                                        
-                                        if char == '"' and not obj_escape_next:
-                                            obj_in_string = not obj_in_string
-                                            continue
-                                        
-                                        if not obj_in_string:
-                                            if char == '{':
-                                                if obj_brace_count == 0:
-                                                    obj_start = i
-                                                obj_brace_count += 1
-                                            elif char == '}':
-                                                obj_brace_count -= 1
-                                                if obj_brace_count == 0 and obj_start >= 0:
-                                                    obj_str = rules_content[obj_start:i+1]
-                                                    try:
-                                                        rule_obj = json.loads(obj_str)
-                                                        rule_objects.append(rule_obj)
-                                                    except json.JSONDecodeError:
-                                                        pass
-                                                    obj_start = -1
+                                    if escape_next:
+                                        escape_next = False
+                                        continue
                                     
-                                    if rule_objects:
-                                        rules_data = {"rules": rule_objects}
-                                        logger.debug(f"策略4成功: 手动解析 {len(rule_objects)} 个规则对象")
-                    except Exception as e:
-                        logger.debug(f"策略4手动构建失败: {str(e)}")
+                                    if char == '\\':
+                                        escape_next = True
+                                        continue
+                                    
+                                    if char == '"' and not escape_next:
+                                        in_string = not in_string
+                                        continue
+                                    
+                                    if not in_string:
+                                        if char == '[':
+                                            bracket_count += 1
+                                        elif char == ']':
+                                            bracket_count -= 1
+                                            if bracket_count == 0:
+                                                end_pos = i
+                                                break
+                                
+                                if bracket_count == 0:
+                                    rules_content = cleaned[start_pos:end_pos]
+                                    # 尝试解析整个JSON（包含rules数组）
+                                    try:
+                                        full_json = '{"rules": [' + rules_content + ']}'
+                                        rules_data = json.loads(full_json)
+                                        logger.debug("策略4成功: 手动构建完整JSON")
+                                    except json.JSONDecodeError:
+                                        # 如果还是失败，尝试逐个解析规则对象
+                                        rule_objects = []
+                                        # 使用改进的规则对象匹配（考虑嵌套和转义）
+                                        obj_start = -1
+                                        obj_brace_count = 0
+                                        obj_in_string = False
+                                        obj_escape_next = False
+                                        
+                                        for i, char in enumerate(rules_content):
+                                            if obj_escape_next:
+                                                obj_escape_next = False
+                                                continue
+                                            
+                                            if char == '\\':
+                                                obj_escape_next = True
+                                                continue
+                                            
+                                            if char == '"' and not obj_escape_next:
+                                                obj_in_string = not obj_in_string
+                                                continue
+                                            
+                                            if not obj_in_string:
+                                                if char == '{':
+                                                    if obj_brace_count == 0:
+                                                        obj_start = i
+                                                    obj_brace_count += 1
+                                                elif char == '}':
+                                                    obj_brace_count -= 1
+                                                    if obj_brace_count == 0 and obj_start >= 0:
+                                                        obj_str = rules_content[obj_start:i+1]
+                                                        try:
+                                                            # 尝试修复转义字符
+                                                            fixed_obj_str = fix_regex_escapes(obj_str)
+                                                            rule_obj = json.loads(fixed_obj_str)
+                                                            rule_objects.append(rule_obj)
+                                                        except json.JSONDecodeError:
+                                                            # 如果修复后还是失败，尝试原始字符串
+                                                            try:
+                                                                rule_obj = json.loads(obj_str)
+                                                                rule_objects.append(rule_obj)
+                                                            except json.JSONDecodeError:
+                                                                pass
+                                                        obj_start = -1
+                                        
+                                        if rule_objects:
+                                            rules_data = {"rules": rule_objects}
+                                            logger.debug(f"策略4成功: 手动解析 {len(rule_objects)} 个规则对象")
+                        except Exception as e:
+                            logger.debug(f"策略4手动构建失败: {str(e)}")
             
             # 如果成功解析，提取rules
             if rules_data:
@@ -967,26 +1032,61 @@ class KnowledgeGraphService:
             }
             
             if KG_DYNAMIC_RULES_ENABLED:
-                try:
-                    # 采样文本
-                    sample_text = self._sample_text(document_text)
-                    logger.debug(f"采样文本长度: {len(sample_text)}")
-                    
-                    # 分析文本内容（仅一次）
-                    analysis = self._analyze_text_content_with_llm(sample_text)
-                    logger.info(f"文档 {doc_id} 文本分析: 类型={analysis.get('text_type')}, 主题={analysis.get('core_themes')}")
-                    cache["analysis"] = analysis
-                    
-                    # 提取一些实体用于规则生成（从采样文本中）
-                    entities = self.ie_model_service.extract_entities(sample_text) if self.ie_model_service else []
-                    
-                    # 生成动态规则（仅一次）
-                    dynamic_rules = self._generate_rules_with_llm(sample_text, analysis, entities)
-                    logger.info(f"文档 {doc_id} 生成了 {len(dynamic_rules)} 个动态规则")
-                    cache["dynamic_rules"] = dynamic_rules
-                except Exception as e:
-                    logger.warning(f"文档 {doc_id} 动态规则生成失败，将使用默认规则: {str(e)}")
-                    cache["dynamic_rules"] = []
+                # 采样文本
+                sample_text = self._sample_text(document_text)
+                logger.debug(f"采样文本长度: {len(sample_text)}")
+                
+                # 分析文本内容（带重试）
+                analysis = None
+                for retry in range(KG_DYNAMIC_RULES_RETRY_COUNT):
+                    try:
+                        analysis = self._analyze_text_content_with_llm(sample_text)
+                        if analysis and analysis.get('text_type') != '未知':
+                            logger.info(f"文档 {doc_id} 文本分析成功（尝试 {retry + 1}/{KG_DYNAMIC_RULES_RETRY_COUNT}）: 类型={analysis.get('text_type')}, 主题={analysis.get('core_themes')}")
+                            break
+                        else:
+                            if retry < KG_DYNAMIC_RULES_RETRY_COUNT - 1:
+                                logger.warning(f"文档 {doc_id} 文本分析返回默认值，重试 {retry + 1}/{KG_DYNAMIC_RULES_RETRY_COUNT}")
+                                time.sleep(KG_DYNAMIC_RULES_RETRY_DELAY)
+                    except Exception as e:
+                        if retry < KG_DYNAMIC_RULES_RETRY_COUNT - 1:
+                            logger.warning(f"文档 {doc_id} 文本分析失败（尝试 {retry + 1}/{KG_DYNAMIC_RULES_RETRY_COUNT}），将重试: {str(e)[:200]}")
+                            time.sleep(KG_DYNAMIC_RULES_RETRY_DELAY)
+                        else:
+                            logger.error(f"文档 {doc_id} 文本分析失败（已重试 {KG_DYNAMIC_RULES_RETRY_COUNT} 次）: {str(e)[:200]}")
+                            analysis = {
+                                "text_type": "未知",
+                                "core_themes": [],
+                                "common_relations": [],
+                                "language_style": "未知"
+                            }
+                
+                cache["analysis"] = analysis
+                
+                # 提取一些实体用于规则生成（从采样文本中）
+                entities = self.ie_model_service.extract_entities(sample_text) if self.ie_model_service else []
+                
+                # 生成动态规则（带重试）
+                dynamic_rules = []
+                for retry in range(KG_DYNAMIC_RULES_RETRY_COUNT):
+                    try:
+                        dynamic_rules = self._generate_rules_with_llm(sample_text, analysis, entities)
+                        if dynamic_rules and len(dynamic_rules) > 0:
+                            logger.info(f"文档 {doc_id} 生成了 {len(dynamic_rules)} 个动态规则（尝试 {retry + 1}/{KG_DYNAMIC_RULES_RETRY_COUNT}）")
+                            break
+                        else:
+                            if retry < KG_DYNAMIC_RULES_RETRY_COUNT - 1:
+                                logger.warning(f"文档 {doc_id} 动态规则生成返回空列表，重试 {retry + 1}/{KG_DYNAMIC_RULES_RETRY_COUNT}")
+                                time.sleep(KG_DYNAMIC_RULES_RETRY_DELAY)
+                    except Exception as e:
+                        if retry < KG_DYNAMIC_RULES_RETRY_COUNT - 1:
+                            logger.warning(f"文档 {doc_id} 动态规则生成失败（尝试 {retry + 1}/{KG_DYNAMIC_RULES_RETRY_COUNT}），将重试: {str(e)[:200]}")
+                            time.sleep(KG_DYNAMIC_RULES_RETRY_DELAY)
+                        else:
+                            logger.error(f"文档 {doc_id} 动态规则生成失败（已重试 {KG_DYNAMIC_RULES_RETRY_COUNT} 次）: {str(e)[:200]}")
+                            dynamic_rules = []
+                
+                cache["dynamic_rules"] = dynamic_rules
             
             # 缓存结果
             self._document_cache[doc_id] = cache

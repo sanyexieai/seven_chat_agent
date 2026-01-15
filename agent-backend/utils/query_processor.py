@@ -77,30 +77,12 @@ class QueryProcessor:
         return query
     
     def _expand_query(self, query: str, user_id: str) -> str:
-        """查询扩展"""
+        """查询扩展 - 简化版，避免为中文查询添加噪音"""
         try:
-            # 获取用户查询历史
-            history = self.query_history.get(user_id, [])
-            
-            # 基于历史查询进行扩展
-            expanded_terms = []
-            
-            # 添加同义词
-            synonyms = self._get_synonyms(query)
-            expanded_terms.extend(synonyms)
-            
-            # 添加相关术语
-            related_terms = self._get_related_terms(query, history)
-            expanded_terms.extend(related_terms)
-            
-            # 构建扩展查询
-            if expanded_terms:
-                expanded_query = f"{query} {' '.join(expanded_terms)}"
-            else:
-                expanded_query = query
-            
-            return expanded_query
-            
+            # 对于中文查询，不进行扩展，保持原样
+            # 查询扩展可能会引入不相关的术语，降低搜索精度
+            return query
+
         except Exception as e:
             logger.error(f"查询扩展失败: {str(e)}")
             return query
@@ -203,29 +185,12 @@ class QueryProcessor:
         return entities
     
     def _rewrite_query(self, query: str, intent: str, entities: List[Dict[str, Any]], user_id: str) -> str:
-        """查询重写"""
+        """查询重写 - 简化版，避免过度处理中文查询"""
         try:
-            # 基于意图重写查询
-            if intent == "factual":
-                # 事实性查询，添加更多上下文
-                query = f"请详细解释：{query}"
-            elif intent == "comparative":
-                # 比较性查询，强调对比
-                query = f"请对比分析：{query}"
-            elif intent == "procedural":
-                # 程序性查询，强调步骤
-                query = f"请提供详细步骤：{query}"
-            elif intent == "analytical":
-                # 分析性查询，强调深度分析
-                query = f"请深入分析：{query}"
-            
-            # 基于实体重写查询
-            if entities:
-                entity_info = " ".join([e["value"] for e in entities])
-                query = f"{query} 涉及：{entity_info}"
-            
+            # 对于中文查询，保持原样，不添加前缀
+            # 这样可以保持语义完整性，特别是对于文学作品查询
             return query
-            
+
         except Exception as e:
             logger.error(f"查询重写失败: {str(e)}")
             return query

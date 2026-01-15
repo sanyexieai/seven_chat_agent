@@ -23,6 +23,7 @@ from utils.performance_optimizer import cached, timed, retry
 from utils.reranker import rerank as rerank_results  # 新增
 from utils.llm_helper import get_llm_helper
 from services.knowledge_graph_service import KnowledgeGraphService  # 新增知识图谱服务
+from config import CHUNK_SIZE, CHUNK_OVERLAP  # 导入分块配置
 
 logger = get_logger("knowledge_base_service")
 
@@ -31,8 +32,8 @@ RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
 RERANKER_ENABLED_ENV = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
 EXTRACT_TRIPLES_ENABLED = os.getenv("EXTRACT_TRIPLES_ENABLED", "true").lower() == "true"  # 默认启用
 KNOWLEDGE_GRAPH_ENABLED = os.getenv("KNOWLEDGE_GRAPH_ENABLED", "true").lower() == "true"  # 默认启用知识图谱
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.0"))  # 相似度阈值，默认0.0（不过滤），让重排序处理
-SIMILARITY_THRESHOLD_MIN = float(os.getenv("SIMILARITY_THRESHOLD_MIN", "0.1"))  # 最低相似度阈值（用于最终过滤）
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.3"))  # 相似度阈值，提高到0.3过滤低质量结果
+SIMILARITY_THRESHOLD_MIN = float(os.getenv("SIMILARITY_THRESHOLD_MIN", "0.2"))  # 最低相似度阈值，提高到0.2
 LLM_QUERY_DECOMPOSE_ENABLED = os.getenv("LLM_QUERY_DECOMPOSE_ENABLED", "true").lower() == "true"  # 默认启用LLM拆解
 CHUNK_STRATEGY = os.getenv("CHUNK_STRATEGY", "hierarchical")  # hierarchical, semantic, sentence, fixed
 USE_LLM_MERGE = os.getenv("USE_LLM_MERGE", "false").lower() == "true"
@@ -46,12 +47,12 @@ class KnowledgeBaseService:
     
     def __init__(self, vector_store_type: str = "auto"):
         self.text_processor = TextProcessor(
-            chunk_size=500,      # 目标分块大小
-            overlap=50,          # 重叠长度
-            chunk_strategy=CHUNK_STRATEGY,  # 使用配置的分割策略
-            min_chunk_size=100,  # 最小分块大小
-            max_chunk_size=800,  # 最大分块大小
-            use_llm_merge=False  # 默认关闭LLM优化分块（避免频繁调用，改为按需启用）
+            chunk_size=CHUNK_SIZE,      # 使用配置的分块大小
+            overlap=CHUNK_OVERLAP,      # 使用配置的重叠长度
+            chunk_strategy=CHUNK_STRATEGY,
+            min_chunk_size=100,
+            max_chunk_size=CHUNK_SIZE + 300,  # 最大分块大小基于配置
+            use_llm_merge=False
         )
         self.embedding_service = EmbeddingService()
         self.file_extractor = FileExtractor()

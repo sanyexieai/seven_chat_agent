@@ -124,7 +124,8 @@ class KGExtractionWorker:
                         kb_id=doc.knowledge_base_id,
                         doc_id=doc.id,
                         chunk_id=chunk.id,
-                        document_text=document_text if chunk.chunk_index == 0 else None  # 只在第一个分块时传入
+                        document_text=document_text if chunk.chunk_index == 0 else None,  # 只在第一个分块时传入
+                        db=db,  # 传入数据库会话以便使用高频实体
                     )
                     
                     if triples_data:

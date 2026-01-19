@@ -10,12 +10,13 @@ import random
 import json
 import threading
 import time
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Set, Tuple
 from collections import defaultdict
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 
-from models.database_models import KnowledgeTriple, DocumentChunk, KnowledgeBase
+from models.database_models import KnowledgeTriple, DocumentChunk, KnowledgeBase, HighFrequencyEntity
 from utils.log_helper import get_logger
 from utils.llm_helper import get_llm_helper
 from utils.embedding_service import EmbeddingService
@@ -28,8 +29,10 @@ KG_ENTITY_LINKING_ENABLED = os.getenv("KG_ENTITY_LINKING_ENABLED", "true").lower
 KG_MAX_HOPS = int(os.getenv("KG_MAX_HOPS", "3"))
 KG_TOP_ENTITIES = int(os.getenv("KG_TOP_ENTITIES", "10"))
 # 抽取模式：llm / rule / hybrid / model / ner_rule（默认模型：使用NER+RE小模型）
-# ner_rule: 使用NER识别实体 + 规则提取关系（推荐，速度快且准确，支持动态规则生成）
-KG_EXTRACT_MODE = os.getenv("KG_EXTRACT_MODE", "ner_rule").lower()
+# hybrid: 规则优先，规则结果不足时才可选调用LLM（默认关闭LLM回退以保证速度）
+KG_EXTRACT_MODE = os.getenv("KG_EXTRACT_MODE", "hybrid").lower()
+# 是否允许在hybrid模式下使用LLM做三元组补充（默认关闭，避免拖慢知识库处理）
+KG_LLM_FALLBACK_ENABLED = os.getenv("KG_LLM_FALLBACK_ENABLED", "false").lower() == "true"
 # 动态规则生成配置
 KG_DYNAMIC_RULES_ENABLED = os.getenv("KG_DYNAMIC_RULES_ENABLED", "true").lower() == "true"  # 是否启用动态规则生成
 KG_SAMPLE_TEXT_LENGTH = int(os.getenv("KG_SAMPLE_TEXT_LENGTH", "2000"))  # 采样文本长度
@@ -80,6 +83,10 @@ class KnowledgeGraphService:
         self.entity_cache = {}  # 实体缓存：实体名 -> 规范化实体名
         self.ie_model_service = None
         
+        # 高频实体缓存：kb_id -> {chapter_entities: {}, global_entities: {}}
+        self._hf_entity_cache: Dict[int, Dict[str, Any]] = {}
+        self._hf_cache_lock = threading.Lock()
+        
         # 预初始化线程池（如果还没有创建）
         try:
             self._get_executor()
@@ -111,15 +118,21 @@ class KnowledgeGraphService:
         }
     
     def extract_entities_and_relations(
-        self, 
-        text: str, 
+        self,
+        text: str,
         kb_id: int,
         doc_id: int,
         chunk_id: Optional[int] = None,
-        document_text: Optional[str] = None  # 可选：传入完整文档文本用于分析和规则生成
+        document_text: Optional[str] = None,  # 可选：传入完整文档文本用于分析和规则生成
+        db: Optional[Session] = None,  # 新增：数据库会话，用于获取高频实体
     ) -> List[Dict[str, Any]]:
         """
         从文本中提取实体和关系，返回三元组列表
+        
+        新流程（优先）：
+        1. 提取所有疑似高频实体
+        2. 用LLM识别相似概念并建立别名关联
+        3. 只抽取高频实体之间的关系
         
         Args:
             text: 输入文本
@@ -132,53 +145,185 @@ class KnowledgeGraphService:
         """
         if not KG_EXTRACT_ENABLED:
             return []
-        
+
         try:
-            # 根据模式选择抽取方法
-            triples: List[Tuple[str, str, str, float]] = []
+            # 新流程：优先使用高频实体方案
+            if db is not None:
+                try:
+                    # 1. 提取所有候选实体
+                    candidate_entities = self._extract_all_candidate_entities(text, db=db, kb_id=kb_id)
+                    logger.debug(f"提取到 {len(candidate_entities)} 个候选实体")
+                    
+                    if not candidate_entities:
+                        return []
+                    
+                    # 2. 用LLM做实体归一（识别相似概念）
+                    alias_map = self._normalize_entities_with_llm(candidate_entities, kb_id, db=db)
+                    logger.debug(f"实体归一映射：{len(alias_map)} 个实体/别名")
+                    
+                    # 3. 从数据库加载高频实体列表（手动维护的 + 自动统计的）
+                    hf_entity_names = set()
+                    hf_entities_db = db.query(HighFrequencyEntity).filter(
+                        HighFrequencyEntity.knowledge_base_id == kb_id
+                    ).all()
+                    
+                    for hf_entity in hf_entities_db:
+                        hf_entity_names.add(hf_entity.entity_name)
+                        if hf_entity.aliases:
+                            for alias in hf_entity.aliases:
+                                hf_entity_names.add(alias)
+
+                    # 读取知识库上配置的“高频最小频次阈值”，默认 3
+                    hf_min_freq = 3
+                    try:
+                        from models.database_models import KnowledgeBase
+                        kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+                        if kb and kb.hf_min_frequency is not None and kb.hf_min_frequency > 0:
+                            hf_min_freq = kb.hf_min_frequency
+                    except Exception as cfg_e:
+                        logger.debug(f"读取知识库高频阈值失败，使用默认值 3: {cfg_e}")
+                    
+                    # 如果没有手动维护的高频实体，使用频次统计（出现>=hf_min_freq次的实体）
+                    if not hf_entity_names:
+                        entity_freq = defaultdict(int)
+                        for entity in candidate_entities:
+                            entity_text = entity.get("text", "")
+                            normalized = alias_map.get(entity_text, entity_text)
+                            entity_freq[normalized] += 1
+                        
+                        # 选择频次>=hf_min_freq的实体作为高频实体
+                        hf_entity_names = {name for name, freq in entity_freq.items() if freq >= hf_min_freq}
+                        logger.debug(f"自动识别 {len(hf_entity_names)} 个高频实体（频次>={hf_min_freq}）")
+                    
+                    if not hf_entity_names:
+                        logger.debug("未找到高频实体，跳过关系抽取")
+                        return []
+                    
+                    # 4. 只抽取高频实体之间的关系
+                    doc_cache = self._get_or_create_document_analysis(doc_id, document_text or text) if document_text else None
+                    triples = self._extract_triples_between_hf_entities(
+                        text, hf_entity_names, alias_map, doc_cache=doc_cache
+                    )
+                    
+                    logger.debug(f"高频实体关系抽取得到 {len(triples)} 个三元组")
+                    
+                except Exception as e:
+                    logger.warning(f"高频实体抽取流程失败，回退到默认抽取: {str(e)}", exc_info=True)
+                    # 回退到原有流程
+                    triples = self._extract_triples_fallback(text, kb_id, doc_id, chunk_id, document_text, db)
+            else:
+                # 没有数据库会话，使用原有流程
+                triples = self._extract_triples_fallback(text, kb_id, doc_id, chunk_id, document_text, db)
             
-            if KG_EXTRACT_MODE == "ner_rule":
-                # NER + 规则混合模式：使用NER识别实体，规则提取关系
-                if self.ie_model_service and self.ie_model_service.is_available():
-                    # 获取或生成文档级别的分析和规则（每个文档只分析一次）
-                    doc_cache = self._get_or_create_document_analysis(doc_id, document_text or text)
-                    triples = self._extract_triples_ner_rule_hybrid(text, doc_cache)
-                    logger.debug(f"NER+规则混合抽取得到 {len(triples)} 个三元组")
-                else:
-                    # NER模型未加载，回退到纯规则模式
-                    logger.warning("NER模型未加载，回退到纯规则模式")
-                    triples = self._extract_triples_rule_based(text)
-            elif KG_EXTRACT_MODE == "model":
-                if self.ie_model_service and self.ie_model_service.is_available():
-                    # 使用专用IE模型抽取（NER + RE）
-                    model_triples = self.ie_model_service.extract_triples(text)
-                    triples = model_triples
-                    logger.debug(f"模型抽取得到 {len(triples)} 个三元组")
-                else:
-                    # 模型未加载，回退到规则模式
-                    logger.warning("IE模型未加载，回退到规则模式")
-                    triples = self._extract_triples_rule_based(text)
-            elif KG_EXTRACT_MODE == "rule":
-                # 纯规则模式
-                triples = self._extract_triples_rule_based(text)
-            elif KG_EXTRACT_MODE == "llm":
-                # 纯LLM模式
-                triples = self._extract_triples_with_llm(text)
-            else:  # hybrid 模式（默认）
-                # 1) 规则优先：快速规则抽取
-                rule_triples = self._extract_triples_rule_based(text)
-                triples = rule_triples
+            # 去重（确保每个三元组格式正确）
+            seen = set()
+            deduplicated_triples = []
+            for t in triples:
+                if len(t) < 3:
+                    continue
+                key = (t[0], t[1], t[2])
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduplicated_triples.append(t if len(t) == 4 else (t[0], t[1], t[2], 0.8))
+            triples = deduplicated_triples
+            
+            # 实体链接和规范化
+            if KG_ENTITY_LINKING_ENABLED:
+                triples = self._link_entities(triples, kb_id)
+            
+            # 添加元数据
+            enriched_triples = []
+            for triple in triples:
+                enriched_triples.append({
+                    'knowledge_base_id': kb_id,
+                    'document_id': doc_id,
+                    'chunk_id': chunk_id,
+                    'subject': triple[0],
+                    'predicate': triple[1],
+                    'object': triple[2],
+                    'confidence': triple[3] if len(triple) > 3 else 1.0,
+                    'source_text': text[:200]
+                })
+            
+            return enriched_triples
+            
+        except Exception as e:
+            logger.error(f"提取实体和关系失败: {str(e)}")
+            return []
+    
+    def _extract_triples_fallback(
+        self,
+        text: str,
+        kb_id: int,
+        doc_id: int,
+        chunk_id: Optional[int] = None,
+        document_text: Optional[str] = None,
+        db: Optional[Session] = None
+    ) -> List[Tuple[str, str, str, float]]:
+        """回退抽取方法（原有流程）"""
+        triples: List[Tuple[str, str, str, float]] = []
+        
+        # 获取高频实体信息（如果可用）
+        hf_data: Optional[Dict[str, Any]] = None
+        section_title: Optional[str] = None
+        
+        if db is not None:
+            try:
+                if chunk_id is not None:
+                    chunk = (
+                        db.query(DocumentChunk)
+                        .filter(DocumentChunk.id == chunk_id)
+                        .first()
+                    )
+                    if chunk and chunk.chunk_metadata:
+                        section_title = chunk.chunk_metadata.get("section_title")
                 
-                # 2) 只在规则抽取结果较少时调用 LLM 补充
-                if len(rule_triples) < 2:
-                    llm_triples = self._extract_triples_with_llm(text)
-                    # 合并规则和LLM结果
-                    seen = set((t[0], t[1], t[2]) for t in triples)
-                    for t in llm_triples:
-                        key = (t[0], t[1], t[2])
-                        if key not in seen:
-                            seen.add(key)
-                            triples.append(t)
+                hf_data = self._get_high_frequency_entities(
+                    db=db, kb_id=kb_id, document_id=doc_id, section_title=section_title
+                )
+            except Exception as e:
+                logger.debug(f"获取高频实体失败: {str(e)}")
+                hf_data = None
+        
+        # 根据模式选择抽取方法
+        if KG_EXTRACT_MODE == "ner_rule":
+            if self.ie_model_service and self.ie_model_service.is_available():
+                doc_cache = self._get_or_create_document_analysis(doc_id, document_text or text)
+                triples = self._extract_triples_ner_rule_hybrid(
+                    text, doc_cache, hf_data=hf_data, section_title=section_title
+                )
+            else:
+                triples = self._extract_triples_rule_based(
+                    text, hf_data=hf_data, section_title=section_title
+                )
+        elif KG_EXTRACT_MODE == "model":
+            if self.ie_model_service and self.ie_model_service.is_available():
+                triples = self.ie_model_service.extract_triples(text)
+            else:
+                triples = self._extract_triples_rule_based(
+                    text, hf_data=hf_data, section_title=section_title
+                )
+        elif KG_EXTRACT_MODE == "rule":
+            triples = self._extract_triples_rule_based(
+                text, hf_data=hf_data, section_title=section_title
+            )
+        elif KG_EXTRACT_MODE == "llm":
+            triples = self._extract_triples_with_llm(text)
+        else:  # hybrid 模式（默认）
+            rule_triples = self._extract_triples_rule_based(
+                text, hf_data=hf_data, section_title=section_title
+            )
+            triples = rule_triples
+            
+            if KG_LLM_FALLBACK_ENABLED and len(rule_triples) < 2:
+                llm_triples = self._extract_triples_with_llm(text)
+                seen = set((t[0], t[1], t[2]) for t in triples)
+                for t in llm_triples:
+                    key = (t[0], t[1], t[2])
+                    if key not in seen:
+                        seen.add(key)
+                        triples.append(t)
             
             # 去重（确保每个三元组格式正确）
             seen = set()
@@ -280,7 +425,12 @@ class KnowledgeGraphService:
             logger.warning(f"LLM提取三元组失败: {str(e)}", exc_info=True)
             return []
     
-    def _extract_triples_rule_based(self, text: str) -> List[Tuple[str, str, str, float]]:
+    def _extract_triples_rule_based(
+        self,
+        text: str,
+        hf_data: Optional[Dict[str, Any]] = None,
+        section_title: Optional[str] = None,
+    ) -> List[Tuple[str, str, str, float]]:
         """
         基于规则的快速三元组抽取（不调用LLM）
         
@@ -293,7 +443,7 @@ class KnowledgeGraphService:
         triples: List[Tuple[str, str, str, float]] = []
         if not text:
             return triples
-        
+
         # 先识别事件实体（即使NER未加载也能工作）
         event_entities = self._extract_event_entities_rule_based(text)
         if event_entities:
@@ -340,8 +490,8 @@ class KnowledgeGraphService:
             (r"(.+?)(来自|出自)(.+)", "来自", 1, 3),
             # X 去 Y / 到 Y
             (r"(.+?)(去|到|前往)(.+)", "前往", 1, 3),
-            # X 说 Y
-            (r"(.+?)(说|道|曰)(.+)", "说", 1, 3),
+            # X 说 Y - 降低优先级，只在没有其他关系时使用
+            # (r"(.+?)(说|道|曰)(.+)", "说", 1, 3),  # 暂时禁用，噪音太多
             # X 做 Y / 进行 Y
             (r"(.+?)(做|进行|执行)(.+)", "执行", 1, 3),
             # X 有 Y
@@ -413,10 +563,21 @@ class KnowledgeGraphService:
                 # 简单约束
                 if not subj or not obj or not pred:
                     continue
-                if len(subj) > 100 or len(obj) > 100 or len(pred) > 20:
+                # 限制长度，避免整句被当成实体
+                if len(subj) > 20 or len(obj) > 20 or len(pred) > 20:
                     continue
-                # 过滤掉明显不是实体的内容（如单个字符、标点等）
+                # 过滤掉明显不是实体的内容（如单个字符、包含大量标点等）
                 if len(subj) < 2 or len(obj) < 2:
+                    continue
+                # 如果主体或宾语里包含明显的句子级标点/空白，也认为不是实体
+                if re.search(r"[，。,\.！？!？；;：:“\"'\s]", subj):
+                    continue
+                if re.search(r"[，。,\.！？!？；;：:“\"'\s]", obj):
+                    continue
+                # 要求至少包含一个中文或字母/数字
+                if not re.search(r"[\u4e00-\u9fa5A-Za-z0-9]", subj):
+                    continue
+                if not re.search(r"[\u4e00-\u9fa5A-Za-z0-9]", obj):
                     continue
                 
                 # 置信度：规则匹配给个中等偏上的值
@@ -424,7 +585,16 @@ class KnowledgeGraphService:
                 triples.append((subj, pred, obj, conf))
         
         if triples:
-            logger.debug(f"规则抽取得到 {len(triples)} 个三元组")
+            logger.debug(f"规则抽取得到 {len(triples)} 个三元组(原始)")
+
+        # 使用高频实体进行一次置信度与实体归一调整
+        if hf_data:
+            triples = self._adjust_triples_with_hf_entities(
+                triples, hf_data, section_title=section_title
+            )
+            if triples:
+                logger.debug(f"规则抽取经高频实体调整后保留 {len(triples)} 个三元组")
+
         return triples
     
     def _extract_event_entities_rule_based(self, text: str) -> List[Dict[str, Any]]:
@@ -1206,9 +1376,11 @@ class KnowledgeGraphService:
                 logger.debug(f"已清理文档 {doc_id} 的缓存")
     
     def _extract_triples_ner_rule_hybrid(
-        self, 
-        text: str, 
-        doc_cache: Optional[Dict[str, Any]] = None
+        self,
+        text: str,
+        doc_cache: Optional[Dict[str, Any]] = None,
+        hf_data: Optional[Dict[str, Any]] = None,
+        section_title: Optional[str] = None,
     ) -> List[Tuple[str, str, str, float]]:
         """
         NER + 规则混合提取：使用NER识别实体，然后用规则提取关系
@@ -1222,7 +1394,7 @@ class KnowledgeGraphService:
         triples: List[Tuple[str, str, str, float]] = []
         if not text:
             return triples
-        
+
         # 1. 使用NER模型提取实体
         entities = []
         if self.ie_model_service and self.ie_model_service.is_available():
@@ -1235,8 +1407,10 @@ class KnowledgeGraphService:
         
         if not entities:
             logger.debug("未识别到任何实体，回退到纯规则模式")
-            return self._extract_triples_rule_based(text)
-        
+            return self._extract_triples_rule_based(
+                text, hf_data=hf_data, section_title=section_title
+            )
+
         # 2. 使用文档级别的分析和规则（如果提供）
         dynamic_rules = []
         if doc_cache:
@@ -1330,8 +1504,10 @@ class KnowledgeGraphService:
             except Exception as e:
                 logger.warning(f"解析动态规则失败: {str(e)}, 规则: {rule}")
         
-        logger.info(f"总共使用 {len(relation_patterns)} 个规则（{len(default_patterns)} 个默认 + {len(dynamic_rules)} 个动态）")
-        
+        logger.info(
+            f"总共使用 {len(relation_patterns)} 个规则（{len(default_patterns)} 个默认 + {len(dynamic_rules)} 个动态）"
+        )
+
         # 5. 在每个句子中查找关系
         for sent in sentences:
             # 检查句子中是否包含实体
@@ -2047,3 +2223,688 @@ class KnowledgeGraphService:
                 'entities': [],
                 'enhanced': False
             }
+    
+    def _compute_high_frequency_entities(
+        self,
+        db: Session,
+        kb_id: int,
+        document_id: Optional[int] = None,
+        force_refresh: bool = False
+    ) -> Dict[str, Any]:
+        """
+        计算高频实体（章节级 + 全局级）
+        
+        目标：不是为了统计展示，而是为了提高知识图谱准确率
+        - 章节级高频实体：用于局部上下文优化
+        - 全局级高频实体：用于实体归一、置信度调整、规则优化
+        
+        Args:
+            db: 数据库会话
+            kb_id: 知识库ID
+            document_id: 文档ID（可选，如果指定则只统计该文档）
+            force_refresh: 是否强制刷新缓存
+            
+        Returns:
+            {
+                'chapter_entities': {section_title: [entities]},
+                'global_entities': {entity_name: {count, chapters, type}},
+                'entity_aliases': {alias: canonical_name}  # 别名归一映射
+            }
+        """
+        cache_key = f"{kb_id}_{document_id or 'all'}"
+        
+        # 检查缓存
+        if not force_refresh:
+            with self._hf_cache_lock:
+                if cache_key in self._hf_entity_cache:
+                    logger.debug(f"使用缓存的高频实体数据: {cache_key}")
+                    return self._hf_entity_cache[cache_key]
+        
+        try:
+            logger.info(f"开始计算高频实体: kb_id={kb_id}, doc_id={document_id}")
+            
+            # 1. 从三元组中提取所有实体（subject + object）
+            query = db.query(KnowledgeTriple).filter(
+                KnowledgeTriple.knowledge_base_id == kb_id
+            )
+            if document_id:
+                query = query.filter(KnowledgeTriple.document_id == document_id)
+            
+            triples = query.all()
+            
+            if not triples:
+                logger.warning(f"未找到三元组，无法计算高频实体")
+                return {'chapter_entities': {}, 'global_entities': {}, 'entity_aliases': {}}
+            
+            # 2. 通过chunk_id关联DocumentChunk，获取章节信息
+            from models.database_models import DocumentChunk
+            chunk_ids = [t.chunk_id for t in triples if t.chunk_id]
+            chunks = db.query(DocumentChunk).filter(
+                DocumentChunk.id.in_(chunk_ids)
+            ).all()
+            
+            # 构建chunk_id -> chunk的映射
+            chunk_map = {c.id: c for c in chunks}
+            
+            # 3. 章节级统计
+            chapter_entity_counts: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(lambda: defaultdict(lambda: {
+                'count': 0,
+                'type': 'UNKNOWN',
+                'chunk_ids': set()
+            }))
+            
+            # 4. 全局级统计
+            global_entity_counts: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+                'count': 0,
+                'chapters': set(),
+                'type': 'UNKNOWN',
+                'first_chapter': None
+            })
+            
+            # 5. 遍历三元组，统计实体
+            for triple in triples:
+                chunk = chunk_map.get(triple.chunk_id) if triple.chunk_id else None
+                section_title = "__NO_SECTION__"
+                
+                if chunk and chunk.chunk_metadata:
+                    section_title = chunk.chunk_metadata.get('section_title', '__NO_SECTION__')
+                
+                # 统计subject
+                subj = triple.subject.strip()
+                if subj and len(subj) >= 2:
+                    # 章节级
+                    chapter_entity_counts[section_title][subj]['count'] += 1
+                    if triple.chunk_id:
+                        chapter_entity_counts[section_title][subj]['chunk_ids'].add(triple.chunk_id)
+                    
+                    # 全局级
+                    global_entity_counts[subj]['count'] += 1
+                    global_entity_counts[subj]['chapters'].add(section_title)
+                    if not global_entity_counts[subj]['first_chapter']:
+                        global_entity_counts[subj]['first_chapter'] = section_title
+                
+                # 统计object
+                obj = triple.object.strip()
+                if obj and len(obj) >= 2:
+                    # 章节级
+                    chapter_entity_counts[section_title][obj]['count'] += 1
+                    if triple.chunk_id:
+                        chapter_entity_counts[section_title][obj]['chunk_ids'].add(triple.chunk_id)
+                    
+                    # 全局级
+                    global_entity_counts[obj]['count'] += 1
+                    global_entity_counts[obj]['chapters'].add(section_title)
+                    if not global_entity_counts[obj]['first_chapter']:
+                        global_entity_counts[obj]['first_chapter'] = section_title
+            
+            # 6. 构建章节级结果（只保留高频实体，top_k_per_chapter）
+            chapter_entities = {}
+            top_k_per_chapter = 30  # 每章节保留前30个高频实体
+            
+            for section_title, entities in chapter_entity_counts.items():
+                sorted_entities = sorted(
+                    entities.items(),
+                    key=lambda x: x[1]['count'],
+                    reverse=True
+                )[:top_k_per_chapter]
+                
+                chapter_entities[section_title] = [
+                    {
+                        'name': name,
+                        'count': info['count'],
+                        'type': info['type']
+                    }
+                    for name, info in sorted_entities
+                ]
+            
+            # 7. 构建全局级结果（只保留高频实体，top_k_global）
+            top_k_global = 100  # 全局保留前100个高频实体
+            sorted_global = sorted(
+                global_entity_counts.items(),
+                key=lambda x: (x[1]['count'], len(x[1]['chapters'])),
+                reverse=True
+            )[:top_k_global]
+            
+            global_entities = {}
+            for name, info in sorted_global:
+                global_entities[name] = {
+                    'count': info['count'],
+                    'chapter_count': len(info['chapters']),
+                    'first_chapter': info['first_chapter'],
+                    'type': info['type']
+                }
+            
+            # 8. 简单的实体别名归一（基于规则和相似度）
+            entity_aliases = self._build_entity_aliases(global_entities)
+            
+            result = {
+                'chapter_entities': chapter_entities,
+                'global_entities': global_entities,
+                'entity_aliases': entity_aliases
+            }
+            
+            # 缓存结果
+            with self._hf_cache_lock:
+                self._hf_entity_cache[cache_key] = result
+            
+            logger.info(f"高频实体计算完成: {len(chapter_entities)} 个章节, {len(global_entities)} 个全局高频实体")
+            return result
+            
+        except Exception as e:
+            logger.error(f"计算高频实体失败: {str(e)}", exc_info=True)
+            return {'chapter_entities': {}, 'global_entities': {}, 'entity_aliases': {}}
+    
+    def _build_entity_aliases(self, global_entities: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+        """
+        构建实体别名归一映射
+        
+        简单规则：
+        1. 常见别名模式（如：刘备/玄德/刘玄德）
+        2. 基于频次：高频实体作为标准名，低频实体作为别名
+        3. 字符串相似度（简单版）
+        """
+        aliases = {}
+        
+        # 常见中文别名模式（可以扩展）
+        common_patterns = [
+            # 三国人物别名
+            (r'^(.+?)(字|号|又称)(.+?)$', lambda m: (m.group(3), m.group(1))),
+        ]
+        
+        # 按频次排序，高频的作为标准名
+        sorted_entities = sorted(
+            global_entities.items(),
+            key=lambda x: x[1]['count'],
+            reverse=True
+        )
+        
+        # 简单的字符串相似度匹配（相同前缀/后缀）
+        for i, (name1, info1) in enumerate(sorted_entities):
+            if name1 in aliases:  # 已经是别名了，跳过
+                continue
+            
+            for j, (name2, info2) in enumerate(sorted_entities[i+1:], start=i+1):
+                if name2 in aliases:  # 已经是别名了，跳过
+                    continue
+                
+                # 规则1: 完全包含关系（如"刘备"包含"玄德"）
+                if name1 in name2 or name2 in name1:
+                    # 频次高的作为标准名
+                    if info1['count'] >= info2['count']:
+                        aliases[name2] = name1
+                    else:
+                        aliases[name1] = name2
+                    continue
+                
+                # 规则2: 相同前缀（如"刘玄德"和"刘备"）
+                if len(name1) >= 2 and len(name2) >= 2:
+                    if name1[0] == name2[0] and abs(len(name1) - len(name2)) <= 2:
+                        # 频次高的作为标准名
+                        if info1['count'] >= info2['count']:
+                            aliases[name2] = name1
+                        else:
+                            aliases[name1] = name2
+        
+        logger.debug(f"构建了 {len(aliases)} 个别名映射")
+        return aliases
+    
+    def _get_high_frequency_entities(
+        self,
+        db: Session,
+        kb_id: int,
+        document_id: Optional[int] = None,
+        section_title: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        获取高频实体（带缓存）
+        
+        Args:
+            db: 数据库会话
+            kb_id: 知识库ID
+            document_id: 文档ID（可选）
+            section_title: 章节标题（可选，用于获取章节级高频实体）
+            
+        Returns:
+            高频实体信息
+        """
+        hf_data = self._compute_high_frequency_entities(db, kb_id, document_id)
+        
+        if section_title:
+            # 返回指定章节的高频实体
+            chapter_entities = hf_data['chapter_entities'].get(section_title, [])
+            return {
+                'chapter_entities': chapter_entities,
+                'global_entities': hf_data['global_entities'],
+                'entity_aliases': hf_data['entity_aliases']
+            }
+        else:
+            return hf_data
+    
+    def _is_high_frequency_entity(
+        self,
+        entity_name: str,
+        hf_data: Dict[str, Any],
+        section_title: Optional[str] = None
+    ) -> Tuple[bool, float]:
+        """
+        判断实体是否为高频实体，返回(is_hf, frequency_score)
+        
+        frequency_score: 0.0-1.0，表示实体频率的归一化分数
+        """
+        # 先做别名归一
+        normalized_name = hf_data['entity_aliases'].get(entity_name, entity_name)
+        
+        global_entities = hf_data['global_entities']
+        
+        # 检查全局高频实体
+        if normalized_name in global_entities:
+            global_info = global_entities[normalized_name]
+            # 频率分数 = min(1.0, count / 100)  # 假设100次为满分
+            frequency_score = min(1.0, global_info['count'] / 100.0)
+            
+            # 如果指定了章节，检查章节级高频
+            if section_title:
+                chapter_entities = hf_data['chapter_entities'].get(section_title, [])
+                chapter_hf = any(e['name'] == normalized_name for e in chapter_entities)
+                if chapter_hf:
+                    frequency_score = min(1.0, frequency_score + 0.2)  # 章节级额外加分
+            
+            return True, frequency_score
+        
+        return False, 0.0
+    
+    def _extract_all_candidate_entities(
+        self,
+        text: str,
+        db: Optional[Session] = None,
+        kb_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        提取所有疑似高频实体（候选实体）
+        
+        策略：
+        1. 优先使用NER模型识别实体
+        2. 如果没有NER模型，使用规则识别
+        3. 统计每个实体的出现频次
+        
+        Returns:
+            List[Dict] 每个实体包含：text, label, start, end, frequency
+        """
+        entities = []
+        
+        # 1. 优先使用NER模型
+        if self.ie_model_service and self.ie_model_service.is_available():
+            entities = self.ie_model_service.extract_entities(text)
+            logger.debug(f"NER识别到 {len(entities)} 个候选实体")
+        else:
+            # 2. 回退到规则识别
+            entities = self._extract_entities_by_rules(text)
+            logger.debug(f"规则识别到 {len(entities)} 个候选实体")
+        
+        # 3. 统计频次（如果提供了数据库，可以从已有三元组中统计）
+        entity_freq = defaultdict(int)
+        if db and kb_id:
+            try:
+                # 从已有三元组中统计实体频次
+                existing_triples = db.query(KnowledgeTriple).filter(
+                    KnowledgeTriple.knowledge_base_id == kb_id
+                ).all()
+                
+                for triple in existing_triples:
+                    entity_freq[triple.subject] += 1
+                    entity_freq[triple.object] += 1
+            except Exception as e:
+                logger.debug(f"统计已有实体频次失败: {str(e)}")
+        
+        # 4. 为每个实体添加频次信息
+        for entity in entities:
+            entity_text = entity.get("text", "")
+            entity["frequency"] = entity_freq.get(entity_text, 0)
+        
+        return entities
+    
+    def _normalize_entities_with_llm(
+        self,
+        entities: List[Dict[str, Any]],
+        kb_id: int,
+        db: Optional[Session] = None
+    ) -> Dict[str, str]:
+        """
+        使用LLM识别相似概念并建立别名关联
+        
+        例如：刘备和玄德 -> {"玄德": "刘备", "刘玄德": "刘备"}
+        
+        Args:
+            entities: 候选实体列表
+            kb_id: 知识库ID
+            db: 数据库会话（用于保存归一结果）
+            
+        Returns:
+            别名映射字典 {alias: canonical_name}
+        """
+        if not entities:
+            return {}
+        
+        # 1. 从数据库中加载已有的高频实体和别名映射
+        alias_map = {}
+        if db:
+            try:
+                hf_entities = db.query(HighFrequencyEntity).filter(
+                    HighFrequencyEntity.knowledge_base_id == kb_id
+                ).all()
+                
+                for hf_entity in hf_entities:
+                    canonical = hf_entity.entity_name
+                    alias_map[canonical] = canonical  # 标准名称映射到自己
+                    if hf_entity.aliases:
+                        for alias in hf_entity.aliases:
+                            alias_map[alias] = canonical
+            except Exception as e:
+                logger.warning(f"加载已有高频实体失败: {str(e)}")
+        
+        # 2. 提取实体名称列表（去重）
+        entity_names = list(set([e.get("text", "") for e in entities if e.get("text")]))
+        
+        if not entity_names:
+            return alias_map
+        
+        # 3. 如果实体数量太多，分批处理
+        batch_size = 50
+        all_aliases = {}
+        
+        for i in range(0, len(entity_names), batch_size):
+            batch = entity_names[i:i + batch_size]
+            
+            try:
+                # 4. 调用LLM识别相似概念
+                prompt = f"""请分析以下实体列表，识别出哪些实体指的是同一个概念（人物、地点、组织等），并将它们归类。
+
+要求：
+1. 识别别名关系（如：刘备、玄德、刘玄德、先主 -> 都指向"刘备"）
+2. 识别简称和全称（如：张飞、张翼德 -> 都指向"张飞"）
+3. 识别不同写法（如：关羽、关云长 -> 都指向"关羽"）
+4. 对于每个组，选择一个最标准、最常见的名称作为主名称
+5. 只输出JSON格式，不要其他解释
+
+实体列表：
+{json.dumps(batch, ensure_ascii=False, indent=2)}
+
+输出格式（JSON）：
+{{
+  "groups": [
+    {{
+      "canonical": "刘备",
+      "aliases": ["玄德", "刘玄德", "先主"]
+    }},
+    {{
+      "canonical": "张飞",
+      "aliases": ["张翼德", "翼德"]
+    }}
+  ]
+}}"""
+
+                # 使用线程池执行异步LLM调用
+                def run_async():
+                    """在新线程中运行异步代码"""
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        llm = get_llm_helper()
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": "你是一个专业的实体归一专家，擅长识别不同名称指向的同一实体。"
+                            },
+                            {"role": "user", "content": prompt}
+                        ]
+                        return new_loop.run_until_complete(llm.call(messages, max_tokens=2000, temperature=0.1))
+                    finally:
+                        new_loop.close()
+                
+                executor = self._get_executor()
+                if executor is None:
+                    logger.warning("无法创建线程池，跳过LLM实体归一")
+                    continue
+                
+                try:
+                    result = executor.submit(run_async).result(timeout=30)
+                except concurrent.futures.TimeoutError:
+                    logger.warning("LLM实体归一超时")
+                    continue
+                except Exception as e:
+                    logger.warning(f"LLM实体归一失败: {str(e)}")
+                    continue
+                
+                # 5. 解析LLM返回的JSON
+                try:
+                    # 尝试提取JSON（可能包含markdown代码块）
+                    json_str = result.strip()
+                    if "```json" in json_str:
+                        json_str = re.search(r"```json\s*(.*?)\s*```", json_str, re.DOTALL).group(1)
+                    elif "```" in json_str:
+                        json_str = re.search(r"```\s*(.*?)\s*```", json_str, re.DOTALL).group(1)
+                    
+                    parsed = json.loads(json_str)
+                    groups = parsed.get("groups", [])
+                    
+                    # 6. 构建别名映射
+                    for group in groups:
+                        canonical = group.get("canonical", "").strip()
+                        aliases = group.get("aliases", [])
+                        
+                        if canonical:
+                            # 标准名称映射到自己
+                            all_aliases[canonical] = canonical
+                            # 别名映射到标准名称
+                            for alias in aliases:
+                                alias = alias.strip()
+                                if alias and alias != canonical:
+                                    all_aliases[alias] = canonical
+                    
+                    logger.debug(f"LLM识别到 {len(groups)} 个实体组，{len(all_aliases)} 个别名映射")
+                    
+                except json.JSONDecodeError as e:
+                    logger.warning(f"LLM返回的实体归一JSON解析失败: {str(e)}, 原始输出: {result[:200]}")
+                except Exception as e:
+                    logger.warning(f"处理LLM实体归一结果失败: {str(e)}")
+                    
+            except Exception as e:
+                logger.warning(f"LLM实体归一失败: {str(e)}")
+                continue
+        
+        # 7. 合并到已有映射
+        alias_map.update(all_aliases)
+        
+        # 8. 保存到数据库（如果提供了db）
+        if db:
+            try:
+                self._save_entity_aliases_to_db(db, kb_id, alias_map)
+            except Exception as e:
+                logger.warning(f"保存实体别名到数据库失败: {str(e)}")
+        
+        return alias_map
+    
+    def _save_entity_aliases_to_db(
+        self,
+        db: Session,
+        kb_id: int,
+        alias_map: Dict[str, str]
+    ):
+        """保存实体别名映射到数据库"""
+        # 按标准名称分组
+        canonical_groups = defaultdict(list)
+        for alias, canonical in alias_map.items():
+            if alias != canonical:
+                canonical_groups[canonical].append(alias)
+        
+        # 更新或创建高频实体记录
+        for canonical, aliases in canonical_groups.items():
+            hf_entity = db.query(HighFrequencyEntity).filter(
+                HighFrequencyEntity.knowledge_base_id == kb_id,
+                HighFrequencyEntity.entity_name == canonical
+            ).first()
+            
+            if hf_entity:
+                # 更新别名列表（合并去重）
+                existing_aliases = set(hf_entity.aliases or [])
+                existing_aliases.update(aliases)
+                hf_entity.aliases = list(existing_aliases)
+                hf_entity.updated_at = datetime.utcnow()
+            else:
+                # 创建新记录
+                hf_entity = HighFrequencyEntity(
+                    knowledge_base_id=kb_id,
+                    entity_name=canonical,
+                    aliases=aliases,
+                    frequency=0,
+                    is_manual=False
+                )
+                db.add(hf_entity)
+        
+        db.commit()
+    
+    def _extract_triples_between_hf_entities(
+        self,
+        text: str,
+        hf_entity_names: Set[str],
+        alias_map: Dict[str, str],
+        doc_cache: Optional[Dict[str, Any]] = None
+    ) -> List[Tuple[str, str, str, float]]:
+        """
+        只提取高频实体之间的关系
+        
+        Args:
+            text: 输入文本
+            hf_entity_names: 高频实体名称集合
+            alias_map: 别名映射 {alias: canonical}
+            doc_cache: 文档级别的缓存（动态规则等）
+            
+        Returns:
+            三元组列表
+        """
+        triples = []
+        
+        # 1. 归一化实体名称集合（包含别名）
+        normalized_hf_entities = set(hf_entity_names)
+        for alias, canonical in alias_map.items():
+            if canonical in hf_entity_names:
+                normalized_hf_entities.add(alias)
+        
+        # 2. 使用NER识别文本中的实体位置
+        entities_in_text = []
+        if self.ie_model_service and self.ie_model_service.is_available():
+            entities_in_text = self.ie_model_service.extract_entities(text)
+        else:
+            entities_in_text = self._extract_entities_by_rules(text)
+        
+        # 3. 过滤：只保留高频实体
+        hf_entities_in_text = []
+        for entity in entities_in_text:
+            entity_text = entity.get("text", "")
+            # 检查是否是高频实体（包括别名）
+            normalized = alias_map.get(entity_text, entity_text)
+            if normalized in hf_entity_names or entity_text in normalized_hf_entities:
+                hf_entities_in_text.append({
+                    **entity,
+                    "normalized_name": normalized
+                })
+        
+        if len(hf_entities_in_text) < 2:
+            logger.debug(f"文本中高频实体数量不足（{len(hf_entities_in_text)}），跳过关系抽取")
+            return triples
+        
+        # 4. 使用规则提取高频实体之间的关系
+        # 复用现有的规则抽取逻辑，但只关注高频实体
+        rule_triples = self._extract_triples_rule_based(text, hf_data=None, section_title=None)
+        
+        # 5. 过滤：只保留两个都是高频实体的三元组
+        for triple in rule_triples:
+            subj, pred, obj = triple[0], triple[1], triple[2]
+            conf = triple[3] if len(triple) > 3 else 0.8
+            
+            # 归一化实体名
+            normalized_subj = alias_map.get(subj, subj)
+            normalized_obj = alias_map.get(obj, obj)
+            
+            # 检查是否都是高频实体
+            if normalized_subj in hf_entity_names and normalized_obj in hf_entity_names:
+                triples.append((normalized_subj, pred, normalized_obj, conf))
+        
+        logger.debug(f"高频实体关系抽取：从 {len(rule_triples)} 个规则三元组中筛选出 {len(triples)} 个高频实体关系")
+        
+        return triples
+    
+    def _adjust_triples_with_hf_entities(
+        self,
+        triples: List[Tuple[str, str, str, float]],
+        hf_data: Dict[str, Any],
+        section_title: Optional[str] = None
+    ) -> List[Tuple[str, str, str, float]]:
+        """
+        使用高频实体调整三元组：
+        1. 实体归一（别名合并）
+        2. 置信度调整（高频实体相关的关系更容易保留）
+        3. 过滤低价值关系（低频实体+低频实体的关系可以更严格过滤）
+        
+        Args:
+            triples: 原始三元组列表
+            hf_data: 高频实体数据
+            section_title: 章节标题（可选）
+            
+        Returns:
+            调整后的三元组列表
+        """
+        if not hf_data or not triples:
+            return triples
+        
+        adjusted_triples = []
+        entity_aliases = hf_data.get('entity_aliases', {})
+        
+        # 置信度调整阈值
+        MIN_CONFIDENCE_LOW_FREQ = 0.6  # 低频实体关系的最低置信度
+        MIN_CONFIDENCE_HIGH_FREQ = 0.3  # 高频实体关系的最低置信度（更宽松）
+        CONFIDENCE_BOOST_HF = 0.15  # 高频实体关系的置信度提升
+        
+        for triple in triples:
+            if len(triple) < 3:
+                continue
+            
+            subj, pred, obj = triple[0], triple[1], triple[2]
+            original_conf = triple[3] if len(triple) > 3 else 0.8
+            
+            # 1. 实体归一（别名合并）
+            normalized_subj = entity_aliases.get(subj, subj)
+            normalized_obj = entity_aliases.get(obj, obj)
+            
+            # 2. 检查是否为高频实体
+            is_hf_subj, freq_score_subj = self._is_high_frequency_entity(normalized_subj, hf_data, section_title)
+            is_hf_obj, freq_score_obj = self._is_high_frequency_entity(normalized_obj, hf_data, section_title)
+            
+            # 3. 调整置信度
+            adjusted_conf = original_conf
+            
+            # 3.1 如果至少有一个是高频实体，提升置信度
+            if is_hf_subj or is_hf_obj:
+                # 根据频率分数提升置信度
+                max_freq_score = max(freq_score_subj, freq_score_obj)
+                adjusted_conf = min(1.0, original_conf + CONFIDENCE_BOOST_HF * max_freq_score)
+                # 降低最低置信度阈值
+                min_conf = MIN_CONFIDENCE_HIGH_FREQ
+            else:
+                # 两个都是低频实体，提高最低置信度阈值
+                min_conf = MIN_CONFIDENCE_LOW_FREQ
+            
+            # 3.2 如果两个都是高频实体，额外提升
+            if is_hf_subj and is_hf_obj:
+                adjusted_conf = min(1.0, adjusted_conf + 0.1)
+            
+            # 4. 过滤低价值关系
+            if adjusted_conf < min_conf:
+                logger.debug(f"过滤低价值关系: ({normalized_subj}, {pred}, {normalized_obj}), 置信度: {adjusted_conf:.2f} < {min_conf:.2f}")
+                continue
+            
+            # 5. 使用归一化后的实体名
+            adjusted_triples.append((normalized_subj, pred, normalized_obj, adjusted_conf))
+        
+        logger.debug(f"高频实体调整: {len(triples)} -> {len(adjusted_triples)} 个三元组")
+        return adjusted_triples

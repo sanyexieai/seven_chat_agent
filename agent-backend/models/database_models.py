@@ -768,6 +768,8 @@ class KnowledgeBase(Base):
     owner_id = Column(String(100), nullable=True)  # 所有者ID
     is_public = Column(Boolean, default=False)  # 是否公开
     is_active = Column(Boolean, default=True)
+    # 高频实体相关配置（可在前端配置）
+    hf_min_frequency = Column(Integer, default=3)  # 定义“高频”的最小出现次数阈值
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -837,12 +839,15 @@ class KnowledgeBaseCreate(BaseModel):
     description: Optional[str] = None
     owner_id: Optional[str] = None
     is_public: bool = False
+    hf_min_frequency: Optional[int] = None  # 定义“高频”的最小出现次数（可选）
 
 class KnowledgeBaseUpdate(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     is_public: Optional[bool] = None
     is_active: Optional[bool] = None
+     # 更新“高频”最小频次阈值
+    hf_min_frequency: Optional[int] = None
 
 class KnowledgeBaseResponse(BaseModel):
     id: int
@@ -852,6 +857,7 @@ class KnowledgeBaseResponse(BaseModel):
     owner_id: Optional[str] = None
     is_public: bool
     is_active: bool
+    hf_min_frequency: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     
@@ -959,6 +965,29 @@ class KnowledgeBaseQueryResponse(BaseModel):
         from_attributes = True
 
 # 知识图谱相关模型
+class HighFrequencyEntity(Base):
+    """高频实体表（支持前端维护）"""
+    __tablename__ = "high_frequency_entities"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False)
+    entity_name = Column(String(200), nullable=False)  # 实体标准名称（如：刘备）
+    entity_type = Column(String(50), nullable=True)  # 实体类型：person, location, organization, event等
+    aliases = Column(JSON, nullable=True)  # 别名列表（如：["玄德", "刘玄德", "先主"]）
+    frequency = Column(Integer, default=0)  # 出现频次
+    is_manual = Column(Boolean, default=False)  # 是否手动添加（前端维护）
+    metadata = Column(JSON, nullable=True)  # 其他元数据
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # 关联关系
+    knowledge_base = relationship("KnowledgeBase")
+    
+    # 唯一约束：同一知识库中实体名唯一
+    __table_args__ = (
+        UniqueConstraint('knowledge_base_id', 'entity_name', name='uq_kb_entity'),
+    )
+
 class KnowledgeTriple(Base):
     """知识三元组表"""
     __tablename__ = "knowledge_triples"
@@ -1000,6 +1029,38 @@ class KnowledgeTripleResponse(BaseModel):
     confidence: float
     source_text: Optional[str] = None
     created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# 高频实体Pydantic模型
+class HighFrequencyEntityCreate(BaseModel):
+    knowledge_base_id: int
+    entity_name: str
+    entity_type: Optional[str] = None
+    aliases: Optional[List[str]] = None
+    is_manual: bool = False
+    metadata: Optional[Dict[str, Any]] = None
+
+class HighFrequencyEntityUpdate(BaseModel):
+    entity_name: Optional[str] = None
+    entity_type: Optional[str] = None
+    aliases: Optional[List[str]] = None
+    frequency: Optional[int] = None
+    is_manual: Optional[bool] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class HighFrequencyEntityResponse(BaseModel):
+    id: int
+    knowledge_base_id: int
+    entity_name: str
+    entity_type: Optional[str] = None
+    aliases: Optional[List[str]] = None
+    frequency: int
+    is_manual: bool
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
     
     class Config:
         from_attributes = True

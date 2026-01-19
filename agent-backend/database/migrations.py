@@ -525,6 +525,10 @@ def run_knowledge_base_migrations():
             
             if not check_column_exists('knowledge_bases', 'is_active'):
                 missing_kb_columns.append('is_active')
+
+            # 新增：高频实体最小频次阈值配置
+            if not check_column_exists('knowledge_bases', 'hf_min_frequency'):
+                missing_kb_columns.append('hf_min_frequency')
             
             if missing_kb_columns:
                 logger.info(f"发现缺失字段: {missing_kb_columns}")
@@ -538,6 +542,9 @@ def run_knowledge_base_migrations():
                     elif column == 'is_active':
                         conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN is_active BOOLEAN DEFAULT 1;"))
                         logger.info("添加 is_active 字段")
+                    elif column == 'hf_min_frequency':
+                        conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN hf_min_frequency INTEGER DEFAULT 3;"))
+                        logger.info("添加 hf_min_frequency 字段（高频实体最小频次阈值）")
                 
                 logger.info("knowledge_bases表迁移完成")
             else:
@@ -733,13 +740,22 @@ def run_knowledge_graph_migrations():
     
     try:
         with engine.connect() as conn:
-            # 检查knowledge_triples表是否存在
             inspector = inspect(engine)
+            
+            # 检查knowledge_triples表是否存在
             if 'knowledge_triples' not in inspector.get_table_names():
                 logger.info("knowledge_triples表不存在，创建知识图谱相关表...")
                 Base.metadata.create_all(bind=engine)
                 logger.info("知识图谱相关表创建完成")
                 return
+            
+            # 检查high_frequency_entities表是否存在
+            if 'high_frequency_entities' not in inspector.get_table_names():
+                logger.info("high_frequency_entities表不存在，创建高频实体表...")
+                Base.metadata.create_all(bind=engine)
+                logger.info("高频实体表创建完成")
+            else:
+                logger.info("high_frequency_entities表已存在")
             
             conn.commit()
             logger.info("知识图谱相关表迁移完成")

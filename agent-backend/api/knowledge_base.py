@@ -7,7 +7,8 @@ from database.database import get_db
 from models.database_models import (
     KnowledgeBaseCreate, KnowledgeBaseUpdate, KnowledgeBaseResponse,
     DocumentCreate, DocumentUpdate, DocumentResponse, DocumentChunkResponse,
-    QueryRequest, QueryResponse
+    QueryRequest, QueryResponse,
+    HighFrequencyEntityCreate, HighFrequencyEntityUpdate, HighFrequencyEntityResponse
 )
 from services.knowledge_base_service import KnowledgeBaseService
 from utils.file_extractor import FileExtractor
@@ -503,4 +504,124 @@ async def query_relation_path(
         }
     except Exception as e:
         logger.error(f"查询关系路径失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="查询关系路径失败") 
+        raise HTTPException(status_code=500, detail="查询关系路径失败")
+
+# 高频实体管理API
+@router.get("/{kb_id}/hf-entities", response_model=List[HighFrequencyEntityResponse])
+async def get_high_frequency_entities(
+    kb_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取知识库的高频实体列表"""
+    try:
+        from models.database_models import HighFrequencyEntity
+        entities = db.query(HighFrequencyEntity).filter(
+            HighFrequencyEntity.knowledge_base_id == kb_id
+        ).order_by(HighFrequencyEntity.frequency.desc()).all()
+        return [HighFrequencyEntityResponse.model_validate(e) for e in entities]
+    except Exception as e:
+        logger.error(f"获取高频实体列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取高频实体列表失败")
+
+@router.post("/{kb_id}/hf-entities", response_model=HighFrequencyEntityResponse)
+async def create_high_frequency_entity(
+    kb_id: int,
+    entity_data: HighFrequencyEntityCreate,
+    db: Session = Depends(get_db)
+):
+    """创建高频实体（前端维护）"""
+    try:
+        from models.database_models import HighFrequencyEntity
+        from sqlalchemy.exc import IntegrityError
+        
+        hf_entity = HighFrequencyEntity(
+            knowledge_base_id=kb_id,
+            entity_name=entity_data.entity_name,
+            entity_type=entity_data.entity_type,
+            aliases=entity_data.aliases or [],
+            frequency=0,
+            is_manual=True,
+            metadata=entity_data.metadata
+        )
+        
+        db.add(hf_entity)
+        try:
+            db.commit()
+            db.refresh(hf_entity)
+            return HighFrequencyEntityResponse.model_validate(hf_entity)
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="实体已存在")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"创建高频实体失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="创建高频实体失败")
+
+@router.put("/{kb_id}/hf-entities/{entity_id}", response_model=HighFrequencyEntityResponse)
+async def update_high_frequency_entity(
+    kb_id: int,
+    entity_id: int,
+    entity_data: HighFrequencyEntityUpdate,
+    db: Session = Depends(get_db)
+):
+    """更新高频实体"""
+    try:
+        from models.database_models import HighFrequencyEntity
+        
+        hf_entity = db.query(HighFrequencyEntity).filter(
+            HighFrequencyEntity.id == entity_id,
+            HighFrequencyEntity.knowledge_base_id == kb_id
+        ).first()
+        
+        if not hf_entity:
+            raise HTTPException(status_code=404, detail="高频实体不存在")
+        
+        if entity_data.entity_name is not None:
+            hf_entity.entity_name = entity_data.entity_name
+        if entity_data.entity_type is not None:
+            hf_entity.entity_type = entity_data.entity_type
+        if entity_data.aliases is not None:
+            hf_entity.aliases = entity_data.aliases
+        if entity_data.frequency is not None:
+            hf_entity.frequency = entity_data.frequency
+        if entity_data.is_manual is not None:
+            hf_entity.is_manual = entity_data.is_manual
+        if entity_data.metadata is not None:
+            hf_entity.metadata = entity_data.metadata
+        
+        db.commit()
+        db.refresh(hf_entity)
+        return HighFrequencyEntityResponse.model_validate(hf_entity)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"更新高频实体失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="更新高频实体失败")
+
+@router.delete("/{kb_id}/hf-entities/{entity_id}")
+async def delete_high_frequency_entity(
+    kb_id: int,
+    entity_id: int,
+    db: Session = Depends(get_db)
+):
+    """删除高频实体"""
+    try:
+        from models.database_models import HighFrequencyEntity
+        
+        hf_entity = db.query(HighFrequencyEntity).filter(
+            HighFrequencyEntity.id == entity_id,
+            HighFrequencyEntity.knowledge_base_id == kb_id
+        ).first()
+        
+        if not hf_entity:
+            raise HTTPException(status_code=404, detail="高频实体不存在")
+        
+        db.delete(hf_entity)
+        db.commit()
+        return {"message": "高频实体删除成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除高频实体失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="删除高频实体失败")

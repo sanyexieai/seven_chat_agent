@@ -247,9 +247,8 @@ class KnowledgeGraphService:
                 })
             
             return enriched_triples
-            
         except Exception as e:
-            logger.error(f"提取实体和关系失败: {str(e)}")
+            logger.error(f"提取实体和关系失败: {str(e)}", exc_info=True)
             return []
     
     def _extract_triples_fallback(
@@ -357,10 +356,8 @@ class KnowledgeGraphService:
                 })
             
             return enriched_triples
-            
-        except Exception as e:
-            logger.error(f"提取实体和关系失败: {str(e)}")
-            return []
+        
+        return triples
     
     def _extract_triples_with_llm(self, text: str) -> List[Tuple[str, str, str, float]]:
         """使用LLM提取三元组"""

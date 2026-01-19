@@ -541,7 +541,7 @@ async def create_high_frequency_entity(
             aliases=entity_data.aliases or [],
             frequency=0,
             is_manual=True,
-            metadata=entity_data.metadata
+            extra_metadata=entity_data.extra_metadata
         )
         
         db.add(hf_entity)
@@ -587,8 +587,8 @@ async def update_high_frequency_entity(
             hf_entity.frequency = entity_data.frequency
         if entity_data.is_manual is not None:
             hf_entity.is_manual = entity_data.is_manual
-        if entity_data.metadata is not None:
-            hf_entity.metadata = entity_data.metadata
+        if entity_data.extra_metadata is not None:
+            hf_entity.extra_metadata = entity_data.extra_metadata
         
         db.commit()
         db.refresh(hf_entity)

@@ -976,7 +976,7 @@ class HighFrequencyEntity(Base):
     aliases = Column(JSON, nullable=True)  # 别名列表（如：["玄德", "刘玄德", "先主"]）
     frequency = Column(Integer, default=0)  # 出现频次
     is_manual = Column(Boolean, default=False)  # 是否手动添加（前端维护）
-    metadata = Column(JSON, nullable=True)  # 其他元数据
+    extra_metadata = Column(JSON, nullable=True)  # 其他元数据（避免与SQLAlchemy Base.metadata冲突）
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -1040,7 +1040,7 @@ class HighFrequencyEntityCreate(BaseModel):
     entity_type: Optional[str] = None
     aliases: Optional[List[str]] = None
     is_manual: bool = False
-    metadata: Optional[Dict[str, Any]] = None
+    extra_metadata: Optional[Dict[str, Any]] = None
 
 class HighFrequencyEntityUpdate(BaseModel):
     entity_name: Optional[str] = None
@@ -1048,7 +1048,7 @@ class HighFrequencyEntityUpdate(BaseModel):
     aliases: Optional[List[str]] = None
     frequency: Optional[int] = None
     is_manual: Optional[bool] = None
-    metadata: Optional[Dict[str, Any]] = None
+    extra_metadata: Optional[Dict[str, Any]] = None
 
 class HighFrequencyEntityResponse(BaseModel):
     id: int
@@ -1058,7 +1058,7 @@ class HighFrequencyEntityResponse(BaseModel):
     aliases: Optional[List[str]] = None
     frequency: int
     is_manual: bool
-    metadata: Optional[Dict[str, Any]] = None
+    extra_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     

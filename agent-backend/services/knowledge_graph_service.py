@@ -323,39 +323,26 @@ class KnowledgeGraphService:
                     if key not in seen:
                         seen.add(key)
                         triples.append(t)
-            
-            # 去重（确保每个三元组格式正确）
+        
+        # 统一在这里做一次去重和实体链接，始终返回三元组元组列表
+        if triples:
             seen = set()
-            deduplicated_triples = []
+            deduplicated_triples: List[Tuple[str, str, str, float]] = []
             for t in triples:
-                if len(t) < 3:
+                # 只接受元组或列表形式的三元组
+                if not isinstance(t, (tuple, list)) or len(t) < 3:
                     continue
-                key = (t[0], t[1], t[2])
+                subj, pred, obj = t[0], t[1], t[2]
+                key = (subj, pred, obj)
                 if key in seen:
                     continue
                 seen.add(key)
-                deduplicated_triples.append(t if len(t) == 4 else (t[0], t[1], t[2], 0.8))
+                conf = t[3] if len(t) > 3 else 0.8
+                deduplicated_triples.append((subj, pred, obj, conf))
             triples = deduplicated_triples
-            
-            # 实体链接和规范化
-            if KG_ENTITY_LINKING_ENABLED:
-                triples = self._link_entities(triples, kb_id)
-            
-            # 添加元数据
-            enriched_triples = []
-            for triple in triples:
-                enriched_triples.append({
-                    'knowledge_base_id': kb_id,
-                    'document_id': doc_id,
-                    'chunk_id': chunk_id,
-                    'subject': triple[0],
-                    'predicate': triple[1],
-                    'object': triple[2],
-                    'confidence': triple[3] if len(triple) > 3 else 1.0,
-                    'source_text': text[:200]
-                })
-            
-            return enriched_triples
+
+        if KG_ENTITY_LINKING_ENABLED and triples:
+            triples = self._link_entities(triples, kb_id)
         
         return triples
     
@@ -2509,6 +2496,42 @@ class KnowledgeGraphService:
             return True, frequency_score
         
         return False, 0.0
+    
+    def _extract_entities_by_rules(self, text: str) -> List[Dict[str, Any]]:
+        """
+        简单规则实体识别（在NER未加载或高频实体候选阶段使用）
+        
+        目标：提供一个轻量级备选方案，主要识别人名/专有名词候选，不追求完美，只要能给出候选集即可。
+        """
+        entities: List[Dict[str, Any]] = []
+        if not text:
+            return entities
+
+        # 1. 基于连续中文字符的粗略识别（2-4个连续中文字符）
+        #    不强依赖姓氏表，避免漏掉特殊名字
+        name_pattern = r"[\u4e00-\u9fa5]{2,4}"
+        for m in re.finditer(name_pattern, text):
+            ent_text = m.group(0)
+            # 过滤一些明显无意义的短词
+            if ent_text in ("第一", "第二", "第三", "其中", "我们", "你们", "他们"):
+                continue
+            entities.append({
+                "text": ent_text,
+                "label": "UNKNOWN",
+                "start": m.start(),
+                "end": m.end()
+            })
+
+        # 2. 简单去重（按 text + 位置）
+        unique: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+        for ent in entities:
+            key = (ent["text"], ent["start"], ent["end"])
+            if key not in unique:
+                unique[key] = ent
+
+        result = list(unique.values())
+        logger.debug(f"规则实体识别得到 {len(result)} 个候选实体")
+        return result
     
     def _extract_all_candidate_entities(
         self,

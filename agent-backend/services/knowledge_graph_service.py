@@ -2540,12 +2540,17 @@ class KnowledgeGraphService:
         kb_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
-        提取所有疑似高频实体（候选实体）
+        提取所有疑似高频实体（候选实体），并在**当前文本内**统计频次
         
         策略：
-        1. 优先使用NER模型识别实体
-        2. 如果没有NER模型，使用规则识别
-        3. 统计每个实体的出现频次
+        1. TextProcessor：使用当前知识库的清洗规则得到可用文本（此处由上游保证 text 已清洗）
+        2. Tokenizer / Segmenter：按句子 / 段落切分（由上游 chunk / 分段完成）
+        3. EntityCandidateExtractor：
+           - 优先使用 NER 模型识别实体
+           - 如果没有 NER 模型，则使用规则识别
+        4. EntityFrequencyAnalyzer：
+           - 只基于本次输入文本，按实体名统计出现次数
+           - **不再依赖已有三元组做频次统计**，避免“用三元组反推高频实体”的反向依赖
         
         Returns:
             List[Dict] 每个实体包含：text, label, start, end, frequency
@@ -2561,25 +2566,18 @@ class KnowledgeGraphService:
             entities = self._extract_entities_by_rules(text)
             logger.debug(f"规则识别到 {len(entities)} 个候选实体")
         
-        # 3. 统计频次（如果提供了数据库，可以从已有三元组中统计）
-        entity_freq = defaultdict(int)
-        if db and kb_id:
-            try:
-                # 从已有三元组中统计实体频次
-                existing_triples = db.query(KnowledgeTriple).filter(
-                    KnowledgeTriple.knowledge_base_id == kb_id
-                ).all()
-                
-                for triple in existing_triples:
-                    entity_freq[triple.subject] += 1
-                    entity_freq[triple.object] += 1
-            except Exception as e:
-                logger.debug(f"统计已有实体频次失败: {str(e)}")
-        
-        # 4. 为每个实体添加频次信息
+        # 3. 基于“当前文本”统计实体频次（不依赖已有知识图谱三元组）
+        name_counts: Dict[str, int] = defaultdict(int)
         for entity in entities:
-            entity_text = entity.get("text", "")
-            entity["frequency"] = entity_freq.get(entity_text, 0)
+            entity_text = (entity.get("text") or "").strip()
+            if not entity_text:
+                continue
+            name_counts[entity_text] += 1
+        
+        # 4. 为每个实体标注在当前文本中的频次
+        for entity in entities:
+            entity_text = (entity.get("text") or "").strip()
+            entity["frequency"] = name_counts.get(entity_text, 0)
         
         return entities
     

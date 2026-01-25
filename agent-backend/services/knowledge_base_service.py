@@ -60,6 +60,122 @@ class KnowledgeBaseService:
         self.kg_service = KnowledgeGraphService()  # 知识图谱服务
         # 移除文件向量存储，改为纯数据库存储
     
+    def _prepare_document_chunks_with_types(self, doc: Document) -> List[Dict[str, Any]]:
+        """
+        根据文档内容准备带有“分段类型”的分块信息。
+        
+        分段策略：
+        - hierarchical 策略：
+          1. 先按章节（大块）划分 -> chunk_type = "chapter"
+          2. 再在每个章节内部做细粒度分片（段落/句子）-> chunk_type = "chapter_part"
+          小块通过相同的 section_title 与章节大块建立关联。
+        - 其他策略：
+          使用 TextProcessor.split_text 的结果，并用 chunk_strategy 作为分段类型。
+        """
+        text = (doc.content or "").strip()
+        if not text:
+            return []
+        
+        # 默认使用 TextProcessor 内部的清洗逻辑
+        try:
+            clean_text = self.text_processor._clean_text(text)  # type: ignore[attr-defined]
+        except Exception:
+            clean_text = text
+        
+        prepared: List[Dict[str, Any]] = []
+        
+        # 仅在 hierarchical 策略下做“章节 → 细粒度”两级分段
+        if getattr(self.text_processor, "chunk_strategy", None) == "hierarchical":
+            try:
+                structure_info = self.text_processor._extract_document_structure(clean_text)  # type: ignore[attr-defined]
+                sections = structure_info.get("sections") or []
+                has_structure = bool(structure_info.get("has_structure") and sections)
+            except Exception as e:
+                logger.warning(f"提取文档结构失败，回退到普通分段: {e}")
+                has_structure = False
+                sections = []
+            
+            if has_structure:
+                lines = clean_text.split("\n")
+                for sec_idx, section in enumerate(sections):
+                    start_line = section.get("start_line", 0)
+                    end_line = section.get("end_line", start_line)
+                    section_title = (section.get("title") or "").strip()
+                    
+                    if start_line < 0 or end_line >= len(lines):
+                        continue
+                    
+                    section_text = "\n".join(lines[start_line:end_line + 1]).strip()
+                    if not section_text:
+                        continue
+                    
+                    # 1) 章节整体作为一个大块（chapter）
+                    prepared.append({
+                        "content": section_text,
+                        "chunk_type": "chapter",
+                        "metadata": {
+                            "section_title": section_title,
+                            "section_index": sec_idx,
+                            "section_level": section.get("level"),
+                            "segment_level": "chapter",
+                        },
+                    })
+                    
+                    # 2) 章节内部做细粒度分片（chapter_part）
+                    try:
+                        # 去掉标题本身，只对内容分片（如果文本前缀就是标题）
+                        inner_text = section_text
+                        if section_title and section_text.startswith(section_title):
+                            inner_text = section_text[len(section_title):].strip()
+                        
+                        if inner_text:
+                            inner_chunks = self.text_processor._split_section_content_fine_grained(inner_text)  # type: ignore[attr-defined]
+                        else:
+                            inner_chunks = []
+                    except Exception as e:
+                        logger.warning(f"章节细粒度分片失败，回退到整章节: {e}")
+                        inner_chunks = []
+                    
+                    for local_idx, chunk_text in enumerate(inner_chunks):
+                        if not chunk_text or not chunk_text.strip():
+                            continue
+                        prepared.append({
+                            "content": chunk_text,
+                            "chunk_type": "chapter_part",
+                            "metadata": {
+                                "section_title": section_title,
+                                "section_index": sec_idx,
+                                "section_level": section.get("level"),
+                                "segment_level": "chapter_part",
+                                "inner_index": local_idx,
+                            },
+                        })
+                
+                if prepared:
+                    return prepared
+        
+        # 其他情况：直接使用 TextProcessor.split_text 的结果
+        try:
+            flat_chunks = self.text_processor.split_text(clean_text)
+        except Exception as e:
+            logger.error(f"TextProcessor 分段失败: {e}")
+            return []
+        
+        default_type = getattr(self.text_processor, "chunk_strategy", None) or "plain"
+        for idx, chunk_text in enumerate(flat_chunks):
+            if not chunk_text or not chunk_text.strip():
+                continue
+            prepared.append({
+                "content": chunk_text,
+                "chunk_type": default_type,
+                "metadata": {
+                    "segment_level": default_type,
+                    "segment_index": idx,
+                },
+            })
+        
+        return prepared
+    
     def _search_chunks_from_db(self, db: Session, kb_id: int, query_vector: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
         """从数据库搜索相似分块（优化版：先计算所有相似度，再动态调整阈值）"""
         try:
@@ -700,16 +816,16 @@ class KnowledgeBaseService:
                 db.commit()
                 return
             
-            # 分块处理
-            logger.info(f"开始分块处理: {doc.name}")
-            chunks = self.text_processor.split_text(doc.content)
-            logger.info(f"分块完成: {doc.name}, 分块数: {len(chunks)}")
+            # 分段处理（支持不同分段类型 & 章节 → 细粒度的层级结构）
+            logger.info(f"开始分段处理: {doc.name}")
+            prepared_chunks: List[Dict[str, Any]] = self._prepare_document_chunks_with_types(doc)
+            logger.info(f"分段完成: {doc.name}, 分段数: {len(prepared_chunks)}")
             
-            if not chunks:
-                logger.warning(f"分块结果为空: {doc.name}")
+            if not prepared_chunks:
+                logger.warning(f"分段结果为空: {doc.name}")
                 doc.status = "failed"
                 doc.document_metadata = doc.document_metadata or {}
-                doc.document_metadata["error"] = "分块结果为空"
+                doc.document_metadata["error"] = "分段结果为空"
                 db.commit()
                 return
             
@@ -717,21 +833,27 @@ class KnowledgeBaseService:
             logger.info(f"开始创建分块记录: {doc.name}")
             
             # 准备批量处理数据
-            chunk_contents = []
-            chunk_metadata_list = []
+            chunk_contents: List[str] = []
+            chunk_metadata_list: List[Dict[str, Any]] = []
+            chunk_types: List[str] = []
+            section_titles: List[Optional[str]] = []
             strategy_variant = f"cs_{self.text_processor.chunk_size}_ov_{self.text_processor.overlap}"
             
-            for i, chunk_content in enumerate(chunks):
+            for i, item in enumerate(prepared_chunks):
+                chunk_content = item.get("content", "") or ""
+                base_meta = item.get("metadata") or {}
+                # 统一补充基础元数据
                 chunk_metadata = {
+                    **base_meta,
                     "chunk_index": i,
                     "chunk_size": len(chunk_content),
                     "document_id": doc.id,
                     "knowledge_base_id": doc.knowledge_base_id,
-                    "content": chunk_content
                 }
-                # 三元组抽取将在后台异步进行，这里不再同步处理
                 chunk_contents.append(chunk_content)
                 chunk_metadata_list.append(chunk_metadata)
+                chunk_types.append(item.get("chunk_type") or "原文")
+                section_titles.append(chunk_metadata.get("section_title"))
             
             # 批量生成嵌入向量
             logger.info(f"批量生成 {len(chunk_contents)} 个分块的嵌入向量...")
@@ -741,7 +863,9 @@ class KnowledgeBaseService:
             
             # 创建数据库记录
             created_chunks: List[DocumentChunk] = []
-            for i, (chunk_content, embedding, metadata) in enumerate(zip(chunk_contents, embeddings, chunk_metadata_list)):
+            for i, (chunk_content, embedding, metadata, chunk_type, section_title) in enumerate(
+                zip(chunk_contents, embeddings, chunk_metadata_list, chunk_types, section_titles)
+            ):
                 try:
                     chunk = DocumentChunk(
                         knowledge_base_id=doc.knowledge_base_id,
@@ -752,6 +876,8 @@ class KnowledgeBaseService:
                         chunk_metadata=metadata,
                         chunk_strategy=CHUNK_STRATEGY,
                         strategy_variant=strategy_variant,
+                        chunk_type=chunk_type,
+                        section_title=section_title,
                         kg_extraction_status="pending"  # 初始状态，等待后台处理
                     )
                     db.add(chunk)

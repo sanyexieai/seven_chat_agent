@@ -1,15 +1,37 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useChat } from "../stores/chat";
-import type { GroupSettings } from "../types";
+import type {
+  GroupJudgeSettings,
+  GroupMemberConfig,
+  GroupSettings,
+  JudgeMode,
+  MemberJudgeOverride,
+} from "../types";
 
 interface Props {
   groupId: string | null;
   onClose: () => void;
 }
 
+const defaultJudge: GroupJudgeSettings = {
+  mode: "heuristic",
+  threshold: 0.55,
+  heuristic: {
+    user_confidence: 0.72,
+    friend_confidence: 0.58,
+    mention_confidence: 0.92,
+    user_delay_ms: 300,
+    friend_delay_ms: 500,
+    mention_delay_ms: 100,
+  },
+  llm: { provider_id: null, model: null, api_key_id: null },
+  fallback_pick_top: true,
+};
+
 const defaults: GroupSettings = {
-  judge_threshold: 0.55,
+  judge_threshold: defaultJudge.threshold,
+  judge: defaultJudge,
   max_replies_per_turn: 8,
   per_agent_max_per_turn: 2,
   cooldown_ms: 4000,
@@ -19,10 +41,28 @@ const defaults: GroupSettings = {
   extra_system_prompt: null,
 };
 
+function normalizeSettings(raw: Partial<GroupSettings>): GroupSettings {
+  const base = { ...defaults, ...raw };
+  const judge = { ...defaultJudge, ...raw.judge };
+  judge.threshold = judge.threshold || base.judge_threshold || 0.55;
+  base.judge = {
+    ...defaultJudge,
+    ...judge,
+    heuristic: { ...defaultJudge.heuristic, ...judge.heuristic },
+    llm: { ...defaultJudge.llm, ...judge.llm },
+  };
+  base.judge_threshold = judge.threshold;
+  return base;
+}
+
 export function GroupEditor({ groupId, onClose }: Props) {
-  const { friends, reloadGroups, selectGroup } = useChat();
+  const { friends, providers, reloadGroups, selectGroup } = useChat();
   const [name, setName] = useState("");
   const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
+  /** 本群内各成员的 Judge 覆盖（key=friend_id） */
+  const [memberJudges, setMemberJudges] = useState<
+    Record<string, MemberJudgeOverride>
+  >({});
   const [settings, setSettings] = useState<GroupSettings>(defaults);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,21 +71,38 @@ export function GroupEditor({ groupId, onClose }: Props) {
     if (!groupId) {
       setName("");
       setMemberIds(new Set());
+      setMemberJudges({});
       setSettings(defaults);
       return;
     }
     api.getGroup(groupId).then((bundle) => {
       setName(bundle.group.name);
       setMemberIds(new Set(bundle.member_ids));
-      setSettings({ ...defaults, ...bundle.group.settings });
+      const judges: Record<string, MemberJudgeOverride> = {};
+      for (const m of bundle.members ?? []) {
+        if (m.judge_override) {
+          judges[m.friend_id] = m.judge_override;
+        }
+      }
+      setMemberJudges(judges);
+      setSettings(normalizeSettings(bundle.group.settings));
     });
   }, [groupId]);
 
   function toggleMember(id: string) {
     const next = new Set(memberIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(id)) {
+      next.delete(id);
+      const { [id]: _, ...rest } = memberJudges;
+      setMemberJudges(rest);
+    } else {
+      next.add(id);
+    }
     setMemberIds(next);
+  }
+
+  function setMemberJudge(friendId: string, override: MemberJudgeOverride) {
+    setMemberJudges((prev) => ({ ...prev, [friendId]: override }));
   }
 
   async function save() {
@@ -60,12 +117,21 @@ export function GroupEditor({ groupId, onClose }: Props) {
     setBusy(true);
     setError(null);
     try {
+      const toSave = normalizeSettings(settings);
+      const members: GroupMemberConfig[] = Array.from(memberIds).map(
+        (friend_id) => ({
+          friend_id,
+          judge_override: memberJudges[friend_id]?.use_group_default
+            ? { use_group_default: true }
+            : memberJudges[friend_id] ?? null,
+        }),
+      );
       const result = await api.upsertGroup({
         id: groupId ?? undefined,
         name: name.trim(),
         avatar: null,
-        settings,
-        member_ids: Array.from(memberIds),
+        settings: toSave,
+        members,
       });
       await reloadGroups();
       await selectGroup(result.group.id);
@@ -99,27 +165,244 @@ export function GroupEditor({ groupId, onClose }: Props) {
             />
           </div>
           <div>
-            <label className="label">成员（多选）</label>
-            <div className="mt-1 grid grid-cols-2 gap-2 rounded-md border border-slate-200 bg-slate-50 p-3">
-              {friends.map((f) => (
-                <label
-                  key={f.id}
-                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-white"
-                >
+            <label className="label">成员（多选，可为本群单独设 Judge）</label>
+            <div className="mt-1 max-h-48 space-y-2 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 p-3">
+              {friends.map((f) => {
+                const inGroup = memberIds.has(f.id);
+                const mj =
+                  memberJudges[f.id] ?? ({ use_group_default: true } as MemberJudgeOverride);
+                return (
+                  <div
+                    key={f.id}
+                    className="rounded-md border border-slate-200 bg-white p-2"
+                  >
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={inGroup}
+                        onChange={() => toggleMember(f.id)}
+                      />
+                      <span className="text-sm font-medium">
+                        {f.name}
+                        <span className="ml-1 text-xs font-normal text-slate-500">
+                          · {f.backend_kind}
+                        </span>
+                      </span>
+                    </label>
+                    {inGroup && f.backend_kind !== "human" && (
+                      <div className="mt-2 border-t border-slate-100 pt-2 pl-6">
+                        <label className="flex items-center gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={mj.use_group_default}
+                            onChange={(e) =>
+                              setMemberJudge(f.id, {
+                                ...mj,
+                                use_group_default: e.target.checked,
+                              })
+                            }
+                          />
+                          使用本群 Judge 默认
+                        </label>
+                        {!mj.use_group_default && (
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <select
+                              className="input text-xs"
+                              value={mj.mode ?? "heuristic"}
+                              onChange={(e) =>
+                                setMemberJudge(f.id, {
+                                  ...mj,
+                                  use_group_default: false,
+                                  mode: e.target.value as JudgeMode,
+                                })
+                              }
+                            >
+                              <option value="heuristic">启发式</option>
+                              <option value="llm">LLM</option>
+                              <option value="auto">Auto</option>
+                            </select>
+                            <input
+                              className="input text-xs"
+                              type="number"
+                              step={0.05}
+                              min={0}
+                              max={1}
+                              title="接话阈值"
+                              value={mj.threshold ?? settings.judge.threshold}
+                              onChange={(e) =>
+                                setMemberJudge(f.id, {
+                                  ...mj,
+                                  use_group_default: false,
+                                  threshold: Number(e.target.value),
+                                })
+                              }
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="rounded-md border border-amber-200 bg-amber-50/50 p-3">
+            <div className="mb-2 text-xs font-semibold text-amber-900">
+              Judge（接话判断）· honeycomb-judge
+            </div>
+            <p className="mb-3 text-xs text-slate-600">
+              <strong>启发式</strong>：用固定规则打分（例如用户发言 →
+              0.72 分），不调用大模型，快且免费。
+              <strong>LLM</strong>：用大模型判断是否接话。
+              <strong>Auto</strong>：先 LLM，失败再启发式。上方为<strong>本群默认</strong>；每位成员可在成员列表里单独覆盖（仅在本群生效）。
+            </p>
+            <div className="mb-3">
+              <label className="label">模式</label>
+              <select
+                className="input"
+                value={settings.judge.mode}
+                onChange={(e) => {
+                  const mode = e.target.value as JudgeMode;
+                  setSettings({
+                    ...settings,
+                    judge: { ...settings.judge, mode },
+                  });
+                }}
+              >
+                <option value="heuristic">启发式（推荐）</option>
+                <option value="llm">LLM</option>
+                <option value="auto">Auto（LLM + 回退）</option>
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <NumberField
+                label="接话阈值 threshold"
+                value={settings.judge.threshold}
+                step={0.05}
+                min={0}
+                max={1}
+                onChange={(v) =>
+                  setSettings({
+                    ...settings,
+                    judge_threshold: v,
+                    judge: { ...settings.judge, threshold: v },
+                  })
+                }
+              />
+              <div className="flex items-end gap-2 pb-1">
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
                   <input
                     type="checkbox"
-                    checked={memberIds.has(f.id)}
-                    onChange={() => toggleMember(f.id)}
+                    checked={settings.judge.fallback_pick_top}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        judge: {
+                          ...settings.judge,
+                          fallback_pick_top: e.target.checked,
+                        },
+                      })
+                    }
                   />
-                  <span className="text-sm">
-                    {f.name}
-                    <span className="ml-1 text-xs text-slate-500">
-                      · {f.backend_kind}
-                    </span>
-                  </span>
+                  未过阈值时最高分兜底 1 人
                 </label>
-              ))}
+              </div>
             </div>
+            {(settings.judge.mode === "heuristic" ||
+              settings.judge.mode === "auto") && (
+              <div className="mt-3 grid grid-cols-2 gap-3 border-t border-amber-100 pt-3">
+                <NumberField
+                  label="用户消息 confidence"
+                  value={settings.judge.heuristic.user_confidence}
+                  step={0.05}
+                  min={0}
+                  max={1}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      judge: {
+                        ...settings.judge,
+                        heuristic: {
+                          ...settings.judge.heuristic,
+                          user_confidence: v,
+                        },
+                      },
+                    })
+                  }
+                />
+                <NumberField
+                  label="成员互聊 confidence"
+                  value={settings.judge.heuristic.friend_confidence}
+                  step={0.05}
+                  min={0}
+                  max={1}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      judge: {
+                        ...settings.judge,
+                        heuristic: {
+                          ...settings.judge.heuristic,
+                          friend_confidence: v,
+                        },
+                      },
+                    })
+                  }
+                />
+              </div>
+            )}
+            {(settings.judge.mode === "llm" ||
+              settings.judge.mode === "auto") && (
+              <div className="mt-3 grid grid-cols-2 gap-3 border-t border-amber-100 pt-3">
+                <div>
+                  <label className="label">Judge Provider（群级）</label>
+                  <select
+                    className="input"
+                    value={settings.judge.llm.provider_id ?? ""}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        judge: {
+                          ...settings.judge,
+                          llm: {
+                            ...settings.judge.llm,
+                            provider_id: e.target.value || null,
+                          },
+                        },
+                      })
+                    }
+                  >
+                    <option value="">（用成员 judge_provider / 环境变量）</option>
+                    {providers.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.display_name || p.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="label">Judge 模型</label>
+                  <input
+                    className="input"
+                    placeholder="如 gpt-4o-mini"
+                    value={settings.judge.llm.model ?? ""}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        judge: {
+                          ...settings.judge,
+                          llm: {
+                            ...settings.judge.llm,
+                            model: e.target.value || null,
+                          },
+                        },
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
@@ -127,16 +410,6 @@ export function GroupEditor({ groupId, onClose }: Props) {
               群聊调度参数（防风暴）
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <NumberField
-                label="judge_threshold"
-                value={settings.judge_threshold}
-                step={0.05}
-                min={0}
-                max={1}
-                onChange={(v) =>
-                  setSettings({ ...settings, judge_threshold: v })
-                }
-              />
               <NumberField
                 label="max_replies_per_turn"
                 value={settings.max_replies_per_turn}

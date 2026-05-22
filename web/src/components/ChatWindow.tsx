@@ -35,7 +35,7 @@ export function ChatWindow() {
       return {
         title: gb.group.name,
         subtitle: `${gb.member_ids.length} 位成员 · 群聊`,
-        right: `阈值 ${gb.group.settings.judge_threshold.toFixed(2)}`,
+        right: `Judge ${gb.group.settings.judge?.mode ?? "heuristic"} · ${(gb.group.settings.judge?.threshold ?? gb.group.settings.judge_threshold).toFixed(2)}`,
         avatarName: gb.group.name,
         avatarKind: undefined,
       };

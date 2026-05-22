@@ -12,6 +12,7 @@ use crate::domain::PtyBackendConfig;
 use crate::friend_cli::{is_external_cli_preset, pty_preset_is_worker_bee};
 use crate::runtime::UnifiedAgent;
 use crate::domain::{BackendKind, Friend, Message};
+use crate::judge::JudgeService;
 use crate::provider::ProviderRegistry;
 use crate::store::SqliteStore;
 use crate::{Error, Result};
@@ -19,14 +20,20 @@ use crate::{Error, Result};
 pub struct AgentRegistry {
     store: Arc<SqliteStore>,
     providers: Arc<ProviderRegistry>,
+    judge: Arc<JudgeService>,
     handles: DashMap<String, AgentHandle>,
 }
 
 impl AgentRegistry {
-    pub fn new(store: Arc<SqliteStore>, providers: Arc<ProviderRegistry>) -> Self {
+    pub fn new(
+        store: Arc<SqliteStore>,
+        providers: Arc<ProviderRegistry>,
+        judge: Arc<JudgeService>,
+    ) -> Self {
         Self {
             store,
             providers,
+            judge,
             handles: DashMap::new(),
         }
     }
@@ -56,12 +63,17 @@ impl AgentRegistry {
                 let cfg: PtyBackendConfig =
                     serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
                 if is_external_cli_preset(&cfg) {
-                    Ok(Arc::new(PtyAgent::new(friend, self.providers.clone())?))
+                    Ok(Arc::new(PtyAgent::new(
+                        friend,
+                        self.providers.clone(),
+                        self.judge.clone(),
+                    )?))
                 } else if pty_preset_is_worker_bee(&cfg) {
                     Ok(Arc::new(UnifiedAgent::new(
                         friend,
                         self.store.clone(),
                         self.providers.clone(),
+                        self.judge.clone(),
                     )?))
                 } else {
                     Err(Error::bad_request(
@@ -73,6 +85,7 @@ impl AgentRegistry {
                 friend,
                 self.store.clone(),
                 self.providers.clone(),
+                self.judge.clone(),
             )?)),
         }
     }

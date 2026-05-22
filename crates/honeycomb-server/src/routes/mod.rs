@@ -90,11 +90,7 @@ async fn list_groups(State(s): State<AppState>) -> Result<Json<serde_json::Value
     let groups = s.core.store.list_groups().await?;
     let mut out = Vec::new();
     for g in &groups {
-        let members = s.core.store.list_group_members(&g.id).await?;
-        out.push(serde_json::json!({
-            "group": g,
-            "member_ids": members,
-        }));
+        out.push(group_bundle_json(&s.core.store, g).await?);
     }
     Ok(Json(serde_json::json!({ "groups": out })))
 }
@@ -109,13 +105,10 @@ async fn get_group(
         .get_group(&id)
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
-    let members = s.core.store.list_group_members(&g.id).await?;
+    let mut bundle = group_bundle_json(&s.core.store, &g).await?;
     let conv = s.core.store.get_or_create_group_conversation(&g.id).await?;
-    Ok(Json(serde_json::json!({
-        "group": g,
-        "member_ids": members,
-        "conversation_id": conv.id,
-    })))
+    bundle["conversation_id"] = serde_json::json!(conv.id);
+    Ok(Json(bundle))
 }
 
 async fn upsert_group(
@@ -123,13 +116,23 @@ async fn upsert_group(
     Json(req): Json<UpsertGroup>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let g = s.core.store.upsert_group(req).await?;
-    let members = s.core.store.list_group_members(&g.id).await?;
+    let mut bundle = group_bundle_json(&s.core.store, &g).await?;
     let conv = s.core.store.get_or_create_group_conversation(&g.id).await?;
-    Ok(Json(serde_json::json!({
+    bundle["conversation_id"] = serde_json::json!(conv.id);
+    Ok(Json(bundle))
+}
+
+async fn group_bundle_json(
+    store: &honeycomb_core::store::SqliteStore,
+    g: &honeycomb_core::domain::Group,
+) -> Result<serde_json::Value, ApiError> {
+    let members = store.list_group_member_configs(&g.id).await?;
+    let member_ids: Vec<String> = members.iter().map(|m| m.friend_id.clone()).collect();
+    Ok(serde_json::json!({
         "group": g,
-        "member_ids": members,
-        "conversation_id": conv.id,
-    })))
+        "member_ids": member_ids,
+        "members": members,
+    }))
 }
 
 async fn list_providers(State(s): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {

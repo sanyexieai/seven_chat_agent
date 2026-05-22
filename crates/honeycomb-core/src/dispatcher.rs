@@ -7,7 +7,8 @@ use tokio::sync::broadcast;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::agent::{AgentEvent, AgentHandle, AgentRegistry, ChatContext, Judgment};
+use crate::agent::{AgentEvent, AgentHandle, AgentRegistry, ChatContext};
+use crate::judge::{JudgeService, Judgment};
 use crate::domain::{
     BackendKind, ConvKind, Conversation, Friend, GroupSettings, Message, MessageStatus,
     SenderKind,
@@ -64,16 +65,22 @@ pub enum BusEvent {
 pub struct MessageDispatcher {
     store: Arc<SqliteStore>,
     agents: Arc<AgentRegistry>,
+    judge: Arc<JudgeService>,
     tx: broadcast::Sender<BusEvent>,
     scheduler: SpeakerScheduler,
 }
 
 impl MessageDispatcher {
-    pub fn new(store: Arc<SqliteStore>, agents: Arc<AgentRegistry>) -> Self {
+    pub fn new(
+        store: Arc<SqliteStore>,
+        agents: Arc<AgentRegistry>,
+        judge: Arc<JudgeService>,
+    ) -> Self {
         let (tx, _) = broadcast::channel(1024);
         Self {
             store,
             agents,
+            judge,
             tx,
             scheduler: SpeakerScheduler::new(),
         }
@@ -215,9 +222,13 @@ impl MessageDispatcher {
 
         while !frontier.is_empty() {
             let trigger = frontier.remove(0);
-            let member_ids = self.store.list_group_members(&group.id).await?;
+            let member_configs = self.store.list_group_member_configs(&group.id).await?;
+            let override_by_friend: std::collections::HashMap<_, _> = member_configs
+                .iter()
+                .map(|c| (c.friend_id.clone(), c.judge_override.clone()))
+                .collect();
             let mut members = Vec::new();
-            for mid in &member_ids {
+            for mid in member_configs.iter().map(|c| &c.friend_id) {
                 if let Some(f) = self.store.get_friend(mid).await? {
                     if f.enabled {
                         members.push(f);
@@ -230,7 +241,14 @@ impl MessageDispatcher {
                 trigger.sender_kind == SenderKind::User || matches!(trigger.sender_kind, SenderKind::Friend);
 
             let candidates = self
-                .judge_members(&conv, &settings, &history, &members, &trigger)
+                .judge_members(
+                    &conv,
+                    &settings,
+                    &history,
+                    &members,
+                    &override_by_friend,
+                    &trigger,
+                )
                 .await;
 
             for c in &candidates {
@@ -247,6 +265,11 @@ impl MessageDispatcher {
 
             let parent_chain = self.chain_actors(&trigger).await;
             let has_typing_human = self.has_typing_human(&members).await;
+            let threshold = settings.effective_judge_threshold();
+            let willing = candidates
+                .iter()
+                .filter(|c| c.judgment.should_reply && c.judgment.confidence >= threshold)
+                .count();
             let decisions = self.scheduler.rank(
                 &turn_id,
                 &settings,
@@ -256,6 +279,14 @@ impl MessageDispatcher {
                 has_typing_human,
             );
             if decisions.is_empty() {
+                tracing::info!(
+                    conversation_id = %conv.id,
+                    group_id = %group.id,
+                    member_count = members.len(),
+                    willing_to_reply = willing,
+                    judge_threshold = threshold,
+                    "group: no member scheduled to reply (strict + fallback both empty)"
+                );
                 let _ = triggers_self;
                 continue;
             }
@@ -307,10 +338,14 @@ impl MessageDispatcher {
 
     async fn judge_members(
         &self,
-        conv: &Conversation,
+        _conv: &Conversation,
         settings: &GroupSettings,
         history: &[Message],
         members: &[Friend],
+        override_by_friend: &std::collections::HashMap<
+            String,
+            Option<honeycomb_judge::MemberJudgeOverride>,
+        >,
         trigger: &Message,
     ) -> Vec<CandidateInfo> {
         let mut handles = Vec::new();
@@ -319,30 +354,12 @@ impl MessageDispatcher {
                 continue;
             }
             let m = m.clone();
-            let agents = self.agents.clone();
-            let conv_id = conv.id.clone();
+            let judge = self.judge.clone();
             let history = history.to_vec();
             let trig = trigger.clone();
             let settings = settings.clone();
+            let member_override = override_by_friend.get(&m.id).cloned().flatten();
             handles.push(tokio::spawn(async move {
-                let ctx = ChatContext {
-                    conversation_id: conv_id,
-                    group_settings: Some(settings),
-                    history,
-                    self_friend: m.clone(),
-                    peers: vec![],
-                };
-                let agent = match agents.get(&m.id).await {
-                    Ok(a) => a,
-                    Err(_) => {
-                        return CandidateInfo {
-                            friend_id: m.id.clone(),
-                            friend_name: m.name.clone(),
-                            backend_kind: m.backend_kind,
-                            judgment: Judgment::default(),
-                        };
-                    }
-                };
                 let judgment = match m.backend_kind {
                     BackendKind::Human => Judgment {
                         should_reply: false,
@@ -350,7 +367,17 @@ impl MessageDispatcher {
                         reason: Some("真人成员不参与自动 judge".into()),
                         suggested_delay_ms: 0,
                     },
-                    _ => agent.judge(ctx, &trig).await.unwrap_or_default(),
+                    _ => {
+                        judge
+                            .evaluate_member(
+                                &settings,
+                                &m,
+                                member_override.as_ref(),
+                                &history,
+                                &trig,
+                            )
+                            .await
+                    }
                 };
                 CandidateInfo {
                     friend_id: m.id,

@@ -5,6 +5,7 @@ import type {
   Conversation,
   Friend,
   GroupBundle,
+  GroupMemberConfig,
   GroupSettings,
   Message,
   Provider,
@@ -104,7 +105,8 @@ export const api = {
     name: string;
     avatar?: string | null;
     settings: GroupSettings;
-    member_ids: string[];
+    members: GroupMemberConfig[];
+    member_ids?: string[];
   }) =>
     jsonFetch<{
       group: GroupBundle["group"];

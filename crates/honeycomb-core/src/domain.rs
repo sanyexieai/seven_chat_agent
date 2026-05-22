@@ -288,7 +288,10 @@ pub struct Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupSettings {
+    /// 兼容旧数据；与 `judge.threshold` 同步。
     pub judge_threshold: f32,
+    #[serde(default)]
+    pub judge: honeycomb_judge::GroupJudgeSettings,
     pub max_replies_per_turn: u32,
     pub per_agent_max_per_turn: u32,
     pub cooldown_ms: u64,
@@ -300,8 +303,10 @@ pub struct GroupSettings {
 
 impl Default for GroupSettings {
     fn default() -> Self {
+        let judge = honeycomb_judge::GroupJudgeSettings::default();
         Self {
-            judge_threshold: 0.55,
+            judge_threshold: judge.threshold,
+            judge,
             max_replies_per_turn: 8,
             per_agent_max_per_turn: 2,
             cooldown_ms: 4000,
@@ -311,6 +316,31 @@ impl Default for GroupSettings {
             extra_system_prompt: None,
         }
     }
+}
+
+impl GroupSettings {
+    pub fn effective_judge_threshold(&self) -> f32 {
+        self.judge.effective_threshold(self.judge_threshold)
+    }
+
+    pub fn fallback_pick_top_enabled(&self) -> bool {
+        self.judge.fallback_pick_top
+    }
+
+    pub fn sync_judge_threshold_fields(&mut self) {
+        if self.judge.threshold <= 0.0 {
+            self.judge.threshold = self.judge_threshold;
+        }
+        self.judge_threshold = self.judge.threshold;
+    }
+}
+
+/// 群内某成员的 Judge 配置（按群定制，非好友全局）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMemberConfig {
+    pub friend_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_override: Option<honeycomb_judge::MemberJudgeOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

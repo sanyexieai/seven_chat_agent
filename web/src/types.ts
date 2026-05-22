@@ -84,8 +84,44 @@ export interface Message {
   created_at: string;
 }
 
+export type JudgeMode = "heuristic" | "llm" | "auto";
+
+export interface HeuristicJudgeSettings {
+  user_confidence: number;
+  friend_confidence: number;
+  mention_confidence: number;
+  user_delay_ms: number;
+  friend_delay_ms: number;
+  mention_delay_ms: number;
+}
+
+export interface LlmJudgeSettings {
+  provider_id: string | null;
+  model: string | null;
+  api_key_id: string | null;
+}
+
+export interface GroupJudgeSettings {
+  mode: JudgeMode;
+  threshold: number;
+  heuristic: HeuristicJudgeSettings;
+  llm: LlmJudgeSettings;
+  fallback_pick_top: boolean;
+}
+
+/** 成员级 Judge 覆盖（未启用时跟群默认）。 */
+export interface MemberJudgeOverride {
+  use_group_default: boolean;
+  mode?: JudgeMode | null;
+  threshold?: number | null;
+  heuristic?: HeuristicJudgeSettings | null;
+  llm?: LlmJudgeSettings | null;
+  fallback_pick_top?: boolean | null;
+}
+
 export interface GroupSettings {
   judge_threshold: number;
+  judge: GroupJudgeSettings;
   max_replies_per_turn: number;
   per_agent_max_per_turn: number;
   cooldown_ms: number;
@@ -103,9 +139,15 @@ export interface Group {
   created_at: string;
 }
 
+export interface GroupMemberConfig {
+  friend_id: string;
+  judge_override?: MemberJudgeOverride | null;
+}
+
 export interface GroupBundle {
   group: Group;
   member_ids: string[];
+  members?: GroupMemberConfig[];
   conversation_id?: string;
 }
 

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/honeycomb-judge",
     "crates/honeycomb-core",
     "crates/honeycomb-server",
     "crates/honeycomb-tui",
@@ -64,6 +65,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 url = "2"
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
+honeycomb-judge = { path = "crates/honeycomb-judge" }
 
 [profile.release]
 opt-level = 3

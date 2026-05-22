@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::agent::api::ApiAgent;
 use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment};
+use crate::judge::JudgeService;
 use crate::domain::{BackendKind, Friend, Message};
 use crate::provider::ProviderRegistry;
 use crate::store::SqliteStore;
@@ -18,8 +18,7 @@ pub struct UnifiedAgent {
     friend: Friend,
     profile: RuntimeProfile,
     runtime: Arc<AgentRuntime>,
-    /// 群聊 judge 仍委托给 ApiAgent 逻辑（需 provider）。
-    judge_delegate: Option<ApiAgent>,
+    judge: Arc<JudgeService>,
 }
 
 impl UnifiedAgent {
@@ -27,18 +26,14 @@ impl UnifiedAgent {
         friend: Friend,
         store: Arc<SqliteStore>,
         providers: Arc<ProviderRegistry>,
+        judge: Arc<JudgeService>,
     ) -> Result<Self> {
         let profile = RuntimeProfile::from_friend(&friend)?;
-        let judge_delegate = if friend.judge_provider_ref.is_some() {
-            Some(ApiAgent::new(friend.clone(), providers.clone())?)
-        } else {
-            None
-        };
         Ok(Self {
             friend,
             profile,
             runtime: Arc::new(AgentRuntime::new(store, providers)),
-            judge_delegate,
+            judge,
         })
     }
 
@@ -73,23 +68,20 @@ impl Agent for UnifiedAgent {
     }
 
     async fn judge(&self, ctx: ChatContext, msg: &Message) -> Result<Judgment> {
-        if let Some(api) = &self.judge_delegate {
-            return api.judge(ctx, msg).await;
+        if let Some(settings) = ctx.group_settings.as_ref() {
+            return Ok(self
+                .judge
+                .evaluate_member(settings, &self.friend, None, &ctx.history, msg)
+                .await);
         }
-        match self.friend.backend_kind {
-            BackendKind::Assistant => Ok(Judgment {
+        if matches!(self.friend.backend_kind, BackendKind::Assistant) {
+            return Ok(Judgment {
                 should_reply: true,
                 confidence: 0.7,
                 reason: Some("助理默认愿意参与".into()),
                 suggested_delay_ms: 200,
-            }),
-            BackendKind::Pty => Ok(Judgment {
-                should_reply: false,
-                confidence: 0.0,
-                reason: Some("CLI 好友默认不参与群聊 judge；可在好友配置 judge_provider_ref".into()),
-                suggested_delay_ms: 0,
-            }),
-            _ => Ok(Judgment::default()),
+            });
         }
+        Ok(Judgment::default())
     }
 }

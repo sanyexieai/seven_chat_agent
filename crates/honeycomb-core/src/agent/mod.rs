@@ -41,14 +41,7 @@ pub enum AgentEvent {
     WaitingHuman { estimated_ms: u64 },
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Judgment {
-    pub should_reply: bool,
-    pub confidence: f32,
-    pub reason: Option<String>,
-    #[serde(default)]
-    pub suggested_delay_ms: u64,
-}
+pub use crate::judge::Judgment;
 
 #[derive(Debug, Clone)]
 pub struct ChatContext {

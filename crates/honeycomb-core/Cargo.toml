@@ -29,6 +29,7 @@ strip-ansi-escapes.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
 worker-bee-cli = { path = "../worker-bee-cli" }
+honeycomb-judge = { workspace = true }
 keyring = { workspace = true, optional = true }
 
 [features]

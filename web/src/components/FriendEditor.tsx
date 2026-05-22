@@ -240,7 +240,6 @@ interface FriendDraft {
     channel: string;
     endpoint: string;
   };
-  judge_provider_ref: string;
 }
 
 function emptyDraft(): FriendDraft {
@@ -266,7 +265,6 @@ function emptyDraft(): FriendDraft {
       memory_top_k: 5,
     },
     human: { channel: "invite", endpoint: "" },
-    judge_provider_ref: "",
   };
 }
 
@@ -279,7 +277,6 @@ function fromFriend(f: Friend): FriendDraft {
   draft.system_prompt = f.system_prompt || "";
   draft.focus_tags = f.focus_tags || [];
   draft.backend_kind = f.backend_kind;
-  draft.judge_provider_ref = f.judge_provider_ref || "";
   if (f.backend_kind === "api") {
     draft.backend_kind = "pty";
     draft.pty = {
@@ -383,7 +380,7 @@ function toApi(d: FriendDraft) {
     focus_tags: d.focus_tags,
     backend_kind,
     backend_config,
-    judge_provider_ref: d.judge_provider_ref || null,
+    judge_provider_ref: null,
   };
 }
 

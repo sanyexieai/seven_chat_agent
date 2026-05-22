@@ -38,10 +38,16 @@ impl Honeycomb {
         store.seed_builtins().await?;
 
         let providers = Arc::new(ProviderRegistry::new(store.clone()).await?);
-        let agents = Arc::new(AgentRegistry::new(store.clone(), providers.clone()));
+        let judge = Arc::new(crate::judge::JudgeService::new(providers.clone()));
+        let agents = Arc::new(AgentRegistry::new(
+            store.clone(),
+            providers.clone(),
+            judge.clone(),
+        ));
         let dispatcher = Arc::new(MessageDispatcher::new(
             store.clone(),
             agents.clone(),
+            judge,
         ));
 
         Ok(Self {

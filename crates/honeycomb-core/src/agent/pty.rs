@@ -12,10 +12,10 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::agent::api::ApiAgent;
 use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment, ProviderUsageInfo};
 use crate::cli_workspace;
 use crate::domain::{Friend, Message, PtyBackendConfig};
+use crate::judge::JudgeService;
 use crate::provider::ProviderRegistry;
 use crate::{Error, Result};
 
@@ -195,19 +195,23 @@ impl PtyAdapter {
 
 pub struct PtyAgent {
     friend: Friend,
-    providers: Arc<ProviderRegistry>,
+    judge: Arc<JudgeService>,
     adapter: PtyAdapter,
     last_raw: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 impl PtyAgent {
-    pub fn new(friend: Friend, providers: Arc<ProviderRegistry>) -> Result<Self> {
+    pub fn new(
+        friend: Friend,
+        _providers: Arc<ProviderRegistry>,
+        judge: Arc<JudgeService>,
+    ) -> Result<Self> {
         let cfg: PtyBackendConfig = serde_json::from_value(friend.backend_config.clone())
             .map_err(|e| Error::Config(format!("invalid pty backend_config: {e}")))?;
         let adapter = PtyAdapter::from_config_for_friend(&cfg, &friend.id)?;
         Ok(Self {
             friend,
-            providers,
+            judge,
             adapter,
             last_raw: Arc::new(Mutex::new(None)),
         })
@@ -265,25 +269,13 @@ impl Agent for PtyAgent {
     }
 
     async fn judge(&self, ctx: ChatContext, msg: &Message) -> Result<Judgment> {
-        if let Some(provider_id) = self.friend.judge_provider_ref.clone() {
-            let stub_cfg = serde_json::json!({
-                "provider_id": provider_id,
-                "model": std::env::var("HONEYCOMB_JUDGE_MODEL")
-                    .unwrap_or_else(|_| "gpt-4o-mini".into()),
-            });
-            let mut surrogate = self.friend.clone();
-            surrogate.backend_kind = crate::domain::BackendKind::Api;
-            surrogate.backend_config = stub_cfg;
-            if let Ok(api) = ApiAgent::new(surrogate, self.providers.clone()) {
-                return api.judge(ctx, msg).await;
-            }
-        }
-        Ok(Judgment {
-            should_reply: false,
-            confidence: 0.0,
-            reason: Some("PtyAgent 需要配置 judge_provider_ref 才能参与群聊判断".into()),
-            suggested_delay_ms: 0,
-        })
+        let Some(settings) = ctx.group_settings.as_ref() else {
+            return Ok(Judgment::default());
+        };
+        Ok(self
+            .judge
+            .evaluate_member(settings, &self.friend, None, &ctx.history, msg)
+            .await)
     }
 }
 

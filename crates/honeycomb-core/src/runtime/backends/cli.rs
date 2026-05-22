@@ -28,7 +28,7 @@ impl CliInferenceBackend {
             cfg.cmd = self.cmd.clone().unwrap_or_else(|| "claude".into());
             cfg.preset = None;
         }
-        let mut adapter = PtyAdapter::from_config_for_friend(&cfg, &self.friend_id);
+        let mut adapter = PtyAdapter::from_config_for_friend(&cfg, &self.friend_id)?;
         if self.preset == WORKER_BEE_CLI_PRESET || adapter.label == "worker-bee-cli" {
             adapter.cmd = ensure_worker_bee_executable()?;
         }

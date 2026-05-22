@@ -6,7 +6,7 @@ use crate::domain::{
     Friend,
     PtyBackendConfig,
 };
-use crate::friend_cli::pty_preset_is_worker_bee;
+use crate::friend_cli::{is_external_cli_preset, pty_preset_is_worker_bee, resolve_pty_preset};
 use crate::runtime::provider_env::resolve_worker_bee_provider;
 use crate::runtime::WORKER_BEE_CLI_PRESET;
 
@@ -129,27 +129,23 @@ impl RuntimeProfile {
                 let mut cfg: PtyBackendConfig =
                     serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
                 crate::friend_cli::normalize_pty_config(&mut cfg, friend.is_builtin);
-                if pty_preset_is_worker_bee(&cfg) || friend.is_builtin {
-                    apply_worker_bee_from_pty(&mut p, friend, &cfg);
-                } else {
-                    let preset = cfg
-                        .preset
-                        .clone()
-                        .filter(|s| !s.is_empty() && s != "custom")
-                        .unwrap_or_else(|| "claude".into());
+                if is_external_cli_preset(&cfg) {
+                    let preset = resolve_pty_preset(&cfg)?;
                     let cmd = if cfg.cmd.is_empty() {
                         None
                     } else {
                         Some(cfg.cmd.clone())
                     };
                     p.inference = InferenceBackend::ExternalCli(CliInferenceConfig {
-                        preset: if cmd.is_some() {
-                            "custom".into()
-                        } else {
-                            preset
-                        },
+                        preset,
                         cmd,
                     });
+                } else if pty_preset_is_worker_bee(&cfg) {
+                    apply_worker_bee_from_pty(&mut p, friend, &cfg);
+                } else {
+                    return Err(crate::Error::bad_request(
+                        "好友未配置 CLI 预设，请在编辑里选择 Codex / Claude / Worker Bee 并保存",
+                    ));
                 }
             }
             BackendKind::Human => {}

@@ -72,11 +72,8 @@ async fn upsert_friend(
     State(s): State<AppState>,
     Json(req): Json<UpsertFriend>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let id_was_set = req.id.is_some();
     let f = s.core.store.upsert_friend(req).await?;
-    if id_was_set {
-        s.core.agents.invalidate(&f.id);
-    }
+    s.core.agents.invalidate(&f.id);
     Ok(Json(serde_json::json!({ "friend": f })))
 }
 

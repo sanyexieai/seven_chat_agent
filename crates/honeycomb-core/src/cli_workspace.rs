@@ -59,16 +59,26 @@ pub fn ensure_workspace(path: &Path, init_git: bool) -> Result<()> {
     Ok(())
 }
 
+/// 将路径规范为绝对路径。`codex exec -C` 若收到相对路径会相对**进程 cwd** 解析，
+/// 与 honeycomb-server 启动目录不一致时会 `No such file or directory (os error 2)`。
+fn absolutize(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return path.canonicalize().map_err(Error::Io);
+    }
+    let base = std::env::current_dir().map_err(Error::Io)?;
+    base.join(path).canonicalize().map_err(Error::Io)
+}
+
 /// 每位 CLI 好友的默认工作区：`{workspace_root}/{friend_id}`。
 pub fn ensure_for_friend(friend_id: &str) -> Result<String> {
     let path = default_path_for_friend(friend_id);
     ensure_workspace(&path, true)?;
-    Ok(path.to_string_lossy().into_owned())
+    Ok(absolutize(&path)?.to_string_lossy().into_owned())
 }
 
 /// 用户或 `HONEYCOMB_CLI_CWD` 指定的目录：同样自动建目录并按需 init git。
 pub fn ensure_at(path: &str) -> Result<String> {
     let p = PathBuf::from(path.trim());
     ensure_workspace(&p, true)?;
-    Ok(p.to_string_lossy().into_owned())
+    Ok(absolutize(&p)?.to_string_lossy().into_owned())
 }

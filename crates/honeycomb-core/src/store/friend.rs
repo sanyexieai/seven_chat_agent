@@ -99,8 +99,12 @@ impl SqliteStore {
                 .await?;
 
         if req.backend_kind == BackendKind::Pty {
-            let mut cfg: PtyBackendConfig =
-                serde_json::from_value(backend_config_value.clone()).unwrap_or_default();
+            let mut cfg: PtyBackendConfig = serde_json::from_value(backend_config_value.clone())
+                .map_err(|e| {
+                    Error::bad_request(format!(
+                        "backend_config 格式无效: {e}（保存 Agent 时请包含 preset，例如 codex-exec）"
+                    ))
+                })?;
             let is_builtin = if exists > 0 {
                 sqlx::query_scalar::<_, i64>("SELECT is_builtin FROM friends WHERE id = ?")
                     .bind(&id)
@@ -111,6 +115,22 @@ impl SqliteStore {
                 false
             };
             crate::friend_cli::normalize_pty_config(&mut cfg, is_builtin);
+            let has_preset = cfg
+                .preset
+                .as_ref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !has_preset && !is_builtin {
+                return Err(crate::Error::bad_request(
+                    "Agent 好友必须选择 CLI 预设（如 Codex CLI、Claude、Worker Bee）",
+                ));
+            }
+            tracing::info!(
+                friend_id = %id,
+                preset = ?cfg.preset,
+                cmd = %cfg.cmd,
+                "upsert_friend pty config"
+            );
             backend_config_value = serde_json::to_value(&cfg)?;
             let cwd_empty = cfg
                 .cwd

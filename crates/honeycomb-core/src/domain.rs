@@ -73,6 +73,7 @@ pub struct ApiSamplingParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PtyBackendConfig {
+    #[serde(default)]
     pub cmd: String,
     #[serde(default)]
     pub args: Vec<String>,

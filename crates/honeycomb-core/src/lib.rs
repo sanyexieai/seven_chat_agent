@@ -34,6 +34,7 @@ impl Honeycomb {
         store.migrate().await?;
         store.migrate_legacy_assistant_friends().await?;
         store.migrate_fixup_pty_worker_bee_configs().await?;
+        store.migrate_fixup_unconfigured_pty_friends().await?;
         store.seed_builtins().await?;
 
         let providers = Arc::new(ProviderRegistry::new(store.clone()).await?);

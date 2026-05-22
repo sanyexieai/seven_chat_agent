@@ -8,7 +8,8 @@ use futures::stream::BoxStream;
 use crate::agent::human::HumanAgent;
 use crate::agent::pty::PtyAgent;
 use crate::agent::{Agent, AgentEvent, AgentHandle, AgentKind, ChatContext, Judgment};
-use crate::friend_cli::{uses_external_cli, uses_worker_bee};
+use crate::domain::PtyBackendConfig;
+use crate::friend_cli::{is_external_cli_preset, pty_preset_is_worker_bee};
 use crate::runtime::UnifiedAgent;
 use crate::domain::{BackendKind, Friend, Message};
 use crate::provider::ProviderRegistry;
@@ -51,18 +52,28 @@ impl AgentRegistry {
     fn build(&self, friend: Friend) -> Result<AgentHandle> {
         match friend.backend_kind {
             BackendKind::Human => Ok(Arc::new(HumanAgent::new(friend))),
-            _ if uses_external_cli(&friend) => Ok(Arc::new(PtyAgent::new(
-                friend,
-                self.providers.clone(),
-            )?)),
-            _ if uses_worker_bee(&friend) => Ok(Arc::new(UnifiedAgent::new(
+            BackendKind::Pty => {
+                let cfg: PtyBackendConfig =
+                    serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
+                if is_external_cli_preset(&cfg) {
+                    Ok(Arc::new(PtyAgent::new(friend, self.providers.clone())?))
+                } else if pty_preset_is_worker_bee(&cfg) {
+                    Ok(Arc::new(UnifiedAgent::new(
+                        friend,
+                        self.store.clone(),
+                        self.providers.clone(),
+                    )?))
+                } else {
+                    Err(Error::bad_request(
+                        "好友未配置 CLI 预设：请编辑好友，选择 Codex CLI / Claude / Worker Bee 后保存",
+                    ))
+                }
+            }
+            BackendKind::Assistant | BackendKind::Api => Ok(Arc::new(UnifiedAgent::new(
                 friend,
                 self.store.clone(),
                 self.providers.clone(),
             )?)),
-            BackendKind::Pty | BackendKind::Assistant | BackendKind::Api => Ok(Arc::new(
-                PtyAgent::new(friend, self.providers.clone())?,
-            )),
         }
     }
 }

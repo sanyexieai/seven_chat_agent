@@ -42,6 +42,11 @@ export function FriendEditor({ friendId, onClose }: Props) {
         });
         d = { ...d, pty: { ...d.pty, api_key_id: id, api_key_secret: "" } };
       }
+      if (d.backend_kind === "pty" && !d.pty.preset.trim()) {
+        setError("请选择 CLI 预设（Codex / Claude / Worker Bee 等）");
+        setBusy(false);
+        return;
+      }
       const body = toApi(d);
       const { friend } = await api.upsertFriend(body);
       await reloadFriends();
@@ -290,9 +295,12 @@ function fromFriend(f: Friend): FriendDraft {
       memory_top_k: f.backend_config?.memory_top_k ?? 5,
     };
   } else if (f.backend_kind === "pty" || f.backend_kind === "assistant") {
+    const rawPreset = f.backend_config?.preset;
     const preset =
-      f.backend_config?.preset ||
-      (f.backend_kind === "assistant" ? "worker-bee-cli" : "claude");
+      (typeof rawPreset === "string" && rawPreset.trim()) ||
+      (f.backend_kind === "assistant" ? "worker-bee-cli" : "");
+    const isExternal =
+      preset === "codex-exec" || preset === "claude" || preset === "cursor";
     draft.backend_kind = "pty";
     draft.pty = {
       preset,
@@ -310,12 +318,12 @@ function fromFriend(f: Friend): FriendDraft {
           ? f.backend_config.args.join(" ")
           : "",
       cwd: f.backend_config?.cwd || "",
-      provider_id: f.backend_config?.provider_id || "",
-      model: f.backend_config?.model || "",
-      api_key_id: f.backend_config?.api_key_id || null,
+      provider_id: isExternal ? "" : f.backend_config?.provider_id || "",
+      model: isExternal ? "" : f.backend_config?.model || "",
+      api_key_id: isExternal ? null : f.backend_config?.api_key_id || null,
       api_key_secret: "",
-      skills_dir: f.backend_config?.skills_dir || "data/skills",
-      memory_top_k: f.backend_config?.memory_top_k ?? 5,
+      skills_dir: isExternal ? "data/skills" : f.backend_config?.skills_dir || "data/skills",
+      memory_top_k: isExternal ? 5 : f.backend_config?.memory_top_k ?? 5,
     };
   } else if (f.backend_kind === "human") {
     draft.human = {
@@ -330,8 +338,12 @@ function toApi(d: FriendDraft) {
   let backend_kind = d.backend_kind;
   let backend_config: any = {};
   if (d.backend_kind === "pty") {
+    const preset = d.pty.preset.trim();
+    if (!preset) {
+      throw new Error("CLI 预设不能为空");
+    }
     backend_config = {
-      preset: d.pty.preset,
+      preset,
       ...(d.pty.cwd.trim() ? { cwd: d.pty.cwd.trim() } : {}),
     };
     if (d.pty.preset === "custom") {
@@ -349,6 +361,13 @@ function toApi(d: FriendDraft) {
         skills_dir: d.pty.skills_dir,
         memory_top_k: d.pty.memory_top_k,
       });
+    } else if (
+      d.pty.preset === "codex-exec" ||
+      d.pty.preset === "claude" ||
+      d.pty.preset === "cursor"
+    ) {
+      backend_config.preset = d.pty.preset;
+      backend_config.cmd = ptyCmdForPreset(d.pty.preset);
     }
   } else if (d.backend_kind === "human") {
     backend_config = {
@@ -570,6 +589,7 @@ function PtyConfigEditor({
           onChange={(e) => {
             const preset = e.target.value;
             const p = PTY_PRESETS[preset];
+            const workerBee = preset === "worker-bee-cli";
             setDraft({
               ...draft,
               pty: {
@@ -577,10 +597,25 @@ function PtyConfigEditor({
                 preset,
                 cmd: p?.cmd ?? "",
                 args: p?.args ?? "",
+                ...(workerBee
+                  ? {}
+                  : {
+                      provider_id: "",
+                      model: "",
+                      api_key_id: null,
+                      api_key_secret: "",
+                      skills_dir: "data/skills",
+                      memory_top_k: 5,
+                    }),
               },
             });
           }}
         >
+          {!draft.pty.preset && (
+            <option value="" disabled>
+              请选择 CLI 预设
+            </option>
+          )}
           {Object.entries(PTY_PRESETS).map(([id, p]) => (
             <option key={id} value={id}>
               {p.label}

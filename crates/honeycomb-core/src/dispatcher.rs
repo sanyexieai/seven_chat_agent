@@ -429,7 +429,18 @@ impl MessageDispatcher {
         let mut stream = match agent.send(ctx, prompt.to_string()).await {
             Ok(s) => s,
             Err(e) => {
-                error!(err = %e, "agent.send failed");
+                let preset = friend
+                    .backend_config
+                    .get("preset")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(missing)");
+                error!(
+                    friend_id = %friend.id,
+                    friend_name = %friend.name,
+                    preset = %preset,
+                    err = %e,
+                    "agent.send failed"
+                );
                 let _ = self
                     .store
                     .finalize_message(

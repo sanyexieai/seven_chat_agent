@@ -61,17 +61,13 @@ pub struct PtyAdapter {
 }
 
 impl PtyAdapter {
-    pub fn from_config(cfg: &PtyBackendConfig) -> Self {
+    pub fn from_config(cfg: &PtyBackendConfig) -> crate::Result<Self> {
         Self::from_config_for_friend(cfg, "")
     }
 
-    pub fn from_config_for_friend(cfg: &PtyBackendConfig, friend_id: &str) -> Self {
-        let preset = cfg
-            .preset
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("claude");
-        let mut adapter = match preset {
+    pub fn from_config_for_friend(cfg: &PtyBackendConfig, friend_id: &str) -> crate::Result<Self> {
+        let preset = crate::friend_cli::resolve_pty_preset(cfg)?;
+        let mut adapter = match preset.as_str() {
             "codex-exec" => PtyAdapter::preset_codex_exec(),
             "worker-bee-cli" => PtyAdapter::preset_worker_bee_cli(),
             "claude" => PtyAdapter::preset_claude(),
@@ -79,7 +75,7 @@ impl PtyAdapter {
             _ => PtyAdapter::generic(),
         };
         // 具名预设自带 cmd/args；仅 custom / 未知预设才允许 backend_config 覆盖。
-        let cmd_overridable = matches!(preset, "custom") || adapter.label == "generic";
+        let cmd_overridable = preset == "custom" || adapter.label == "generic";
         if cmd_overridable && !cfg.cmd.is_empty() {
             adapter.cmd = cfg.cmd.clone();
         }
@@ -98,7 +94,7 @@ impl PtyAdapter {
         if let Some(s) = cfg.idle_seconds {
             adapter.timeout_seconds = s.max(5);
         }
-        adapter
+        Ok(adapter)
     }
 
     /// OpenAI `codex exec` CLI（`preset=codex-exec`）。
@@ -208,7 +204,7 @@ impl PtyAgent {
     pub fn new(friend: Friend, providers: Arc<ProviderRegistry>) -> Result<Self> {
         let cfg: PtyBackendConfig = serde_json::from_value(friend.backend_config.clone())
             .map_err(|e| Error::Config(format!("invalid pty backend_config: {e}")))?;
-        let adapter = PtyAdapter::from_config_for_friend(&cfg, &friend.id);
+        let adapter = PtyAdapter::from_config_for_friend(&cfg, &friend.id)?;
         Ok(Self {
             friend,
             providers,
@@ -337,7 +333,9 @@ async fn run_oneshot(
         if p.is_dir() {
             cmd.current_dir(p);
         } else {
-            warn!(cwd = %cwd, "pty cwd does not exist, using server cwd");
+            return Err(Error::agent(format!(
+                "CLI 工作目录不存在: {cwd}（请检查好友 cwd 或从项目根目录启动 honeycomb-server）"
+            )));
         }
     }
     cmd.stdin(if adapter.input_mode == InputMode::Stdin {
@@ -542,6 +540,7 @@ fn ensure_codex_exec_cd(args: &mut Vec<String>, cwd: &str) {
 
 fn is_codex_exec_fatal_stderr(s: &str) -> bool {
     s.contains("Not inside a trusted directory")
+        || s.contains("No such file or directory")
         || s.contains("error:")
         || s.contains("Error:")
         || s.contains("failed")

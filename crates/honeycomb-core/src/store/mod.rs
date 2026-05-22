@@ -102,7 +102,7 @@ impl SqliteStore {
     /// 修复 `preset=null` 的工蜂/内置好友，避免被当成外部 `claude` CLI。
     pub async fn migrate_fixup_pty_worker_bee_configs(&self) -> Result<()> {
         use crate::domain::PtyBackendConfig;
-        use crate::friend_cli::{normalize_pty_config, pty_preset_is_worker_bee};
+        use crate::friend_cli::normalize_pty_config;
 
         let rows: Vec<(String, String, i64)> = sqlx::query_as(
             "SELECT id, backend_config, is_builtin FROM friends WHERE backend_kind = 'pty'",
@@ -114,9 +114,6 @@ impl SqliteStore {
             let mut cfg: PtyBackendConfig =
                 serde_json::from_str(&cfg_raw).unwrap_or_default();
             normalize_pty_config(&mut cfg, is_builtin != 0);
-            if is_builtin == 0 && !pty_preset_is_worker_bee(&cfg) {
-                continue;
-            }
             let json = serde_json::to_string(&cfg)?;
             if json == cfg_raw {
                 continue;
@@ -129,7 +126,51 @@ impl SqliteStore {
             tracing::info!(
                 friend_id = %id,
                 preset = ?cfg.preset,
-                "fixed pty backend_config for worker-bee"
+                is_builtin = is_builtin != 0,
+                "migrate_fixup pty backend_config"
+            );
+        }
+        Ok(())
+    }
+
+    /// 修复历史上 `preset=null` 的非内置 pty 好友（避免静默 spawn `claude`）。
+    pub async fn migrate_fixup_unconfigured_pty_friends(&self) -> Result<()> {
+        use crate::domain::PtyBackendConfig;
+        use crate::friend_cli::{is_external_cli_preset, normalize_pty_config, pty_preset_is_worker_bee};
+
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT id, backend_config, is_builtin FROM friends WHERE backend_kind = 'pty'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        for (id, cfg_raw, is_builtin) in rows {
+            if is_builtin != 0 {
+                continue;
+            }
+            let mut cfg: PtyBackendConfig =
+                serde_json::from_str(&cfg_raw).unwrap_or_default();
+            let has_preset = cfg
+                .preset
+                .as_ref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if has_preset || pty_preset_is_worker_bee(&cfg) || is_external_cli_preset(&cfg) {
+                continue;
+            }
+            cfg.preset = Some("codex-exec".into());
+            normalize_pty_config(&mut cfg, false);
+            let json = serde_json::to_string(&cfg)?;
+            sqlx::query("UPDATE friends SET backend_config = ? WHERE id = ?")
+                .bind(&json)
+                .bind(&id)
+                .execute(&self.pool)
+                .await?;
+            tracing::info!(
+                friend_id = %id,
+                preset = ?cfg.preset,
+                cmd = %cfg.cmd,
+                "migrate_fixup unconfigured pty → codex-exec"
             );
         }
         Ok(())

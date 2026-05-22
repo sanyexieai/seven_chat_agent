@@ -39,7 +39,7 @@ impl Tool for CliTool {
             cfg.cmd = ctx.cli_cmd.clone().unwrap_or_else(|| "claude".into());
             cfg.preset = None;
         }
-        let adapter = PtyAdapter::from_config_for_friend(&cfg, &ctx.friend_id);
+        let adapter = PtyAdapter::from_config_for_friend(&cfg, &ctx.friend_id)?;
         let raw = Arc::new(Mutex::new(String::new()));
         let acc = raw.clone();
         let mut rx = run_pty_oneshot(adapter, prompt.to_string()).await?;

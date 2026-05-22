@@ -1,0 +1,168 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useChat } from "../stores/chat";
+import { MessageBubble } from "./MessageBubble";
+import { Avatar } from "./Avatar";
+
+export function ChatWindow() {
+  const { friends, groups, target, conversation, messages, sendMessage, thinking } =
+    useChat();
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const sendLock = useRef(false);
+  const endRef = useRef<HTMLDivElement | null>(null);
+
+  const header = useMemo(() => {
+    if (!target) return null;
+    if (target.kind === "friend") {
+      const f = friends.find((f) => f.id === target.id);
+      if (!f) return null;
+      return {
+        title: f.name,
+        subtitle:
+          f.focus_tags.length > 0
+            ? `关注：${f.focus_tags.join(" · ")}`
+            : f.personality || "",
+        right:
+          f.backend_kind === "api"
+            ? f.backend_config?.model || ""
+            : f.backend_kind,
+        avatarName: f.name,
+        avatarKind: f.backend_kind,
+      };
+    } else {
+      const gb = groups.find((g) => g.group.id === target.id);
+      if (!gb) return null;
+      return {
+        title: gb.group.name,
+        subtitle: `${gb.member_ids.length} 位成员 · 群聊`,
+        right: `阈值 ${gb.group.settings.judge_threshold.toFixed(2)}`,
+        avatarName: gb.group.name,
+        avatarKind: undefined,
+      };
+    }
+  }, [target, friends, groups]);
+
+  const groupMembers = useMemo(() => {
+    if (target?.kind !== "group") return [] as ReturnType<typeof friends.filter>;
+    const gb = groups.find((g) => g.group.id === target.id);
+    if (!gb) return [];
+    return friends.filter((f) => gb.member_ids.includes(f.id));
+  }, [target, friends, groups]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, messages[messages.length - 1]?.content]);
+
+  if (!target || !header) {
+    return (
+      <div className="flex h-full flex-1 items-center justify-center text-slate-400">
+        选择左侧的好友或群聊开始对话
+      </div>
+    );
+  }
+
+  async function onSend(e?: React.FormEvent) {
+    e?.preventDefault();
+    const content = draft.trim();
+    if (!content || sending || sendLock.current) return;
+    sendLock.current = true;
+    setSending(true);
+    setDraft("");
+    try {
+      await sendMessage(content);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      sendLock.current = false;
+      setSending(false);
+    }
+  }
+
+  return (
+    <section className="flex h-full flex-1 flex-col bg-gradient-to-b from-slate-100 to-slate-50">
+      <header className="flex items-center gap-3 border-b border-slate-200 bg-white/80 px-4 py-3 backdrop-blur">
+        <Avatar
+          name={header.avatarName}
+          kind={header.avatarKind as any}
+          size={40}
+        />
+        <div className="flex-1">
+          <div className="text-sm font-semibold text-slate-800">
+            {header.title}
+          </div>
+          <div className="text-xs text-slate-500">{header.subtitle}</div>
+        </div>
+        <div className="text-xs text-slate-400">{header.right}</div>
+      </header>
+      {target.kind === "group" && (
+        <div className="flex gap-2 overflow-x-auto border-b border-slate-200 bg-white px-4 py-2">
+          {groupMembers.map((m) => {
+            const state = thinking[m.id];
+            const label = state
+              ? state.status === "judging"
+                ? "在想..."
+                : state.status === "will_reply"
+                  ? "准备发言"
+                  : state.status === "speaking"
+                    ? "正在说"
+                    : "已读不回"
+              : "";
+            const colorClass = state
+              ? state.status === "skip"
+                ? "text-slate-400"
+                : state.status === "speaking"
+                  ? "text-honey-700"
+                  : "text-emerald-600"
+              : "text-slate-400";
+            return (
+              <div
+                key={m.id}
+                className="flex items-center gap-2 rounded-full bg-slate-100 px-2 py-1 text-xs"
+              >
+                <Avatar name={m.name} kind={m.backend_kind} size={20} />
+                <span className="text-slate-700">{m.name}</span>
+                {label && (
+                  <span className={`text-[10px] ${colorClass}`}>{label}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="flex-1 space-y-3 overflow-y-auto px-6 py-4">
+        {messages.length === 0 && (
+          <div className="mt-12 text-center text-sm text-slate-400">
+            {target.kind === "friend"
+              ? "和这位好友开启第一次对话吧。"
+              : "在群里说点什么，看大家会不会出声。"}
+          </div>
+        )}
+        {messages.map((m) => (
+          <MessageBubble key={m.id} message={m} />
+        ))}
+        <div ref={endRef} />
+      </div>
+      <form
+        className="flex items-end gap-2 border-t border-slate-200 bg-white px-4 py-3"
+        onSubmit={onSend}
+      >
+        <textarea
+          rows={2}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="说点什么... (Enter 发送, Shift+Enter 换行)"
+          className="input resize-none"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onSend();
+            }
+          }}
+        />
+        <button className="btn-primary h-10 px-5" disabled={sending}>
+          {sending ? "..." : "发送"}
+        </button>
+      </form>
+    </section>
+  );
+}

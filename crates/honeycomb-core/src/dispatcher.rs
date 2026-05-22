@@ -1,0 +1,530 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
+use tracing::error;
+use uuid::Uuid;
+
+use crate::agent::{AgentEvent, AgentHandle, AgentRegistry, ChatContext, Judgment};
+use crate::domain::{
+    BackendKind, ConvKind, Conversation, Friend, GroupSettings, Message, MessageStatus,
+    SenderKind,
+};
+use crate::scheduler::{CandidateInfo, ScheduleDecision, SpeakerScheduler};
+use crate::store::message::NewMessage;
+use crate::store::SqliteStore;
+use crate::{Error, Result};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BusEvent {
+    MessageCreated {
+        message: Message,
+    },
+    MessageDelta {
+        message_id: String,
+        conversation_id: String,
+        delta: String,
+        thinking: bool,
+    },
+    MessageDone {
+        message: Message,
+    },
+    MessageFailed {
+        message_id: String,
+        conversation_id: String,
+        reason: String,
+    },
+    TurnStarted {
+        conversation_id: String,
+        turn_id: String,
+    },
+    TurnEnded {
+        conversation_id: String,
+        turn_id: String,
+    },
+    JudgmentDecided {
+        conversation_id: String,
+        turn_id: String,
+        friend_id: String,
+        friend_name: String,
+        should_reply: bool,
+        confidence: f32,
+        reason: Option<String>,
+    },
+    SchedulerPicked {
+        conversation_id: String,
+        turn_id: String,
+        decisions: Vec<ScheduleDecision>,
+    },
+}
+
+pub struct MessageDispatcher {
+    store: Arc<SqliteStore>,
+    agents: Arc<AgentRegistry>,
+    tx: broadcast::Sender<BusEvent>,
+    scheduler: SpeakerScheduler,
+}
+
+impl MessageDispatcher {
+    pub fn new(store: Arc<SqliteStore>, agents: Arc<AgentRegistry>) -> Self {
+        let (tx, _) = broadcast::channel(1024);
+        Self {
+            store,
+            agents,
+            tx,
+            scheduler: SpeakerScheduler::new(),
+        }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<BusEvent> {
+        self.tx.subscribe()
+    }
+
+    pub fn emit(&self, event: BusEvent) {
+        let _ = self.tx.send(event);
+    }
+
+    pub async fn send_user_message(
+        &self,
+        conversation_id: &str,
+        content: &str,
+    ) -> Result<Message> {
+        self.send_message_from(conversation_id, SenderKind::User, "user", "我", content)
+            .await
+    }
+
+    pub async fn send_human_message(
+        &self,
+        conversation_id: &str,
+        human_friend_id: &str,
+        content: &str,
+    ) -> Result<Message> {
+        let friend = self
+            .store
+            .get_friend(human_friend_id)
+            .await?
+            .ok_or_else(|| Error::not_found("human friend"))?;
+        self.send_message_from(
+            conversation_id,
+            SenderKind::Friend,
+            human_friend_id,
+            &friend.name,
+            content,
+        )
+        .await
+    }
+
+    async fn send_message_from(
+        &self,
+        conversation_id: &str,
+        sender_kind: SenderKind,
+        sender_id: &str,
+        sender_name: &str,
+        content: &str,
+    ) -> Result<Message> {
+        let conv = self
+            .store
+            .get_conversation(conversation_id)
+            .await?
+            .ok_or_else(|| Error::not_found("conversation"))?;
+        let turn_id = Uuid::new_v4().to_string();
+        let msg = self
+            .store
+            .insert_message(NewMessage {
+                conversation_id: &conv.id,
+                turn_id: &turn_id,
+                parent_id: None,
+                sender_kind,
+                sender_id,
+                sender_name,
+                content,
+                mentions: &[],
+                status: MessageStatus::Done,
+            })
+            .await?;
+        self.emit(BusEvent::MessageCreated {
+            message: msg.clone(),
+        });
+        self.emit(BusEvent::TurnStarted {
+            conversation_id: conv.id.clone(),
+            turn_id: turn_id.clone(),
+        });
+
+        match conv.kind {
+            ConvKind::Dm => {
+                if matches!(sender_kind, SenderKind::User) {
+                    self.dispatch_dm(conv.clone(), msg.clone(), turn_id.clone())
+                        .await?;
+                }
+            }
+            ConvKind::Group => {
+                self.dispatch_group(conv.clone(), msg.clone(), turn_id.clone())
+                    .await?;
+            }
+        }
+        self.scheduler.reset_turn(&turn_id);
+        self.emit(BusEvent::TurnEnded {
+            conversation_id: conv.id,
+            turn_id,
+        });
+        Ok(msg)
+    }
+
+    async fn dispatch_dm(
+        &self,
+        conv: Conversation,
+        user_msg: Message,
+        turn_id: String,
+    ) -> Result<()> {
+        let friend_id = conv.target_id.clone();
+        let friend = self
+            .store
+            .get_friend(&friend_id)
+            .await?
+            .ok_or_else(|| Error::not_found("friend"))?;
+        let agent = self.agents.get(&friend_id).await?;
+        let history = self.store.recent_messages(&conv.id, 40).await?;
+        let ctx = ChatContext {
+            conversation_id: conv.id.clone(),
+            group_settings: None,
+            history,
+            self_friend: friend.clone(),
+            peers: vec![],
+        };
+        self.stream_one_reply(&conv, &user_msg, &turn_id, &friend, agent, ctx, &user_msg.content, 0)
+            .await?;
+        Ok(())
+    }
+
+    async fn dispatch_group(
+        &self,
+        conv: Conversation,
+        user_msg: Message,
+        turn_id: String,
+    ) -> Result<()> {
+        let group = self
+            .store
+            .get_group(&conv.target_id)
+            .await?
+            .ok_or_else(|| Error::not_found("group"))?;
+        let settings = group.settings.clone();
+        let mut frontier = vec![user_msg.clone()];
+
+        while !frontier.is_empty() {
+            let trigger = frontier.remove(0);
+            let member_ids = self.store.list_group_members(&group.id).await?;
+            let mut members = Vec::new();
+            for mid in &member_ids {
+                if let Some(f) = self.store.get_friend(mid).await? {
+                    if f.enabled {
+                        members.push(f);
+                    }
+                }
+            }
+
+            let history = self.store.recent_messages(&conv.id, 60).await?;
+            let triggers_self =
+                trigger.sender_kind == SenderKind::User || matches!(trigger.sender_kind, SenderKind::Friend);
+
+            let candidates = self
+                .judge_members(&conv, &settings, &history, &members, &trigger)
+                .await;
+
+            for c in &candidates {
+                self.emit(BusEvent::JudgmentDecided {
+                    conversation_id: conv.id.clone(),
+                    turn_id: turn_id.clone(),
+                    friend_id: c.friend_id.clone(),
+                    friend_name: c.friend_name.clone(),
+                    should_reply: c.judgment.should_reply,
+                    confidence: c.judgment.confidence,
+                    reason: c.judgment.reason.clone(),
+                });
+            }
+
+            let parent_chain = self.chain_actors(&trigger).await;
+            let has_typing_human = self.has_typing_human(&members).await;
+            let decisions = self.scheduler.rank(
+                &turn_id,
+                &settings,
+                &trigger,
+                candidates,
+                &parent_chain,
+                has_typing_human,
+            );
+            if decisions.is_empty() {
+                let _ = triggers_self;
+                continue;
+            }
+            self.emit(BusEvent::SchedulerPicked {
+                conversation_id: conv.id.clone(),
+                turn_id: turn_id.clone(),
+                decisions: decisions.clone(),
+            });
+
+            for d in decisions {
+                let friend = match self.store.get_friend(&d.friend_id).await? {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let agent = self.agents.get(&friend.id).await?;
+                let peers: Vec<Friend> = members
+                    .iter()
+                    .filter(|m| m.id != friend.id)
+                    .cloned()
+                    .collect();
+                let history = self.store.recent_messages(&conv.id, 60).await?;
+                let ctx = ChatContext {
+                    conversation_id: conv.id.clone(),
+                    group_settings: Some(settings.clone()),
+                    history,
+                    self_friend: friend.clone(),
+                    peers,
+                };
+                if d.delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(d.delay_ms)).await;
+                }
+                let prompt = format!(
+                    "群里 [{}] 刚说：{}\n请按你的人设给出一句自然回应。",
+                    trigger.sender_name, trigger.content
+                );
+                let reply = self
+                    .stream_one_reply(&conv, &trigger, &turn_id, &friend, agent, ctx, &prompt, 0)
+                    .await?;
+                if let Some(reply_msg) = reply {
+                    self.scheduler.record_reply(&turn_id, &reply_msg.content);
+                    if settings.allow_agent_to_agent {
+                        frontier.push(reply_msg);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn judge_members(
+        &self,
+        conv: &Conversation,
+        settings: &GroupSettings,
+        history: &[Message],
+        members: &[Friend],
+        trigger: &Message,
+    ) -> Vec<CandidateInfo> {
+        let mut handles = Vec::new();
+        for m in members {
+            if m.id == trigger.sender_id {
+                continue;
+            }
+            let m = m.clone();
+            let agents = self.agents.clone();
+            let conv_id = conv.id.clone();
+            let history = history.to_vec();
+            let trig = trigger.clone();
+            let settings = settings.clone();
+            handles.push(tokio::spawn(async move {
+                let ctx = ChatContext {
+                    conversation_id: conv_id,
+                    group_settings: Some(settings),
+                    history,
+                    self_friend: m.clone(),
+                    peers: vec![],
+                };
+                let agent = match agents.get(&m.id).await {
+                    Ok(a) => a,
+                    Err(_) => {
+                        return CandidateInfo {
+                            friend_id: m.id.clone(),
+                            friend_name: m.name.clone(),
+                            backend_kind: m.backend_kind,
+                            judgment: Judgment::default(),
+                        };
+                    }
+                };
+                let judgment = match m.backend_kind {
+                    BackendKind::Human => Judgment {
+                        should_reply: false,
+                        confidence: 0.0,
+                        reason: Some("真人成员不参与自动 judge".into()),
+                        suggested_delay_ms: 0,
+                    },
+                    _ => agent.judge(ctx, &trig).await.unwrap_or_default(),
+                };
+                CandidateInfo {
+                    friend_id: m.id,
+                    friend_name: m.name,
+                    backend_kind: m.backend_kind,
+                    judgment,
+                }
+            }));
+        }
+        let mut out = Vec::new();
+        for h in handles {
+            if let Ok(c) = h.await {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    async fn chain_actors(&self, msg: &Message) -> HashMap<String, u32> {
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        let mut cur = Some(msg.clone());
+        while let Some(m) = cur {
+            if m.sender_kind == SenderKind::Friend {
+                *counts.entry(m.sender_id.clone()).or_insert(0) += 1;
+            }
+            cur = match m.parent_id {
+                Some(pid) => self.store.get_message(&pid).await.ok().flatten(),
+                None => None,
+            };
+        }
+        counts
+    }
+
+    async fn has_typing_human(&self, members: &[Friend]) -> bool {
+        let human_ids: Vec<String> = members
+            .iter()
+            .filter(|m| m.backend_kind == BackendKind::Human)
+            .map(|m| m.id.clone())
+            .collect();
+        if human_ids.is_empty() {
+            return false;
+        }
+        let typing = self.store.list_typing_humans().await.unwrap_or_default();
+        typing.into_iter().any(|id| human_ids.contains(&id))
+    }
+
+    async fn stream_one_reply(
+        &self,
+        conv: &Conversation,
+        parent: &Message,
+        turn_id: &str,
+        friend: &Friend,
+        agent: AgentHandle,
+        ctx: ChatContext,
+        prompt: &str,
+        _depth: usize,
+    ) -> Result<Option<Message>> {
+        let placeholder = self
+            .store
+            .insert_message(NewMessage {
+                conversation_id: &conv.id,
+                turn_id,
+                parent_id: Some(&parent.id),
+                sender_kind: SenderKind::Friend,
+                sender_id: &friend.id,
+                sender_name: &friend.name,
+                content: "",
+                mentions: &[],
+                status: MessageStatus::Streaming,
+            })
+            .await?;
+        self.emit(BusEvent::MessageCreated {
+            message: placeholder.clone(),
+        });
+
+        let mut stream = match agent.send(ctx, prompt.to_string()).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!(err = %e, "agent.send failed");
+                let _ = self
+                    .store
+                    .finalize_message(
+                        &placeholder.id,
+                        &format!("(error: {e})"),
+                        MessageStatus::Failed,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                self.emit(BusEvent::MessageFailed {
+                    message_id: placeholder.id.clone(),
+                    conversation_id: conv.id.clone(),
+                    reason: e.to_string(),
+                });
+                return Ok(None);
+            }
+        };
+
+        let mut content = String::new();
+        let mut model_used: Option<String> = None;
+        let mut tokens_in: Option<i64> = None;
+        let mut tokens_out: Option<i64> = None;
+        let mut failed_reason: Option<String> = None;
+
+        while let Some(ev) = stream.next().await {
+            match ev {
+                AgentEvent::Token(t) => {
+                    content.push_str(&t);
+                    self.emit(BusEvent::MessageDelta {
+                        message_id: placeholder.id.clone(),
+                        conversation_id: conv.id.clone(),
+                        delta: t,
+                        thinking: false,
+                    });
+                }
+                AgentEvent::Thinking(t) => {
+                    self.emit(BusEvent::MessageDelta {
+                        message_id: placeholder.id.clone(),
+                        conversation_id: conv.id.clone(),
+                        delta: t,
+                        thinking: true,
+                    });
+                }
+                AgentEvent::Tool { .. } => {}
+                AgentEvent::WaitingHuman { .. } => {}
+                AgentEvent::Done(info) => {
+                    model_used = info.model.clone();
+                    tokens_in = Some(info.tokens_in);
+                    tokens_out = Some(info.tokens_out);
+                }
+                AgentEvent::Error(e) => {
+                    failed_reason = Some(e);
+                }
+            }
+        }
+
+        if let Some(reason) = failed_reason {
+            let _ = self
+                .store
+                .finalize_message(
+                    &placeholder.id,
+                    &content,
+                    MessageStatus::Failed,
+                    model_used.as_deref(),
+                    tokens_in,
+                    tokens_out,
+                )
+                .await;
+            self.emit(BusEvent::MessageFailed {
+                message_id: placeholder.id.clone(),
+                conversation_id: conv.id.clone(),
+                reason,
+            });
+            return Ok(None);
+        }
+
+        let _ = self
+            .store
+            .finalize_message(
+                &placeholder.id,
+                &content,
+                MessageStatus::Done,
+                model_used.as_deref(),
+                tokens_in,
+                tokens_out,
+            )
+            .await;
+        if let Ok(Some(m)) = self.store.get_message(&placeholder.id).await {
+            self.emit(BusEvent::MessageDone {
+                message: m.clone(),
+            });
+            return Ok(Some(m));
+        }
+        Ok(None)
+    }
+}

@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/honeycomb-core",
+    "crates/honeycomb-server",
+    "crates/honeycomb-tui",
+    "crates/worker-bee-cli",
+]
+exclude = [
+    "apps/honeycomb-desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/yourname/honeycomb"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+async-stream = "0.3"
+sqlx = { version = "0.8", default-features = false, features = [
+    "sqlite",
+    "runtime-tokio-rustls",
+    "macros",
+    "json",
+    "chrono",
+    "uuid",
+    "migrate",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+] }
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+eventsource-stream = "0.2"
+bytes = "1"
+once_cell = "1"
+parking_lot = "0.12"
+dashmap = "6"
+regex = "1"
+lru = "0.12"
+strip-ansi-escapes = "0.2"
+portable-pty = "0.9"
+keyring = { version = "3", default-features = false }
+rand = "0.8"
+ratatui = "0.28"
+crossterm = "0.28"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+url = "2"
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

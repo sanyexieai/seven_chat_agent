@@ -1,0 +1,20 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# data dirs
+data/
+
+# web
+node_modules/
+dist/
+.vite/
+.DS_Store
+
+# env
+.env
+.env.local
+
+# editor
+.idea/
+.vscode/

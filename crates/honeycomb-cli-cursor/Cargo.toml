@@ -1,0 +1,11 @@
+[package]
+name = "honeycomb-cli-cursor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cursor Agent CLI driver implementation for Honeycomb"
+
+[dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["process"] }
+honeycomb-cli-protocol = { path = "../honeycomb-cli-protocol" }

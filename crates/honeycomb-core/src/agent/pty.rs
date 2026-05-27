@@ -17,8 +17,9 @@ use crate::cli_workspace;
 use crate::domain::{Friend, Message, PtyBackendConfig};
 use crate::friend_cli::{
     apply_cli_auth_env, ensure_cursor_agent_executable, ensure_cursor_chat_session,
-    external_cli_argv, parse_claude_session_id_from_output,
-    pty_cli_session_is_resume, resolve_cli_session_id, resolve_codex_sandbox_mode,
+    external_cli_argv, is_external_cli_preset, launch_from_pty, parse_session_id,
+    pty_cli_session_is_resume, resolve_cli_session_id,
+    resume_session_likely_invalid, uses_codex_jsonl_stream,
 };
 use crate::store::SecretVault;
 use crate::judge::JudgeService;
@@ -101,7 +102,9 @@ impl PtyAdapter {
                 ensure_codex_exec_cd(&mut adapter.args, &cwd);
             }
         }
-        if crate::friend_cli::is_external_cli_preset(cfg) {
+        if is_external_cli_preset(cfg)
+            || cfg.preset.as_deref() == Some(honeycomb_cli::PRESET_WORKER_BEE)
+        {
             apply_cli_session_adapter(&mut adapter, cfg);
         }
         if let Some(s) = cfg.idle_seconds {
@@ -156,8 +159,7 @@ impl PtyAdapter {
     }
 
     pub(crate) fn uses_codex_exec_jsonl(&self) -> bool {
-        (self.label == "codex-exec" || self.label == "worker-bee-cli")
-            && self.args.iter().any(|a| a == "--json")
+        uses_codex_jsonl_stream(&self.label) && self.args.iter().any(|a| a == "--json")
     }
 
     pub fn preset_claude() -> Self {
@@ -328,9 +330,8 @@ impl Agent for PtyAgent {
                 *raw_store.lock().await = Some(buf.clone());
 
                 if resume
-                    && adapter.label == "codex-exec"
                     && resolve_cli_session_id(&cfg).is_some()
-                    && codex_resume_likely_invalid(&buf)
+                    && resume_session_likely_invalid(&adapter.label, &buf)
                     && !retried_fresh
                 {
                     retried_fresh = true;
@@ -342,13 +343,7 @@ impl Agent for PtyAgent {
                 }
 
                 if resume {
-                    let new_id = match adapter.label.as_str() {
-                        "codex-exec" => {
-                            worker_bee_cli::parse_codex_thread_id_from_jsonl(&buf)
-                        }
-                        "claude" => parse_claude_session_id_from_output(&buf),
-                        _ => None,
-                    };
+                    let new_id = parse_session_id(&adapter.label, &buf);
                     if let Some(id) = new_id {
                         if resolve_cli_session_id(&cfg) != Some(id.as_str()) {
                             let _ = store
@@ -390,7 +385,9 @@ async fn load_pty_session_state(
         .map_err(|e| Error::Config(format!("invalid pty backend_config: {e}")))?;
     let mut adapter =
         PtyAdapter::from_config_for_friend(&cfg, friend_id).unwrap_or_else(|_| fallback_adapter.clone());
-    if crate::friend_cli::is_external_cli_preset(&cfg) {
+    if is_external_cli_preset(&cfg)
+        || cfg.preset.as_deref() == Some(honeycomb_cli::PRESET_WORKER_BEE)
+    {
         apply_cli_session_adapter(&mut adapter, &cfg);
     }
     Ok((cfg, adapter))
@@ -406,33 +403,15 @@ fn external_cli_label(label: &str) -> Option<&'static str> {
 }
 
 fn apply_cli_session_adapter(adapter: &mut PtyAdapter, cfg: &PtyBackendConfig) {
-    let Some(preset) = external_cli_label(&adapter.label) else {
-        return;
+    let preset = match external_cli_label(&adapter.label) {
+        Some(p) => p,
+        None => return,
     };
-    let session_id = if pty_cli_session_is_resume(cfg) {
-        resolve_cli_session_id(cfg)
-    } else {
-        None
-    };
-    adapter.args = external_cli_argv(
-        preset,
-        session_id,
-        adapter.cwd.as_deref(),
-        resolve_codex_sandbox_mode(cfg),
-    );
-}
-
-/// Codex `exec resume` 失败时（会话 id 失效等）回退为全新 `exec`。
-fn codex_resume_likely_invalid(buf: &[u8]) -> bool {
-    let lower = String::from_utf8_lossy(buf).to_lowercase();
-    if lower.contains("turn.failed") {
-        return true;
+    let mut launch = launch_from_pty(cfg);
+    if !pty_cli_session_is_resume(cfg) {
+        launch.cli_session_id = None;
     }
-    (lower.contains("session") || lower.contains("thread"))
-        && (lower.contains("not found")
-            || lower.contains("unknown")
-            || lower.contains("invalid")
-            || lower.contains("no such"))
+    adapter.args = external_cli_argv(preset, &launch, adapter.cwd.as_deref());
 }
 
 fn render_history(ctx: &ChatContext, self_id: &str) -> String {

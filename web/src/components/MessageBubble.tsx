@@ -4,6 +4,7 @@ import type { Message } from "../types";
 import { Avatar } from "./Avatar";
 import { CliMessageView } from "./CliMessageView";
 import { Collapsible } from "./Collapsible";
+import { renderCliText } from "./cli/drivers";
 
 interface Props {
   message: Message;
@@ -54,6 +55,7 @@ export function MessageBubble({ message, showAvatar = true }: Props) {
           ) : message.content ? (
             <PlainMessageBody
               content={message.content}
+              modelUsed={message.model_used}
               streaming={message.status === "streaming"}
             />
           ) : message.status === "streaming" ? (
@@ -70,33 +72,31 @@ export function MessageBubble({ message, showAvatar = true }: Props) {
 
 function PlainMessageBody({
   content,
+  modelUsed,
   streaming,
 }: {
   content: string;
+  modelUsed: string | null;
   streaming?: boolean;
 }) {
   const segments = splitMessageContent(content);
   const hasTools = segments.some((s) => s.kind === "tool_json");
 
   if (!hasTools) {
-    return (
-      <>
-        {content}
-        {streaming ? <span className="cli-cursor" /> : null}
-      </>
-    );
+    return renderCliText({ content, modelUsed, streaming });
   }
 
   return (
     <div className="flex flex-col gap-2">
       {segments.map((seg, i) =>
         seg.kind === "text" ? (
-          <span key={i} className="whitespace-pre-wrap">
-            {seg.text}
-            {streaming && i === segments.length - 1 ? (
-              <span className="cli-cursor" />
-            ) : null}
-          </span>
+          <div key={i} className="whitespace-pre-wrap">
+            {renderCliText({
+              content: seg.text,
+              modelUsed,
+              streaming: streaming && i === segments.length - 1,
+            })}
+          </div>
         ) : (
           <Collapsible
             key={i}

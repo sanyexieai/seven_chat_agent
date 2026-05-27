@@ -1,0 +1,12 @@
+[package]
+name = "honeycomb-cli-claude"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Claude CLI driver implementation for Honeycomb"
+
+[dependencies]
+async-trait.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["process"] }
+honeycomb-cli-protocol = { path = "../honeycomb-cli-protocol" }

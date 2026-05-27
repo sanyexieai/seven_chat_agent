@@ -1,4 +1,5 @@
 pub mod agent;
+pub use honeycomb_cli;
 pub mod cli_auth;
 pub mod cli_workspace;
 pub mod friend_cli;

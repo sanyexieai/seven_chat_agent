@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/honeycomb-cli-protocol",
+    "crates/honeycomb-cli-codex",
+    "crates/honeycomb-cli-claude",
+    "crates/honeycomb-cli-cursor",
+    "crates/honeycomb-cli-worker-bee",
+    "crates/honeycomb-cli",
     "crates/honeycomb-judge",
     "crates/honeycomb-core",
     "crates/honeycomb-server",
@@ -66,6 +72,12 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 url = "2"
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
+honeycomb-cli = { path = "crates/honeycomb-cli" }
+honeycomb-cli-protocol = { path = "crates/honeycomb-cli-protocol" }
+honeycomb-cli-codex = { path = "crates/honeycomb-cli-codex" }
+honeycomb-cli-claude = { path = "crates/honeycomb-cli-claude" }
+honeycomb-cli-cursor = { path = "crates/honeycomb-cli-cursor" }
+honeycomb-cli-worker-bee = { path = "crates/honeycomb-cli-worker-bee" }
 honeycomb-judge = { path = "crates/honeycomb-judge" }
 
 [profile.release]

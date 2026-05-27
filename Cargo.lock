@@ -941,6 +941,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "honeycomb-cli"
+version = "0.1.0"
+dependencies = [
+ "honeycomb-cli-claude",
+ "honeycomb-cli-codex",
+ "honeycomb-cli-cursor",
+ "honeycomb-cli-protocol",
+ "honeycomb-cli-worker-bee",
+ "tokio",
+ "worker-bee-cli",
+]
+
+[[package]]
+name = "honeycomb-cli-claude"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "honeycomb-cli-protocol",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "honeycomb-cli-codex"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "honeycomb-cli-protocol",
+ "tokio",
+ "worker-bee-cli",
+]
+
+[[package]]
+name = "honeycomb-cli-cursor"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "honeycomb-cli-protocol",
+ "tokio",
+]
+
+[[package]]
+name = "honeycomb-cli-protocol"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "honeycomb-cli-worker-bee"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "honeycomb-cli-codex",
+ "honeycomb-cli-protocol",
+ "worker-bee-cli",
+]
+
+[[package]]
 name = "honeycomb-core"
 version = "0.1.0"
 dependencies = [
@@ -952,6 +1013,7 @@ dependencies = [
  "dashmap",
  "eventsource-stream",
  "futures",
+ "honeycomb-cli",
  "honeycomb-judge",
  "keyring",
  "lru",

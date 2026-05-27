@@ -1,3 +1,24 @@
+export interface CliAuthStatus {
+  preset: string;
+  authenticated: boolean;
+  detail: string;
+  api_key_configured: boolean;
+  oauth_pending: boolean;
+  oauth_phase: string;
+  oauth_url?: string | null;
+  oauth_user_code?: string | null;
+  oauth_instructions?: string | null;
+  oauth_message?: string | null;
+}
+
+export interface CliOAuthSnapshot {
+  phase: string;
+  auth_url?: string | null;
+  user_code?: string | null;
+  instructions: string;
+  message: string;
+}
+
 import type {
   AssistantMemory,
   AssistantReflection,
@@ -30,6 +51,21 @@ export const api = {
   health: () => jsonFetch<{ ok: boolean }>("/health"),
   listFriends: () => jsonFetch<{ friends: Friend[] }>("/friends"),
   getFriend: (id: string) => jsonFetch<{ friend: Friend }>(`/friends/${id}`),
+  getFriendCliAuth: (id: string) =>
+    jsonFetch<{ cli_auth: CliAuthStatus }>(`/friends/${id}/cli_auth`),
+  startFriendCliOAuth: (id: string) =>
+    jsonFetch<{ cli_auth: CliAuthStatus; oauth: CliOAuthSnapshot }>(
+      `/friends/${id}/cli_auth/oauth/start`,
+      { method: "POST" },
+    ),
+  cancelFriendCliOAuth: (id: string) =>
+    jsonFetch<{ cli_auth: CliAuthStatus }>(`/friends/${id}/cli_auth/oauth/cancel`, {
+      method: "POST",
+    }),
+  logoutFriendCli: (id: string) =>
+    jsonFetch<{ cli_auth: CliAuthStatus }>(`/friends/${id}/cli_auth/logout`, {
+      method: "POST",
+    }),
   upsertFriend: (body: Partial<Friend> & Record<string, any>) =>
     jsonFetch<{ friend: Friend }>("/friends", {
       method: "POST",

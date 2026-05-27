@@ -1,14 +1,303 @@
 //! 好友 CLI / 工蜂实例判定（产品模型）。
 
 use crate::domain::{BackendKind, Friend, PtyBackendConfig};
+use crate::store::SecretVault;
 
 /// 外部 CLI 每轮独立 `exec`（默认）。
 pub const CLI_SESSION_ONESHOT: &str = "oneshot";
 /// Codex：`codex exec resume <thread_id>` 续接同一线程。
 pub const CLI_SESSION_RESUME: &str = "resume";
 
+pub const CODEX_SANDBOX_READ_ONLY: &str = "read-only";
+pub const CODEX_SANDBOX_WORKSPACE_WRITE: &str = "workspace-write";
+pub const CODEX_SANDBOX_DANGER: &str = "danger-full-access";
+/// honeycomb 默认：可写工作区（Codex `exec` 自身默认是 read-only）。
+pub const CODEX_SANDBOX_DEFAULT: &str = CODEX_SANDBOX_WORKSPACE_WRITE;
+
+pub fn resolve_codex_sandbox_mode(cfg: &PtyBackendConfig) -> &'static str {
+    match cfg.cli_sandbox_mode.as_deref() {
+        Some(CODEX_SANDBOX_READ_ONLY) => CODEX_SANDBOX_READ_ONLY,
+        Some(CODEX_SANDBOX_DANGER) => CODEX_SANDBOX_DANGER,
+        Some(CODEX_SANDBOX_WORKSPACE_WRITE) | None => CODEX_SANDBOX_WORKSPACE_WRITE,
+        Some(other) if other.trim().is_empty() => CODEX_SANDBOX_DEFAULT,
+        Some(_) => CODEX_SANDBOX_WORKSPACE_WRITE,
+    }
+}
+
+/// 外部 CLI 使用的 API Key 环境变量名（子进程注入）。
+pub fn cli_api_key_env_var(preset: &str) -> Option<&'static str> {
+    match preset {
+        "cursor" => Some("CURSOR_API_KEY"),
+        "codex-exec" => Some("OPENAI_API_KEY"),
+        "claude" => Some("ANTHROPIC_API_KEY"),
+        _ => None,
+    }
+}
+
+/// 将 `cli_api_key` 写入 vault，并设置 `cli_api_key_ref`（外部 CLI 好友）。
+pub fn persist_pty_cli_api_key(
+    vault: &SecretVault,
+    friend_id: &str,
+    cfg: &mut PtyBackendConfig,
+) -> crate::Result<()> {
+    let Some(key) = cfg
+        .cli_api_key
+        .take()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    if !is_external_cli_preset(cfg) {
+        return Ok(());
+    }
+    let secret_ref = format!("vault:cli-auth-{friend_id}");
+    vault.set(&secret_ref, key.trim())?;
+    cfg.cli_api_key_ref = Some(secret_ref);
+    Ok(())
+}
+
+/// 向即将 spawn 的外部 CLI 子进程注入 API Key 环境变量。
+pub fn apply_cli_auth_env(
+    cmd: &mut tokio::process::Command,
+    cfg: &PtyBackendConfig,
+    vault: &SecretVault,
+) {
+    let preset = cfg.preset.as_deref().unwrap_or("");
+    let Some(var) = cli_api_key_env_var(preset) else {
+        return;
+    };
+    let Some(ref secret_ref) = cfg.cli_api_key_ref else {
+        return;
+    };
+    let Some(key) = vault.get(secret_ref) else {
+        return;
+    };
+    cmd.env(var, key);
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CliAuthProbe {
+    pub preset: String,
+    pub authenticated: bool,
+    pub detail: String,
+    pub api_key_configured: bool,
+}
+
+/// 探测外部 CLI 登录状态（供 Web 展示；不返回密钥）。
+pub async fn probe_external_cli_auth(
+    preset: &str,
+    cmd: &str,
+    cfg: &PtyBackendConfig,
+    vault: &SecretVault,
+) -> CliAuthProbe {
+    let api_key_configured = cfg
+        .cli_api_key_ref
+        .as_ref()
+        .is_some_and(|r| vault.get(r).is_some());
+    let mut status = CliAuthProbe {
+        preset: preset.into(),
+        authenticated: false,
+        detail: String::new(),
+        api_key_configured,
+    };
+    match preset {
+        "cursor" => {
+            let out = tokio::process::Command::new(cmd)
+                .arg("status")
+                .output()
+                .await;
+            match out {
+                Ok(o) => {
+                    let text = String::from_utf8_lossy(&o.stdout);
+                    let err = String::from_utf8_lossy(&o.stderr);
+                    let combined = format!("{text}{err}");
+                    status.authenticated =
+                        combined.contains("Logged in") || combined.contains("logged in");
+                    status.detail = combined.trim().to_string();
+                    if !status.authenticated && api_key_configured {
+                        status.authenticated = true;
+                        status.detail = "已配置 CURSOR_API_KEY（vault）".into();
+                    }
+                }
+                Err(e) => status.detail = format!("无法执行 {cmd} status: {e}"),
+            }
+        }
+        "codex-exec" => {
+            let out = tokio::process::Command::new(cmd)
+                .args(["login", "status"])
+                .output()
+                .await;
+            match out {
+                Ok(o) => {
+                    let text = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&o.stdout),
+                        String::from_utf8_lossy(&o.stderr)
+                    );
+                    status.authenticated = text.contains("Logged in") || text.contains("logged in");
+                    status.detail = text.trim().to_string();
+                    if !status.authenticated && api_key_configured {
+                        status.authenticated = true;
+                        status.detail = "已配置 OPENAI_API_KEY（vault）".into();
+                    }
+                }
+                Err(e) => status.detail = format!("无法执行 codex login status: {e}"),
+            }
+        }
+        "claude" => {
+            let out = tokio::process::Command::new(cmd)
+                .args(["auth", "status"])
+                .output()
+                .await;
+            match out {
+                Ok(o) => {
+                    let text = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&o.stdout),
+                        String::from_utf8_lossy(&o.stderr)
+                    );
+                    status.authenticated = text.contains("logged in")
+                        || text.contains("Logged in")
+                        || text.contains("authenticated");
+                    status.detail = text.trim().to_string();
+                    if !status.authenticated && api_key_configured {
+                        status.authenticated = true;
+                        status.detail = "已配置 ANTHROPIC_API_KEY（vault）".into();
+                    }
+                }
+                Err(_) => {
+                    status.detail = if api_key_configured {
+                        status.authenticated = true;
+                        "已配置 ANTHROPIC_API_KEY（vault）".into()
+                    } else {
+                        "请配置 API Key 或发起 OAuth 登录".into()
+                    };
+                }
+            }
+        }
+        _ => {
+            status.detail = if api_key_configured {
+                status.authenticated = true;
+                "已配置 API Key（vault）".into()
+            } else {
+                "请配置 API Key 或在服务器上完成 CLI 登录".into()
+            };
+        }
+    }
+    status
+}
+
+pub fn clear_pty_cli_api_key(vault: &SecretVault, cfg: &mut PtyBackendConfig) -> crate::Result<()> {
+    if let Some(ref secret_ref) = cfg.cli_api_key_ref {
+        vault.delete(secret_ref).ok();
+    }
+    cfg.cli_api_key_ref = None;
+    cfg.cli_api_key = None;
+    Ok(())
+}
+
 pub fn pty_cli_session_is_resume(cfg: &PtyBackendConfig) -> bool {
     cfg.cli_session_mode.as_deref() == Some(CLI_SESSION_RESUME)
+}
+
+pub fn resolve_cli_session_id(cfg: &PtyBackendConfig) -> Option<&str> {
+    cfg.cli_session_id.as_deref().filter(|s| !s.trim().is_empty())
+}
+
+/// Claude `claude -p` 参数（续接时 `--resume <session_id>`）。
+pub fn claude_print_args(session_id: Option<&str>) -> Vec<String> {
+    let mut args = vec!["-p".into(), "--output-format".into(), "json".into()];
+    if let Some(id) = session_id.filter(|s| !s.trim().is_empty()) {
+        args.push("--resume".into());
+        args.push(id.trim().to_string());
+    }
+    args
+}
+
+/// Cursor `agent -p` 参数（续接时 `--resume <chat_id>`）。
+pub fn cursor_agent_args(workspace: Option<&str>, session_id: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-p".into(),
+        "--trust".into(),
+        "--output-format".into(),
+        "text".into(),
+    ];
+    if let Some(id) = session_id.filter(|s| !s.trim().is_empty()) {
+        args.push("--resume".into());
+        args.push(id.trim().to_string());
+    }
+    if let Some(w) = workspace.filter(|s| !s.trim().is_empty()) {
+        args.push("--workspace".into());
+        args.push(w.trim().to_string());
+    }
+    args
+}
+
+/// 外部 CLI oneshot / resume  argv（不含 prompt）。
+pub fn external_cli_argv(
+    preset: &str,
+    session_id: Option<&str>,
+    workspace: Option<&str>,
+    sandbox_mode: &str,
+) -> Vec<String> {
+    match preset {
+        "codex-exec" => codex_exec_args(session_id, sandbox_mode),
+        "cursor" => cursor_agent_args(workspace, session_id),
+        "claude" => claude_print_args(session_id),
+        _ => vec![],
+    }
+}
+
+/// 从 `claude -p --output-format json` 的 JSONL/JSON 行解析 `session_id`。
+pub fn parse_claude_session_id_from_output(buf: &[u8]) -> Option<String> {
+    for line in String::from_utf8_lossy(buf).lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(id) = v.get("session_id").and_then(|s| s.as_str()) {
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Cursor 续接模式且尚无 chat id 时，调用 `agent create-chat` 预分配会话。
+pub async fn ensure_cursor_chat_session(
+    cmd: &str,
+    cfg: &mut PtyBackendConfig,
+    store: &crate::store::SqliteStore,
+    friend_id: &str,
+) -> crate::Result<()> {
+    if cfg.preset.as_deref() != Some("cursor") || !pty_cli_session_is_resume(cfg) {
+        return Ok(());
+    }
+    if resolve_cli_session_id(cfg).is_some() {
+        return Ok(());
+    }
+    let out = tokio::process::Command::new(cmd)
+        .arg("create-chat")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| crate::Error::agent(format!("agent create-chat: {e}")))?;
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if id.is_empty() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(crate::Error::agent(format!(
+            "agent create-chat 未返回 chat id: {}",
+            err.trim()
+        )));
+    }
+    store.patch_friend_cli_session_id(friend_id, Some(id.clone())).await?;
+    cfg.cli_session_id = Some(id);
+    Ok(())
 }
 
 /// 构建 `codex exec` / `codex exec resume <id>` 的参数（不含 prompt）。
@@ -19,10 +308,12 @@ mod session_tests {
     #[test]
     fn codex_exec_args_without_thread() {
         assert_eq!(
-            codex_exec_args(None),
+            codex_exec_args(None, CODEX_SANDBOX_WORKSPACE_WRITE),
             vec![
                 "exec",
                 "--skip-git-repo-check",
+                "--sandbox",
+                "workspace-write",
                 "--color",
                 "never",
                 "--json"
@@ -33,33 +324,74 @@ mod session_tests {
     #[test]
     fn codex_exec_args_with_resume() {
         assert_eq!(
-            codex_exec_args(Some("tid-1")),
+            codex_exec_args(Some("tid-1"), CODEX_SANDBOX_WORKSPACE_WRITE),
             vec![
                 "exec",
                 "resume",
                 "tid-1",
                 "--skip-git-repo-check",
-                "--color",
-                "never",
+                "--full-auto",
+                "--json"
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_exec_args_read_only_resume() {
+        assert_eq!(
+            codex_exec_args(Some("tid-1"), CODEX_SANDBOX_READ_ONLY),
+            vec![
+                "exec",
+                "resume",
+                "tid-1",
+                "--skip-git-repo-check",
                 "--json"
             ]
         );
     }
 }
 
-pub fn codex_exec_args(thread_id: Option<&str>) -> Vec<String> {
+/// 构建 `codex exec` / `codex exec resume <id>` 的参数（不含 prompt）。
+pub fn codex_exec_args(thread_id: Option<&str>, sandbox_mode: &str) -> Vec<String> {
     let mut args = vec!["exec".into()];
+    let resuming = thread_id.is_some_and(|s| !s.trim().is_empty());
     if let Some(tid) = thread_id.filter(|s| !s.trim().is_empty()) {
         args.push("resume".into());
         args.push(tid.trim().to_string());
     }
-    args.extend([
-        "--skip-git-repo-check".into(),
-        "--color".into(),
-        "never".into(),
-        "--json".into(),
-    ]);
+    args.push("--skip-git-repo-check".into());
+    append_codex_sandbox_flags(&mut args, sandbox_mode, resuming);
+    // `codex exec resume` 不接受 `--color`（仅顶层 `exec` 有该选项）。
+    if !resuming {
+        args.push("--color".into());
+        args.push("never".into());
+    }
+    args.push("--json".into());
     args
+}
+
+fn append_codex_sandbox_flags(args: &mut Vec<String>, sandbox_mode: &str, resuming: bool) {
+    match sandbox_mode {
+        CODEX_SANDBOX_WORKSPACE_WRITE if resuming => {
+            args.push("--full-auto".into());
+        }
+        CODEX_SANDBOX_WORKSPACE_WRITE => {
+            args.push("--sandbox".into());
+            args.push(CODEX_SANDBOX_WORKSPACE_WRITE.into());
+        }
+        CODEX_SANDBOX_DANGER if resuming => {
+            args.push("--dangerously-bypass-approvals-and-sandbox".into());
+        }
+        CODEX_SANDBOX_DANGER => {
+            args.push("--sandbox".into());
+            args.push(CODEX_SANDBOX_DANGER.into());
+        }
+        CODEX_SANDBOX_READ_ONLY if !resuming => {
+            args.push("--sandbox".into());
+            args.push(CODEX_SANDBOX_READ_ONLY.into());
+        }
+        _ => {}
+    }
 }
 use crate::runtime::{WORKER_BEE_CLI_BIN, WORKER_BEE_CLI_PRESET};
 
@@ -133,7 +465,7 @@ fn apply_external_cli_defaults(cfg: &mut PtyBackendConfig) {
     let preset = cfg.preset.as_deref().unwrap_or("claude");
     let (cmd, _) = match preset {
         "codex-exec" => ("codex", ""),
-        "cursor" => ("cursor-agent", ""),
+        "cursor" => ("agent", ""),
         "claude" => ("claude", ""),
         _ => return,
     };
@@ -250,6 +582,104 @@ pub fn resolve_worker_bee_executable() -> String {
     }
 
     WORKER_BEE_CLI_BIN.into()
+}
+
+/// Cursor Agent CLI 可执行文件名（新版主命令为 `agent`，旧版为 `cursor-agent`）。
+pub const CURSOR_AGENT_ALIASES: &[&str] = &["agent", "cursor-agent"];
+
+/// 非交互 `agent -p` 参数（prompt 由 Pty 以最后一个参数追加）。
+pub fn cursor_agent_oneshot_args(workspace: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-p".into(),
+        "--trust".into(),
+        "--output-format".into(),
+        "text".into(),
+    ];
+    if let Some(w) = workspace.filter(|s| !s.trim().is_empty()) {
+        args.push("--workspace".into());
+        args.push(w.trim().to_string());
+    }
+    args
+}
+
+/// 解析 Cursor Agent 可执行路径（绝对路径优先，避免 honeycomb-server PATH 不含 `~/.local/bin`）。
+pub fn resolve_cursor_agent_executable() -> String {
+    if let Ok(p) = std::env::var("HONEYCOMB_CURSOR_AGENT_BIN") {
+        let t = p.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+
+    for name in CURSOR_AGENT_ALIASES {
+        if cli_command_works(name) {
+            return (*name).into();
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let home = std::path::PathBuf::from(home);
+        for rel in [".local/bin/agent", ".local/bin/cursor-agent"] {
+            let p = home.join(rel);
+            if let Some(path) = path_if_executable(&p) {
+                return path;
+            }
+        }
+        if let Some(p) = find_cursor_agent_in_share(&home.join(".local/share/cursor-agent/versions")) {
+            return p;
+        }
+    }
+
+    "cursor-agent".into()
+}
+
+/// 启动 Cursor 好友前校验。
+pub fn ensure_cursor_agent_executable() -> crate::Result<String> {
+    let path = resolve_cursor_agent_executable();
+    if std::path::Path::new(&path).is_file() || cli_command_works(&path) {
+        return Ok(path);
+    }
+    Err(crate::Error::agent(
+        "找不到 Cursor Agent CLI（尝试过 agent / cursor-agent）。请安装: \
+         curl -fsSL https://cursor.com/install | bash ，\
+         或将可执行文件路径写入环境变量 HONEYCOMB_CURSOR_AGENT_BIN",
+    ))
+}
+
+fn cli_command_works(cmd: &str) -> bool {
+    std::process::Command::new(cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn find_cursor_agent_in_share(versions_dir: &std::path::Path) -> Option<String> {
+    let entries = std::fs::read_dir(versions_dir).ok()?;
+    let mut stable = Vec::new();
+    let mut tmp = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        let bin = path.join("cursor-agent");
+        if !bin.is_file() {
+            continue;
+        }
+        if name.starts_with(".tmp-") {
+            tmp.push(bin);
+        } else {
+            stable.push((name, bin));
+        }
+    }
+    if let Some((_, bin)) = stable.into_iter().max_by(|a, b| a.0.cmp(&b.0)) {
+        return Some(bin.to_string_lossy().into_owned());
+    }
+    tmp.into_iter().next().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// 启动工蜂前校验；失败时给出可操作的错误说明。

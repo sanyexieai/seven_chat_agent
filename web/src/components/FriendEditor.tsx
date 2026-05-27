@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api/client";
+import { api, type CliAuthStatus } from "../api/client";
 import { useChat } from "../stores/chat";
 import type { BackendKind, Friend, Provider, ProviderKey } from "../types";
 
@@ -230,7 +230,13 @@ interface FriendDraft {
     cwd: string;
     /** Codex：`oneshot` | `resume` */
     cli_session_mode: "oneshot" | "resume";
-    cli_thread_id: string;
+    cli_session_id: string;
+    /** Codex 沙箱 */
+    cli_sandbox_mode: "read-only" | "workspace-write" | "danger-full-access";
+    /** 外部 CLI API Key（保存时写入 vault，不落库） */
+    cli_api_key_secret: string;
+    cli_api_key_configured: boolean;
+    clear_cli_api_key?: boolean;
     provider_id: string;
     model: string;
     api_key_id: string | null;
@@ -261,7 +267,10 @@ function emptyDraft(): FriendDraft {
       args: "",
       cwd: "",
       cli_session_mode: "oneshot",
-      cli_thread_id: "",
+      cli_session_id: "",
+      cli_sandbox_mode: "workspace-write",
+      cli_api_key_secret: "",
+      cli_api_key_configured: false,
       provider_id: "openai",
       model: "gpt-4o-mini",
       api_key_id: null,
@@ -290,7 +299,10 @@ function fromFriend(f: Friend): FriendDraft {
       args: "",
       cwd: "",
       cli_session_mode: "oneshot",
-      cli_thread_id: "",
+      cli_session_id: "",
+      cli_sandbox_mode: "workspace-write",
+      cli_api_key_secret: "",
+      cli_api_key_configured: false,
       provider_id: f.backend_config?.provider_id || "",
       model: f.backend_config?.model || "",
       api_key_id: f.backend_config?.api_key_id || null,
@@ -324,10 +336,15 @@ function fromFriend(f: Friend): FriendDraft {
       cwd: f.backend_config?.cwd || "",
       cli_session_mode:
         f.backend_config?.cli_session_mode === "resume" ? "resume" : "oneshot",
-      cli_thread_id:
-        typeof f.backend_config?.cli_thread_id === "string"
-          ? f.backend_config.cli_thread_id
-          : "",
+      cli_session_id:
+        typeof f.backend_config?.cli_session_id === "string"
+          ? f.backend_config.cli_session_id
+          : typeof f.backend_config?.cli_thread_id === "string"
+            ? f.backend_config.cli_thread_id
+            : "",
+      cli_sandbox_mode: parseCodexSandboxMode(f.backend_config?.cli_sandbox_mode),
+      cli_api_key_secret: "",
+      cli_api_key_configured: !!f.backend_config?.cli_api_key_ref,
       provider_id: isExternal ? "" : f.backend_config?.provider_id || "",
       model: isExternal ? "" : f.backend_config?.model || "",
       api_key_id: isExternal ? null : f.backend_config?.api_key_id || null,
@@ -378,14 +395,21 @@ function toApi(d: FriendDraft) {
     ) {
       backend_config.preset = d.pty.preset;
       backend_config.cmd = ptyCmdForPreset(d.pty.preset);
+      backend_config.cli_session_mode = d.pty.cli_session_mode;
       if (d.pty.preset === "codex-exec") {
-        backend_config.cli_session_mode = d.pty.cli_session_mode;
-        if (d.pty.cli_session_mode === "resume") {
-          const tid = d.pty.cli_thread_id.trim();
-          backend_config.cli_thread_id = tid || null;
-        } else {
-          backend_config.cli_thread_id = null;
-        }
+        backend_config.cli_sandbox_mode = d.pty.cli_sandbox_mode;
+      }
+      if (d.pty.cli_session_mode === "resume") {
+        const sid = d.pty.cli_session_id.trim();
+        backend_config.cli_session_id = sid || null;
+      } else {
+        backend_config.cli_session_id = null;
+      }
+      if (d.pty.clear_cli_api_key) {
+        backend_config.clear_cli_api_key = true;
+      }
+      if (d.pty.cli_api_key_secret.trim()) {
+        backend_config.cli_api_key = d.pty.cli_api_key_secret.trim();
       }
     }
   } else if (d.backend_kind === "human") {
@@ -575,7 +599,7 @@ function WorkerBeeApiFields({
 
 const PTY_PRESETS: Record<string, { cmd: string; args: string; label: string }> = {
   claude: { cmd: "claude", args: "", label: "claude code（cli）" },
-  cursor: { cmd: "cursor-agent", args: "", label: "cursor-agent（cli）" },
+  cursor: { cmd: "agent", args: "", label: "Cursor Agent（agent / cursor-agent）" },
   "worker-bee-cli": { cmd: "worker-bee", args: "", label: "Worker Bee（工蜂）" },
   "codex-exec": { cmd: "codex", args: "", label: "Codex CLI" },
   custom: { cmd: "", args: "", label: "自定义" },
@@ -583,6 +607,279 @@ const PTY_PRESETS: Record<string, { cmd: string; args: string; label: string }> 
 
 function ptyCmdForPreset(preset: string, fallbackCmd = ""): string {
   return PTY_PRESETS[preset]?.cmd ?? fallbackCmd;
+}
+
+function cliApiKeyEnvHint(preset: string): string {
+  switch (preset) {
+    case "cursor":
+      return "CURSOR_API_KEY（Cursor Dashboard → Integrations → API Keys）";
+    case "codex-exec":
+      return "OPENAI_API_KEY（或在本机执行 codex login）";
+    case "claude":
+      return "ANTHROPIC_API_KEY";
+    default:
+      return "API Key";
+  }
+}
+
+function ExternalCliAuthFields({
+  friendId,
+  preset,
+  apiKeySecret,
+  apiKeyConfigured,
+  clearApiKey,
+  onChange,
+}: {
+  friendId: string | null;
+  preset: string;
+  apiKeySecret: string;
+  apiKeyConfigured: boolean;
+  clearApiKey?: boolean;
+  onChange: (patch: Partial<FriendDraft["pty"]>) => void;
+}) {
+  const [status, setStatus] = useState<CliAuthStatus | null>(null);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const refreshStatus = () => {
+    if (!friendId) return;
+    setStatusBusy(true);
+    setAuthError(null);
+    api
+      .getFriendCliAuth(friendId)
+      .then((r) => setStatus(r.cli_auth))
+      .catch((e) => setAuthError(e.message || String(e)))
+      .finally(() => setStatusBusy(false));
+  };
+
+  useEffect(() => {
+    if (!friendId) {
+      setStatus(null);
+      return;
+    }
+    refreshStatus();
+  }, [friendId, apiKeyConfigured, preset]);
+
+  useEffect(() => {
+    if (!friendId || !status?.oauth_pending) return;
+    const t = window.setInterval(refreshStatus, 2000);
+    return () => window.clearInterval(t);
+  }, [friendId, status?.oauth_pending]);
+
+  async function startOAuth() {
+    if (!friendId) return;
+    setOauthBusy(true);
+    setAuthError(null);
+    try {
+      const { cli_auth } = await api.startFriendCliOAuth(friendId);
+      setStatus(cli_auth);
+    } catch (e: any) {
+      setAuthError(e.message || String(e));
+    } finally {
+      setOauthBusy(false);
+    }
+  }
+
+  async function cancelOAuth() {
+    if (!friendId) return;
+    setOauthBusy(true);
+    try {
+      const { cli_auth } = await api.cancelFriendCliOAuth(friendId);
+      setStatus(cli_auth);
+    } catch (e: any) {
+      setAuthError(e.message || String(e));
+    } finally {
+      setOauthBusy(false);
+    }
+  }
+
+  async function logoutOAuth() {
+    if (!friendId) return;
+    setOauthBusy(true);
+    try {
+      const { cli_auth } = await api.logoutFriendCli(friendId);
+      setStatus(cli_auth);
+    } catch (e: any) {
+      setAuthError(e.message || String(e));
+    } finally {
+      setOauthBusy(false);
+    }
+  }
+
+  const oauthPending = status?.oauth_pending ?? false;
+
+  return (
+    <div className="space-y-3 rounded-md border border-violet-200 bg-violet-50/80 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="label mb-0">CLI 鉴权</label>
+        <div className="flex flex-wrap gap-1">
+          {friendId && (
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              disabled={statusBusy || oauthBusy}
+              onClick={refreshStatus}
+            >
+              {statusBusy ? "检测中…" : "刷新状态"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {authError && (
+        <p className="text-xs text-red-700">{authError}</p>
+      )}
+
+      {status && (
+        <p
+          className={`text-xs ${status.authenticated ? "text-green-800" : "text-amber-900"}`}
+        >
+          {status.authenticated ? "✓ 已就绪" : "✗ 未登录"}
+          {status.api_key_configured ? "（API Key）" : ""}
+          {status.oauth_phase === "succeeded" ? "（OAuth）" : ""}
+          ：{status.oauth_message || status.detail || "—"}
+        </p>
+      )}
+
+      <div className="space-y-2 rounded border border-violet-300/60 bg-white/60 p-2">
+        <label className="label">服务器 OAuth 登录</label>
+        <p className="text-xs text-violet-900/80">
+          在 honeycomb-server 本机启动 <code>agent login</code> /{" "}
+          <code>codex login --device-auth</code> 等，登录态写在服务器用户目录（与 API Key
+          二选一或并存）。
+        </p>
+        {!friendId ? (
+          <p className="text-xs text-amber-800">请先保存好友，再使用 OAuth 登录。</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="btn-primary text-xs"
+              disabled={oauthBusy || oauthPending}
+              onClick={startOAuth}
+            >
+              {oauthBusy ? "启动中…" : "开始 OAuth 登录"}
+            </button>
+            {oauthPending && (
+              <button
+                type="button"
+                className="btn-ghost text-xs"
+                disabled={oauthBusy}
+                onClick={cancelOAuth}
+              >
+                取消登录
+              </button>
+            )}
+            {status?.authenticated && !oauthPending && (
+              <button
+                type="button"
+                className="btn-ghost text-xs text-red-700"
+                disabled={oauthBusy}
+                onClick={logoutOAuth}
+              >
+                登出 CLI
+              </button>
+            )}
+          </div>
+        )}
+        {oauthPending && status?.oauth_instructions && (
+          <p className="text-xs text-violet-900">{status.oauth_instructions}</p>
+        )}
+        {status?.oauth_url && (
+          <div className="space-y-1">
+            <a
+              href={status.oauth_url}
+              target="_blank"
+              rel="noreferrer"
+              className="break-all text-xs text-blue-700 underline"
+            >
+              {status.oauth_url}
+            </a>
+          </div>
+        )}
+        {status?.oauth_user_code && (
+          <p className="font-mono text-sm text-violet-950">
+            设备码：<strong>{status.oauth_user_code}</strong>
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label className="label">API Key（可选）</label>
+        <input
+          className="input font-mono text-xs"
+          type="password"
+          value={apiKeySecret}
+          onChange={(e) =>
+            onChange({
+              cli_api_key_secret: e.target.value,
+              clear_cli_api_key: false,
+            })
+          }
+          placeholder={
+            apiKeyConfigured
+              ? "已保存密钥；输入新值可轮换"
+              : `粘贴 ${cliApiKeyEnvHint(preset)}`
+          }
+        />
+        <p className="mt-1 text-xs text-violet-900/80">
+          保存好友后写入 vault，对话时注入{" "}
+          <code>{cliApiKeyEnvHint(preset).split("（")[0]}</code>。
+        </p>
+      </div>
+      {apiKeyConfigured && (
+        <button
+          type="button"
+          className="btn-ghost text-xs text-red-700"
+          onClick={() =>
+            onChange({
+              cli_api_key_secret: "",
+              cli_api_key_configured: false,
+              clear_cli_api_key: true,
+            })
+          }
+        >
+          {clearApiKey ? "保存后将清除已存 API Key" : "清除 API Key"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function cliSessionHelp(preset: string): string {
+  switch (preset) {
+    case "codex-exec":
+      return "续接：codex exec resume <thread_id>；单次：每轮 codex exec 并拼接群聊历史。";
+    case "cursor":
+      return "续接：agent -p --resume <chat_id>（首轮 agent create-chat）；单次：每轮 agent -p 并拼历史。";
+    case "claude":
+      return "续接：claude -p --resume <session_id>；单次：每轮 claude -p 并拼历史。";
+    default:
+      return "";
+  }
+}
+
+function cliSessionIdLabel(preset: string): string {
+  switch (preset) {
+    case "codex-exec":
+      return "当前 thread_id";
+    case "cursor":
+      return "当前 chat_id";
+    case "claude":
+      return "当前 session_id";
+    default:
+      return "当前 session_id";
+  }
+}
+
+function parseCodexSandboxMode(
+  raw: unknown,
+): "read-only" | "workspace-write" | "danger-full-access" {
+  if (raw === "read-only" || raw === "danger-full-access") {
+    return raw;
+  }
+  return "workspace-write";
 }
 
 function PtyConfigEditor({
@@ -599,6 +896,10 @@ function PtyConfigEditor({
   const isCustom = draft.pty.preset === "custom";
   const isWorkerBee = draft.pty.preset === "worker-bee-cli";
   const isCodex = draft.pty.preset === "codex-exec";
+  const isExternalCli =
+    draft.pty.preset === "codex-exec" ||
+    draft.pty.preset === "claude" ||
+    draft.pty.preset === "cursor";
   return (
     <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3">
       <div>
@@ -701,10 +1002,25 @@ function PtyConfigEditor({
           </div>
         </div>
       )}
-      {isCodex && (
-        <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50/80 p-3">
+      {isExternalCli && (
+        <ExternalCliAuthFields
+          friendId={draft.id}
+          preset={draft.pty.preset}
+          apiKeySecret={draft.pty.cli_api_key_secret}
+          apiKeyConfigured={draft.pty.cli_api_key_configured}
+          clearApiKey={!!draft.pty.clear_cli_api_key}
+          onChange={(patch) =>
+            setDraft({
+              ...draft,
+              pty: { ...draft.pty, ...patch },
+            })
+          }
+        />
+      )}
+      {isExternalCli && (
+        <div className="space-y-2 rounded-md border border-slate-200 bg-white p-3">
           <div>
-            <label className="label">Codex 会话</label>
+            <label className="label">CLI 会话模式</label>
             <select
               className="input"
               value={draft.pty.cli_session_mode}
@@ -715,47 +1031,70 @@ function PtyConfigEditor({
                   pty: {
                     ...draft.pty,
                     cli_session_mode: mode,
-                    ...(mode === "oneshot" ? { cli_thread_id: "" } : {}),
+                    ...(mode === "oneshot" ? { cli_session_id: "" } : {}),
                   },
                 });
               }}
             >
-              <option value="oneshot">单次 exec（每轮独立，拼聊天历史）</option>
-              <option value="resume">续接会话（codex exec resume，用 Codex 原生 thread）</option>
+              <option value="oneshot">单次（每轮新起 CLI，拼 honeycomb 历史）</option>
+              <option value="resume">续接（CLI 原生会话，不拼历史）</option>
             </select>
+            <p className="mt-1 text-xs text-slate-600">{cliSessionHelp(draft.pty.preset)}</p>
           </div>
           {draft.pty.cli_session_mode === "resume" && (
-            <>
-              <p className="text-xs text-amber-900/80">
-                首轮自动 <code>codex exec</code> 并记录 thread_id；之后每轮{" "}
-                <code>codex exec resume &lt;id&gt;</code>，不再向 Codex 重复拼 honeycomb
-                历史。会话按<strong>好友</strong>维度，与终端 Codex 会话文件一致。
-              </p>
-              <div className="flex flex-wrap items-end gap-2">
-                <div className="min-w-0 flex-1">
-                  <label className="label">当前 thread_id</label>
-                  <input
-                    className="input font-mono text-xs"
-                    readOnly
-                    value={draft.pty.cli_thread_id || "（首轮对话后自动写入）"}
-                  />
-                </div>
-                <button
-                  type="button"
-                  className="btn-ghost shrink-0 text-xs"
-                  disabled={!draft.pty.cli_thread_id.trim()}
-                  onClick={() =>
-                    setDraft({
-                      ...draft,
-                      pty: { ...draft.pty, cli_thread_id: "" },
-                    })
-                  }
-                >
-                  清除会话
-                </button>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <label className="label">{cliSessionIdLabel(draft.pty.preset)}</label>
+                <input
+                  className="input font-mono text-xs"
+                  readOnly
+                  value={draft.pty.cli_session_id || "（首轮对话后自动写入）"}
+                />
               </div>
-            </>
+              <button
+                type="button"
+                className="btn-ghost shrink-0 text-xs"
+                disabled={!draft.pty.cli_session_id.trim()}
+                onClick={() =>
+                  setDraft({
+                    ...draft,
+                    pty: { ...draft.pty, cli_session_id: "" },
+                  })
+                }
+              >
+                清除会话
+              </button>
+            </div>
           )}
+        </div>
+      )}
+      {isCodex && (
+        <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50/80 p-3">
+          <div>
+            <label className="label">Codex 沙箱</label>
+            <select
+              className="input"
+              value={draft.pty.cli_sandbox_mode}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  pty: {
+                    ...draft.pty,
+                    cli_sandbox_mode: parseCodexSandboxMode(e.target.value),
+                  },
+                })
+              }
+            >
+              <option value="read-only">只读（read-only，Codex 默认）</option>
+              <option value="workspace-write">工作区可写（workspace-write，推荐）</option>
+              <option value="danger-full-access">
+                完全访问（danger-full-access，仅隔离环境）
+              </option>
+            </select>
+            <p className="mt-1 text-xs text-amber-900/80">
+              由 <code>codex exec --sandbox</code> 传给 CLI。
+            </p>
+          </div>
         </div>
       )}
       <div>

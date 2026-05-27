@@ -101,9 +101,18 @@ pub struct PtyBackendConfig {
     /// 外部 CLI 会话：`oneshot`（默认，每轮独立 exec）或 `resume`（Codex `exec resume` 续接）。
     #[serde(default)]
     pub cli_session_mode: Option<String>,
-    /// `cli_session_mode=resume` 时由运行时写入的 Codex `thread_id`（来自 JSONL `thread.started`）。
+    /// `cli_session_mode=resume` 时的原生会话 ID（Codex thread / Cursor chat / Claude session）。
+    #[serde(default, alias = "cli_thread_id")]
+    pub cli_session_id: Option<String>,
+    /// Codex 沙箱：`read-only` | `workspace-write` | `danger-full-access`（仅 `codex-exec`）。
     #[serde(default)]
-    pub cli_thread_id: Option<String>,
+    pub cli_sandbox_mode: Option<String>,
+    /// 外部 CLI API Key 在 vault 中的引用（`vault:cli-auth-<friend_id>`）。
+    #[serde(default)]
+    pub cli_api_key_ref: Option<String>,
+    /// 保存时一次性提交的 CLI API Key（仅 upsert 入参，不落库）。
+    #[serde(default, skip_serializing)]
+    pub cli_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

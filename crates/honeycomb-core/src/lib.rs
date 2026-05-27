@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod cli_auth;
 pub mod cli_workspace;
 pub mod friend_cli;
 pub mod runtime;
@@ -12,6 +13,7 @@ pub mod provider;
 pub mod scheduler;
 pub mod store;
 
+pub use cli_auth::{CliAuthStatus, CliOAuthManager, CliOAuthPhase, CliOAuthSnapshot};
 pub use error::{Error, Result};
 
 use std::sync::Arc;
@@ -27,6 +29,7 @@ pub struct Honeycomb {
     pub providers: Arc<ProviderRegistry>,
     pub agents: Arc<AgentRegistry>,
     pub dispatcher: Arc<MessageDispatcher>,
+    pub cli_oauth: Arc<CliOAuthManager>,
 }
 
 impl Honeycomb {
@@ -56,6 +59,7 @@ impl Honeycomb {
             providers,
             agents,
             dispatcher,
+            cli_oauth: Arc::new(CliOAuthManager::new()),
         })
     }
 }

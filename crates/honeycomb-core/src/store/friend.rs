@@ -115,6 +115,19 @@ impl SqliteStore {
                 false
             };
             crate::friend_cli::normalize_pty_config(&mut cfg, is_builtin);
+            if backend_config_value
+                .get("clear_cli_api_key")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                crate::friend_cli::clear_pty_cli_api_key(&self.vault, &mut cfg)?;
+            }
+            crate::friend_cli::persist_pty_cli_api_key(&self.vault, &id, &mut cfg)?;
+            backend_config_value = serde_json::to_value(&cfg)?;
+            if let Some(obj) = backend_config_value.as_object_mut() {
+                obj.remove("clear_cli_api_key");
+                obj.remove("cli_api_key");
+            }
             let has_preset = cfg
                 .preset
                 .as_ref()
@@ -131,7 +144,6 @@ impl SqliteStore {
                 cmd = %cfg.cmd,
                 "upsert_friend pty config"
             );
-            backend_config_value = serde_json::to_value(&cfg)?;
             let cwd_empty = cfg
                 .cwd
                 .as_ref()
@@ -195,11 +207,38 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// 更新 Pty 好友 `backend_config.cli_thread_id`（Codex `exec resume`）。
-    pub async fn patch_friend_cli_thread_id(
+    /// 更新 Pty 好友 `backend_config.cli_session_id`（外部 CLI 续接会话）。
+    pub async fn probe_friend_cli_auth(&self, friend_id: &str) -> Result<crate::friend_cli::CliAuthProbe> {
+        let friend = self
+            .get_friend(friend_id)
+            .await?
+            .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
+        if friend.backend_kind != BackendKind::Pty {
+            return Err(Error::bad_request("仅 Pty 好友支持 CLI 鉴权探测"));
+        }
+        let cfg: PtyBackendConfig =
+            serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
+        if !crate::friend_cli::is_external_cli_preset(&cfg) {
+            return Err(Error::bad_request("仅外部 CLI 好友支持鉴权探测"));
+        }
+        let preset = cfg.preset.clone().unwrap();
+        let cmd = if cfg.cmd.is_empty() {
+            match preset.as_str() {
+                "cursor" => crate::friend_cli::resolve_cursor_agent_executable(),
+                "codex-exec" => "codex".into(),
+                "claude" => "claude".into(),
+                _ => cfg.cmd.clone(),
+            }
+        } else {
+            cfg.cmd.clone()
+        };
+        Ok(crate::friend_cli::probe_external_cli_auth(&preset, &cmd, &cfg, &self.vault).await)
+    }
+
+    pub async fn patch_friend_cli_session_id(
         &self,
         friend_id: &str,
-        thread_id: Option<String>,
+        session_id: Option<String>,
     ) -> Result<()> {
         let friend = self
             .get_friend(friend_id)
@@ -207,7 +246,7 @@ impl SqliteStore {
             .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
         let mut cfg: PtyBackendConfig =
             serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
-        cfg.cli_thread_id = thread_id.filter(|s| !s.trim().is_empty());
+        cfg.cli_session_id = session_id.filter(|s| !s.trim().is_empty());
         let backend_config = serde_json::to_string(&serde_json::to_value(&cfg)?)?;
         sqlx::query("UPDATE friends SET backend_config = ? WHERE id = ?")
             .bind(&backend_config)

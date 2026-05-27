@@ -15,7 +15,12 @@ use tracing::warn;
 use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment, ProviderUsageInfo};
 use crate::cli_workspace;
 use crate::domain::{Friend, Message, PtyBackendConfig};
-use crate::friend_cli::{codex_exec_args, pty_cli_session_is_resume};
+use crate::friend_cli::{
+    apply_cli_auth_env, ensure_cursor_agent_executable, ensure_cursor_chat_session,
+    external_cli_argv, parse_claude_session_id_from_output,
+    pty_cli_session_is_resume, resolve_cli_session_id, resolve_codex_sandbox_mode,
+};
+use crate::store::SecretVault;
 use crate::judge::JudgeService;
 use crate::provider::ProviderRegistry;
 use crate::store::SqliteStore;
@@ -87,11 +92,17 @@ impl PtyAdapter {
         if !cfg.env.is_empty() {
             adapter.env = cfg.env.clone();
         }
+        if adapter.label == "cursor" {
+            adapter.cmd = ensure_cursor_agent_executable()?;
+        }
         if let Ok(cwd) = resolve_pty_cwd(cfg, friend_id) {
             adapter.cwd = Some(cwd.clone());
             if adapter.label == "codex-exec" || adapter.label == "worker-bee-cli" {
                 ensure_codex_exec_cd(&mut adapter.args, &cwd);
             }
+        }
+        if crate::friend_cli::is_external_cli_preset(cfg) {
+            apply_cli_session_adapter(&mut adapter, cfg);
         }
         if let Some(s) = cfg.idle_seconds {
             adapter.timeout_seconds = s.max(5);
@@ -168,8 +179,8 @@ impl PtyAdapter {
         Self {
             label: "cursor".into(),
             mode: PtyMode::Oneshot,
-            cmd: "cursor-agent".into(),
-            args: vec!["-p".into()],
+            cmd: "agent".into(),
+            args: crate::friend_cli::cursor_agent_args(None, None),
             env: vec![],
             cwd: None,
             input_mode: InputMode::ArgAppend,
@@ -253,7 +264,21 @@ impl Agent for PtyAgent {
                 }
             };
 
-            let resume = pty_cli_session_is_resume(&cfg) && adapter.label == "codex-exec";
+            let resume =
+                pty_cli_session_is_resume(&cfg) && external_cli_label(&adapter.label).is_some();
+
+            if resume {
+                if adapter.label == "cursor" {
+                    if let Err(e) =
+                        ensure_cursor_chat_session(&adapter.cmd, &mut cfg, &store, &friend_id).await
+                    {
+                        yield AgentEvent::Error(e.to_string());
+                        return;
+                    }
+                    apply_cli_session_adapter(&mut adapter, &cfg);
+                }
+            }
+
             let composed_prompt = if resume {
                 prompt.clone()
             } else {
@@ -270,7 +295,15 @@ impl Agent for PtyAgent {
 
             loop {
                 let raw_for_save = raw_buf.clone();
-                match run_oneshot(adapter.clone(), composed_prompt.clone(), raw_for_save).await {
+                match run_oneshot(
+                    adapter.clone(),
+                    composed_prompt.clone(),
+                    raw_for_save,
+                    &cfg,
+                    store.vault.clone(),
+                )
+                .await
+                {
                     Ok(stream_rx) => {
                         let mut rx = stream_rx;
                         while let Some(chunk) = rx.recv().await {
@@ -295,29 +328,34 @@ impl Agent for PtyAgent {
                 *raw_store.lock().await = Some(buf.clone());
 
                 if resume
-                    && cfg
-                        .cli_thread_id
-                        .as_ref()
-                        .is_some_and(|s| !s.trim().is_empty())
+                    && adapter.label == "codex-exec"
+                    && resolve_cli_session_id(&cfg).is_some()
                     && codex_resume_likely_invalid(&buf)
                     && !retried_fresh
                 {
                     retried_fresh = true;
-                    let _ = store.patch_friend_cli_thread_id(&friend_id, None).await;
-                    cfg.cli_thread_id = None;
-                    adapter.args = codex_exec_args(None);
+                    let _ = store.patch_friend_cli_session_id(&friend_id, None).await;
+                    cfg.cli_session_id = None;
                     apply_cli_session_adapter(&mut adapter, &cfg);
                     raw_buf.lock().await.clear();
                     continue;
                 }
 
                 if resume {
-                    if let Some(tid) = worker_bee_cli::parse_codex_thread_id_from_jsonl(&buf) {
-                        if cfg.cli_thread_id.as_deref() != Some(tid.as_str()) {
+                    let new_id = match adapter.label.as_str() {
+                        "codex-exec" => {
+                            worker_bee_cli::parse_codex_thread_id_from_jsonl(&buf)
+                        }
+                        "claude" => parse_claude_session_id_from_output(&buf),
+                        _ => None,
+                    };
+                    if let Some(id) = new_id {
+                        if resolve_cli_session_id(&cfg) != Some(id.as_str()) {
                             let _ = store
-                                .patch_friend_cli_thread_id(&friend_id, Some(tid.clone()))
+                                .patch_friend_cli_session_id(&friend_id, Some(id.clone()))
                                 .await;
-                            cfg.cli_thread_id = Some(tid);
+                            cfg.cli_session_id = Some(id);
+                            apply_cli_session_adapter(&mut adapter, &cfg);
                         }
                     }
                 }
@@ -352,19 +390,36 @@ async fn load_pty_session_state(
         .map_err(|e| Error::Config(format!("invalid pty backend_config: {e}")))?;
     let mut adapter =
         PtyAdapter::from_config_for_friend(&cfg, friend_id).unwrap_or_else(|_| fallback_adapter.clone());
-    apply_cli_session_adapter(&mut adapter, &cfg);
+    if crate::friend_cli::is_external_cli_preset(&cfg) {
+        apply_cli_session_adapter(&mut adapter, &cfg);
+    }
     Ok((cfg, adapter))
 }
 
-fn apply_cli_session_adapter(adapter: &mut PtyAdapter, cfg: &PtyBackendConfig) {
-    if adapter.label != "codex-exec" || !pty_cli_session_is_resume(cfg) {
-        return;
+fn external_cli_label(label: &str) -> Option<&'static str> {
+    match label {
+        "codex-exec" => Some("codex-exec"),
+        "cursor" => Some("cursor"),
+        "claude" => Some("claude"),
+        _ => None,
     }
-    let tid = cfg
-        .cli_thread_id
-        .as_deref()
-        .filter(|s| !s.trim().is_empty());
-    adapter.args = codex_exec_args(tid);
+}
+
+fn apply_cli_session_adapter(adapter: &mut PtyAdapter, cfg: &PtyBackendConfig) {
+    let Some(preset) = external_cli_label(&adapter.label) else {
+        return;
+    };
+    let session_id = if pty_cli_session_is_resume(cfg) {
+        resolve_cli_session_id(cfg)
+    } else {
+        None
+    };
+    adapter.args = external_cli_argv(
+        preset,
+        session_id,
+        adapter.cwd.as_deref(),
+        resolve_codex_sandbox_mode(cfg),
+    );
 }
 
 /// Codex `exec resume` 失败时（会话 id 失效等）回退为全新 `exec`。
@@ -406,6 +461,8 @@ async fn run_oneshot(
     adapter: PtyAdapter,
     prompt: String,
     raw_buf: Arc<Mutex<Vec<u8>>>,
+    cfg: &PtyBackendConfig,
+    vault: SecretVault,
 ) -> Result<tokio::sync::mpsc::Receiver<PtyStreamChunk>> {
     use tokio::sync::mpsc;
     let (tx, rx) = mpsc::channel::<PtyStreamChunk>(64);
@@ -427,6 +484,14 @@ async fn run_oneshot(
     for (k, v) in &adapter.env {
         cmd.env(k, v);
     }
+    if adapter.label == "cursor" {
+        if let Ok(home) = std::env::var("HOME") {
+            let local_bin = format!("{home}/.local/bin");
+            let path = std::env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{local_bin}:{path}"));
+        }
+    }
+    apply_cli_auth_env(&mut cmd, cfg, &vault);
     if let Some(cwd) = &adapter.cwd {
         let p = Path::new(cwd);
         if p.is_dir() {

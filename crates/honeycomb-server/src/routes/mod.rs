@@ -25,6 +25,10 @@ pub fn api_router() -> Router<AppState> {
         .route("/health", get(health))
         .route("/friends", get(list_friends).post(upsert_friend))
         .route("/friends/:id", get(get_friend).delete(delete_friend))
+        .route("/friends/:id/cli_auth", get(friend_cli_auth))
+        .route("/friends/:id/cli_auth/oauth/start", post(friend_cli_oauth_start))
+        .route("/friends/:id/cli_auth/oauth/cancel", post(friend_cli_oauth_cancel))
+        .route("/friends/:id/cli_auth/logout", post(friend_cli_logout))
         .route("/groups", get(list_groups).post(upsert_group))
         .route("/groups/:id", get(get_group))
         .route("/providers", get(list_providers).post(upsert_provider))
@@ -70,6 +74,40 @@ async fn get_friend(
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
     Ok(Json(serde_json::json!({ "friend": f })))
+}
+
+async fn friend_cli_auth(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let status = s.core.cli_oauth.full_status(&s.core.store, &id).await?;
+    Ok(Json(serde_json::json!({ "cli_auth": status })))
+}
+
+async fn friend_cli_oauth_start(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let snap = s.core.cli_oauth.start(&s.core.store, &id).await?;
+    let status = s.core.cli_oauth.full_status(&s.core.store, &id).await?;
+    Ok(Json(serde_json::json!({ "oauth": snap, "cli_auth": status })))
+}
+
+async fn friend_cli_oauth_cancel(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    s.core.cli_oauth.cancel(&id).await?;
+    let status = s.core.cli_oauth.full_status(&s.core.store, &id).await?;
+    Ok(Json(serde_json::json!({ "cli_auth": status })))
+}
+
+async fn friend_cli_logout(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let status = s.core.cli_oauth.logout(&s.core.store, &id).await?;
+    Ok(Json(serde_json::json!({ "cli_auth": status })))
 }
 
 async fn upsert_friend(

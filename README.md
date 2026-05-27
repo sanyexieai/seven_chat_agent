@@ -140,7 +140,7 @@ cargo run --bin honeycomb-server
 | preset | 说明 |
 |--------|------|
 | `claude` | 外部 Claude Code（直通，不经平台 API 配置层） |
-| `codex-exec` | 外部 OpenAI `codex exec`（直通） |
+| `codex-exec` | 外部 OpenAI `codex exec`（直通）；好友可设 `cli_session_mode=resume` 用 `exec resume` 续接 Codex thread |
 | `cursor` | cursor-agent（直通） |
 | `worker-bee-cli` | **工蜂 CLI 实例**（自研；每个好友 = 一个实例） |
 

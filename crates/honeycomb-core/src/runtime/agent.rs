@@ -80,6 +80,7 @@ impl Agent for UnifiedAgent {
                 confidence: 0.7,
                 reason: Some("助理默认愿意参与".into()),
                 suggested_delay_ms: 200,
+                source: None,
             });
         }
         Ok(Judgment::default())

@@ -65,6 +65,7 @@ impl AgentRegistry {
                 if is_external_cli_preset(&cfg) {
                     Ok(Arc::new(PtyAgent::new(
                         friend,
+                        self.store.clone(),
                         self.providers.clone(),
                         self.judge.clone(),
                     )?))
@@ -149,6 +150,7 @@ impl Agent for StubAgent {
             confidence: 0.0,
             reason: Some(self.note.clone()),
             suggested_delay_ms: 0,
+            source: None,
         })
     }
 }

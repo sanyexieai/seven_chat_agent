@@ -5,7 +5,11 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use honeycomb_core::domain::{Provider, ProviderCapabilities, ProviderPrice};
 use honeycomb_core::store::friend::UpsertFriend;
+use honeycomb_core::group_validate::{
+    member_ids_from_upsert, validate_group_task_flow_readiness,
+};
 use honeycomb_core::store::group::UpsertGroup;
+use honeycomb_core::Honeycomb;
 use honeycomb_core::store::memory::NewMemory;
 use honeycomb_core::store::provider::UpsertProviderKey;
 use serde::Deserialize;
@@ -90,7 +94,7 @@ async fn list_groups(State(s): State<AppState>) -> Result<Json<serde_json::Value
     let groups = s.core.store.list_groups().await?;
     let mut out = Vec::new();
     for g in &groups {
-        out.push(group_bundle_json(&s.core.store, g).await?);
+        out.push(group_bundle_json(&s.core, g).await?);
     }
     Ok(Json(serde_json::json!({ "groups": out })))
 }
@@ -105,7 +109,7 @@ async fn get_group(
         .get_group(&id)
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
-    let mut bundle = group_bundle_json(&s.core.store, &g).await?;
+    let mut bundle = group_bundle_json(&s.core, &g).await?;
     let conv = s.core.store.get_or_create_group_conversation(&g.id).await?;
     bundle["conversation_id"] = serde_json::json!(conv.id);
     Ok(Json(bundle))
@@ -113,25 +117,45 @@ async fn get_group(
 
 async fn upsert_group(
     State(s): State<AppState>,
-    Json(req): Json<UpsertGroup>,
+    Json(mut req): Json<UpsertGroup>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    req.settings.sync_judge_threshold_fields();
+    let member_ids = member_ids_from_upsert(&req.members, &req.member_ids);
+    let readiness = validate_group_task_flow_readiness(
+        &s.core.store,
+        &s.core.providers,
+        &req.settings,
+        &member_ids,
+    )
+    .await?;
+    if !readiness.errors.is_empty() {
+        return Err(ApiError::BadRequest(readiness.errors.join("；")));
+    }
     let g = s.core.store.upsert_group(req).await?;
-    let mut bundle = group_bundle_json(&s.core.store, &g).await?;
+    let mut bundle = group_bundle_json(&s.core, &g).await?;
     let conv = s.core.store.get_or_create_group_conversation(&g.id).await?;
     bundle["conversation_id"] = serde_json::json!(conv.id);
     Ok(Json(bundle))
 }
 
 async fn group_bundle_json(
-    store: &honeycomb_core::store::SqliteStore,
+    core: &Honeycomb,
     g: &honeycomb_core::domain::Group,
 ) -> Result<serde_json::Value, ApiError> {
-    let members = store.list_group_member_configs(&g.id).await?;
+    let members = core.store.list_group_member_configs(&g.id).await?;
     let member_ids: Vec<String> = members.iter().map(|m| m.friend_id.clone()).collect();
+    let task_flow_readiness = validate_group_task_flow_readiness(
+        &core.store,
+        &core.providers,
+        &g.settings,
+        &member_ids,
+    )
+    .await?;
     Ok(serde_json::json!({
         "group": g,
         "member_ids": member_ids,
         "members": members,
+        "task_flow_readiness": task_flow_readiness,
     }))
 }
 

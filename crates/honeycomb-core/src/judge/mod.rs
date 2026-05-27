@@ -5,8 +5,8 @@ mod service;
 
 pub use bridge::ProviderLlmJudgePort;
 pub use honeycomb_judge::{
-    resolve_effective_judge, GroupJudgeSettings, HeuristicJudgeSettings, JudgeEngine,
-    JudgeMember, JudgeMode, JudgeRequest, Judgment, LlmJudgeSettings, MemberJudgeOverride,
-    TriggerSenderKind,
+    resolve_effective_judge, resolve_llm_target, GroupJudgeSettings, HeuristicJudgeSettings,
+    JudgeEngine, JudgeMember, JudgeMode, JudgeRequest, JudgeSource, Judgment, LlmJudgeSettings,
+    MemberJudgeOverride, TriggerSenderKind,
 };
 pub use service::JudgeService;

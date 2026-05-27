@@ -477,9 +477,11 @@ async fn ws_loop(ws_url: String, tx: mpsc::Sender<BusEvent>) {
                                     let conf = v["confidence"].as_f64().unwrap_or(0.0);
                                     let reply = v["should_reply"].as_bool().unwrap_or(false);
                                     let reason = v["reason"].as_str().unwrap_or("");
+                                    let src = v["judge_source"].as_str().unwrap_or("?");
+                                    let cfg = v["configured_judge_mode"].as_str().unwrap_or("?");
                                     let _ = tx
                                         .send(BusEvent::Judgment(format!(
-                                            "[judge] {name}  reply={reply}  conf={conf:.2}  {reason}"
+                                            "[judge] cfg={cfg} src={src} {name} reply={reply} conf={conf:.2} {reason}"
                                         )))
                                         .await;
                                 }
@@ -493,9 +495,12 @@ async fn ws_loop(ws_url: String, tx: mpsc::Sender<BusEvent>) {
                                                 .join(", ")
                                         })
                                         .unwrap_or_default();
+                                    let mode = v["schedule_mode"].as_str().unwrap_or("?");
+                                    let cfg = v["configured_judge_mode"].as_str().unwrap_or("?");
+                                    let willing = v["willing_to_reply"].as_u64().unwrap_or(0);
                                     let _ = tx
                                         .send(BusEvent::Judgment(format!(
-                                            "[scheduler] picked: {picks}"
+                                            "[scheduler] cfg={cfg} mode={mode} willing={willing} picked: {picks}"
                                         )))
                                         .await;
                                 }

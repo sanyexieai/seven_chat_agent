@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Friend, GroupSettings, Message};
+use crate::domain::{CliBlockDelta, Friend, GroupSettings, Message};
 use crate::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +34,8 @@ pub struct ProviderUsageInfo {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Token(String),
+    /// Codex `exec --json` 等 CLI 的结构化展示增量。
+    CliDelta(CliBlockDelta),
     Thinking(String),
     Tool { name: String, payload: String },
     Done(ProviderUsageInfo),

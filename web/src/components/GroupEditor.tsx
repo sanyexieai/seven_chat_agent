@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { validateGroupTaskFlowReadiness } from "../groupReadiness";
 import { useChat } from "../stores/chat";
 import type {
   GroupJudgeSettings,
@@ -29,9 +30,20 @@ const defaultJudge: GroupJudgeSettings = {
   fallback_pick_top: true,
 };
 
+const defaultTaskFlow = {
+  enabled: false,
+  campaign_enabled: true,
+  leader_only_execute: true,
+  plan_enabled: true,
+  plan_review_enabled: true,
+  peer_vote_enabled: true,
+  appoint_by_mention_enabled: true,
+};
+
 const defaults: GroupSettings = {
   judge_threshold: defaultJudge.threshold,
   judge: defaultJudge,
+  task_flow: defaultTaskFlow,
   max_replies_per_turn: 8,
   per_agent_max_per_turn: 2,
   cooldown_ms: 4000,
@@ -52,11 +64,13 @@ function normalizeSettings(raw: Partial<GroupSettings>): GroupSettings {
     llm: { ...defaultJudge.llm, ...judge.llm },
   };
   base.judge_threshold = judge.threshold;
+  base.task_flow = { ...defaultTaskFlow, ...raw.task_flow };
   return base;
 }
 
 export function GroupEditor({ groupId, onClose }: Props) {
-  const { friends, providers, reloadGroups, selectGroup } = useChat();
+  const { friends, providers, providerKeys, reloadGroups, selectGroup } =
+    useChat();
   const [name, setName] = useState("");
   const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
   /** 本群内各成员的 Judge 覆盖（key=friend_id） */
@@ -66,6 +80,17 @@ export function GroupEditor({ groupId, onClose }: Props) {
   const [settings, setSettings] = useState<GroupSettings>(defaults);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const readiness = useMemo(
+    () =>
+      validateGroupTaskFlowReadiness(
+        settings,
+        Array.from(memberIds),
+        friends,
+        providers,
+        providerKeys,
+      ),
+    [settings, memberIds, friends, providers, providerKeys],
+  );
 
   useEffect(() => {
     if (!groupId) {
@@ -114,10 +139,21 @@ export function GroupEditor({ groupId, onClose }: Props) {
       setError("至少选一位好友进群");
       return;
     }
+    const toSave = normalizeSettings(settings);
+    const precheck = validateGroupTaskFlowReadiness(
+      toSave,
+      Array.from(memberIds),
+      friends,
+      providers,
+      providerKeys,
+    );
+    if (!precheck.ready) {
+      setError(precheck.errors.join("；"));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const toSave = normalizeSettings(settings);
       const members: GroupMemberConfig[] = Array.from(memberIds).map(
         (friend_id) => ({
           friend_id,
@@ -354,52 +390,300 @@ export function GroupEditor({ groupId, onClose }: Props) {
             )}
             {(settings.judge.mode === "llm" ||
               settings.judge.mode === "auto") && (
-              <div className="mt-3 grid grid-cols-2 gap-3 border-t border-amber-100 pt-3">
-                <div>
-                  <label className="label">Judge Provider（群级）</label>
-                  <select
-                    className="input"
-                    value={settings.judge.llm.provider_id ?? ""}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        judge: {
-                          ...settings.judge,
-                          llm: {
-                            ...settings.judge.llm,
-                            provider_id: e.target.value || null,
+              <div className="mt-3 space-y-3 border-t border-amber-100 pt-3">
+                <p className="text-xs text-slate-600">
+                  Provider 只表示接口类型（DeepSeek / OpenAI 等），<strong>API Key 不在 Provider 行里填写</strong>。
+                  请在左侧栏点「设置」→「API Keys」添加密钥；此处可选已保存的 Key，不选则用该
+                  Provider 下第一个可用 Key 或环境变量{" "}
+                  <code className="text-[11px]">
+                    {settings.judge.llm.provider_id
+                      ? `${settings.judge.llm.provider_id.toUpperCase().replace(/-/g, "_")}_API_KEY`
+                      : "PROVIDER_API_KEY"}
+                  </code>
+                  。
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">Judge Provider（群级）</label>
+                    <select
+                      className="input"
+                      value={settings.judge.llm.provider_id ?? ""}
+                      onChange={(e) => {
+                        const pid = e.target.value || null;
+                        const prov = providers.find((p) => p.id === pid);
+                        const keys = providerKeys.filter(
+                          (k) => k.provider_id === pid,
+                        );
+                        const keepKey =
+                          settings.judge.llm.api_key_id &&
+                          keys.some((k) => k.id === settings.judge.llm.api_key_id)
+                            ? settings.judge.llm.api_key_id
+                            : null;
+                        const nextModel =
+                          settings.judge.llm.model?.trim() ||
+                          prov?.default_model ||
+                          (pid === "deepseek" ? "deepseek-v4-flash" : null);
+                        setSettings({
+                          ...settings,
+                          judge: {
+                            ...settings.judge,
+                            llm: {
+                              ...settings.judge.llm,
+                              provider_id: pid,
+                              api_key_id: keepKey,
+                              model: nextModel,
+                            },
                           },
-                        },
-                      })
-                    }
-                  >
-                    <option value="">（用成员 judge_provider / 环境变量）</option>
-                    {providers.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.display_name || p.id}
-                      </option>
-                    ))}
-                  </select>
+                        });
+                      }}
+                    >
+                      <option value="">（未选：LLM judge 无法解析 Provider）</option>
+                      {providers.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.display_name || p.id}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Judge 模型</label>
+                    <input
+                      className="input"
+                      placeholder={
+                        providers.find(
+                          (p) => p.id === settings.judge.llm.provider_id,
+                        )?.default_model || "如 gpt-4o-mini"
+                      }
+                      value={settings.judge.llm.model ?? ""}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          judge: {
+                            ...settings.judge,
+                            llm: {
+                              ...settings.judge.llm,
+                              model: e.target.value || null,
+                            },
+                          },
+                        })
+                      }
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="label">Judge 模型</label>
+                {settings.judge.llm.provider_id && (
+                  <div>
+                    <label className="label">Judge API Key（可选）</label>
+                    <select
+                      className="input"
+                      value={settings.judge.llm.api_key_id ?? ""}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          judge: {
+                            ...settings.judge,
+                            llm: {
+                              ...settings.judge.llm,
+                              api_key_id: e.target.value || null,
+                            },
+                          },
+                        })
+                      }
+                    >
+                      <option value="">
+                        自动（该 Provider 下第一个 active Key）
+                      </option>
+                      {providerKeys
+                        .filter(
+                          (k) =>
+                            k.provider_id === settings.judge.llm.provider_id,
+                        )
+                        .map((k) => (
+                          <option key={k.id} value={k.id}>
+                            {k.label} ({k.status})
+                          </option>
+                        ))}
+                    </select>
+                    {providerKeys.filter(
+                      (k) => k.provider_id === settings.judge.llm.provider_id,
+                    ).length === 0 && (
+                      <p className="mt-1 text-xs text-amber-800">
+                        该 Provider 尚无 Key，请打开左侧「设置」→「API Keys」添加后再保存本群。
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-md border border-violet-200 bg-violet-50/50 p-3">
+            <div className="mb-2 text-xs font-semibold text-violet-900">
+              任务编排（竞选负责人）
+            </div>
+            <p className="mb-3 text-xs text-slate-600">
+              开启后，用户每条消息将先经<strong>竞选 → LLM 选举负责人 → 负责人执行</strong>，不再全员「接一句闲聊」。选举需配置上方 Judge LLM Provider。
+            </p>
+            <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.task_flow?.enabled ?? false}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    task_flow: {
+                      ...defaultTaskFlow,
+                      ...settings.task_flow,
+                      enabled: e.target.checked,
+                    },
+                  })
+                }
+              />
+              启用任务流（推荐工程讨论群）
+            </label>
+            {(settings.task_flow?.enabled ?? false) && (
+              <div className="mt-2 space-y-2 pl-6">
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
                   <input
-                    className="input"
-                    placeholder="如 gpt-4o-mini"
-                    value={settings.judge.llm.model ?? ""}
+                    type="checkbox"
+                    checked={settings.task_flow?.campaign_enabled ?? true}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
-                        judge: {
-                          ...settings.judge,
-                          llm: {
-                            ...settings.judge.llm,
-                            model: e.target.value || null,
-                          },
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          campaign_enabled: e.target.checked,
                         },
                       })
                     }
                   />
+                  竞选发言（每人陈述优势争取当负责人）
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settings.task_flow?.leader_only_execute ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          leader_only_execute: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  仅负责人执行（本轮禁止 Agent 接龙闲聊）
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settings.task_flow?.peer_vote_enabled ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          peer_vote_enabled: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  竞选后成员互投（背书），再 LLM 计票选举
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settings.task_flow?.plan_enabled ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          plan_enabled: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  负责人先发布计划（本阶段不跑工具）
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settings.task_flow?.plan_review_enabled ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          plan_review_enabled: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  计划发布后他人 1 条评议
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settings.task_flow?.appoint_by_mention_enabled ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          appoint_by_mention_enabled: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  用户 @成员 时跳过竞选直接任命
+                </label>
+                <div
+                  className={`mt-3 rounded-md border p-3 text-sm ${
+                    readiness.ready
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                      : "border-amber-300 bg-amber-50 text-amber-950"
+                  }`}
+                >
+                  <div className="mb-1 font-semibold">
+                    {readiness.ready
+                      ? "任务流就绪，可保存"
+                      : "任务流未就绪（保存将被拒绝）"}
+                  </div>
+                  {readiness.task_flow_enabled && (
+                    <p className="text-xs opacity-80">
+                      Agent 成员 {readiness.agent_member_count} 人
+                      {readiness.judge_provider_id
+                        ? ` · Judge ${readiness.judge_provider_id}${
+                            readiness.judge_model
+                              ? ` / ${readiness.judge_model}`
+                              : ""
+                          }${readiness.judge_key_configured ? " · Key ✓" : " · Key ✗"}`
+                        : ""}
+                    </p>
+                  )}
+                  {readiness.errors.map((e) => (
+                    <p key={e} className="mt-1 text-xs">
+                      • {e}
+                    </p>
+                  ))}
+                  {readiness.warnings.map((w) => (
+                    <p key={w} className="mt-1 text-xs text-amber-800">
+                      ※ {w}
+                    </p>
+                  ))}
                 </div>
               </div>
             )}
@@ -496,7 +780,13 @@ export function GroupEditor({ groupId, onClose }: Props) {
           <button className="btn" onClick={onClose}>
             取消
           </button>
-          <button className="btn-primary" onClick={save} disabled={busy}>
+          <button
+            className="btn-primary"
+            onClick={save}
+            disabled={
+              busy || (readiness.task_flow_enabled && !readiness.ready)
+            }
+          >
             {busy ? "保存中..." : "保存"}
           </button>
         </footer>

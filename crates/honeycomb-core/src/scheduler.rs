@@ -231,6 +231,7 @@ mod tests {
                 confidence: conf,
                 reason: None,
                 suggested_delay_ms: 0,
+                source: None,
             },
         }
     }
@@ -252,6 +253,7 @@ mod tests {
             sender_id: "user".into(),
             sender_name: "你".into(),
             content: "topic".into(),
+            content_blocks: None,
             mentions: vec![],
             status: crate::domain::MessageStatus::Done,
             seen_by: vec![],

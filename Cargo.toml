@@ -9,6 +9,7 @@ members = [
 ]
 exclude = [
     "apps/honeycomb-desktop/src-tauri",
+    "data/cli-workspaces",
 ]
 
 [workspace.package]

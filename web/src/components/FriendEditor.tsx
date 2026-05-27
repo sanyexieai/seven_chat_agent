@@ -228,6 +228,9 @@ interface FriendDraft {
     cmd: string;
     args: string;
     cwd: string;
+    /** Codex：`oneshot` | `resume` */
+    cli_session_mode: "oneshot" | "resume";
+    cli_thread_id: string;
     provider_id: string;
     model: string;
     api_key_id: string | null;
@@ -257,6 +260,8 @@ function emptyDraft(): FriendDraft {
       cmd: "claude",
       args: "",
       cwd: "",
+      cli_session_mode: "oneshot",
+      cli_thread_id: "",
       provider_id: "openai",
       model: "gpt-4o-mini",
       api_key_id: null,
@@ -284,6 +289,8 @@ function fromFriend(f: Friend): FriendDraft {
       cmd: ptyCmdForPreset("worker-bee-cli"),
       args: "",
       cwd: "",
+      cli_session_mode: "oneshot",
+      cli_thread_id: "",
       provider_id: f.backend_config?.provider_id || "",
       model: f.backend_config?.model || "",
       api_key_id: f.backend_config?.api_key_id || null,
@@ -315,6 +322,12 @@ function fromFriend(f: Friend): FriendDraft {
           ? f.backend_config.args.join(" ")
           : "",
       cwd: f.backend_config?.cwd || "",
+      cli_session_mode:
+        f.backend_config?.cli_session_mode === "resume" ? "resume" : "oneshot",
+      cli_thread_id:
+        typeof f.backend_config?.cli_thread_id === "string"
+          ? f.backend_config.cli_thread_id
+          : "",
       provider_id: isExternal ? "" : f.backend_config?.provider_id || "",
       model: isExternal ? "" : f.backend_config?.model || "",
       api_key_id: isExternal ? null : f.backend_config?.api_key_id || null,
@@ -365,6 +378,15 @@ function toApi(d: FriendDraft) {
     ) {
       backend_config.preset = d.pty.preset;
       backend_config.cmd = ptyCmdForPreset(d.pty.preset);
+      if (d.pty.preset === "codex-exec") {
+        backend_config.cli_session_mode = d.pty.cli_session_mode;
+        if (d.pty.cli_session_mode === "resume") {
+          const tid = d.pty.cli_thread_id.trim();
+          backend_config.cli_thread_id = tid || null;
+        } else {
+          backend_config.cli_thread_id = null;
+        }
+      }
     }
   } else if (d.backend_kind === "human") {
     backend_config = {
@@ -576,6 +598,7 @@ function PtyConfigEditor({
 }) {
   const isCustom = draft.pty.preset === "custom";
   const isWorkerBee = draft.pty.preset === "worker-bee-cli";
+  const isCodex = draft.pty.preset === "codex-exec";
   return (
     <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3">
       <div>
@@ -676,6 +699,63 @@ function PtyConfigEditor({
               }
             />
           </div>
+        </div>
+      )}
+      {isCodex && (
+        <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50/80 p-3">
+          <div>
+            <label className="label">Codex 会话</label>
+            <select
+              className="input"
+              value={draft.pty.cli_session_mode}
+              onChange={(e) => {
+                const mode = e.target.value as "oneshot" | "resume";
+                setDraft({
+                  ...draft,
+                  pty: {
+                    ...draft.pty,
+                    cli_session_mode: mode,
+                    ...(mode === "oneshot" ? { cli_thread_id: "" } : {}),
+                  },
+                });
+              }}
+            >
+              <option value="oneshot">单次 exec（每轮独立，拼聊天历史）</option>
+              <option value="resume">续接会话（codex exec resume，用 Codex 原生 thread）</option>
+            </select>
+          </div>
+          {draft.pty.cli_session_mode === "resume" && (
+            <>
+              <p className="text-xs text-amber-900/80">
+                首轮自动 <code>codex exec</code> 并记录 thread_id；之后每轮{" "}
+                <code>codex exec resume &lt;id&gt;</code>，不再向 Codex 重复拼 honeycomb
+                历史。会话按<strong>好友</strong>维度，与终端 Codex 会话文件一致。
+              </p>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="min-w-0 flex-1">
+                  <label className="label">当前 thread_id</label>
+                  <input
+                    className="input font-mono text-xs"
+                    readOnly
+                    value={draft.pty.cli_thread_id || "（首轮对话后自动写入）"}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn-ghost shrink-0 text-xs"
+                  disabled={!draft.pty.cli_thread_id.trim()}
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      pty: { ...draft.pty, cli_thread_id: "" },
+                    })
+                  }
+                >
+                  清除会话
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
       <div>

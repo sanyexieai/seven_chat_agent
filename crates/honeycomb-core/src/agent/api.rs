@@ -210,6 +210,7 @@ impl Agent for ApiAgent {
                         confidence: 0.0,
                         reason: Some("judge parse failed".into()),
                         suggested_delay_ms: 0,
+                        source: None,
                     })
             }
         };
@@ -236,6 +237,7 @@ impl JudgmentRaw {
             confidence: self.confidence.clamp(0.0, 1.0),
             reason: self.reason,
             suggested_delay_ms: self.suggested_delay_ms,
+            source: None,
         }
     }
 }

@@ -1,6 +1,66 @@
 //! 好友 CLI / 工蜂实例判定（产品模型）。
 
 use crate::domain::{BackendKind, Friend, PtyBackendConfig};
+
+/// 外部 CLI 每轮独立 `exec`（默认）。
+pub const CLI_SESSION_ONESHOT: &str = "oneshot";
+/// Codex：`codex exec resume <thread_id>` 续接同一线程。
+pub const CLI_SESSION_RESUME: &str = "resume";
+
+pub fn pty_cli_session_is_resume(cfg: &PtyBackendConfig) -> bool {
+    cfg.cli_session_mode.as_deref() == Some(CLI_SESSION_RESUME)
+}
+
+/// 构建 `codex exec` / `codex exec resume <id>` 的参数（不含 prompt）。
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn codex_exec_args_without_thread() {
+        assert_eq!(
+            codex_exec_args(None),
+            vec![
+                "exec",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+                "--json"
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_exec_args_with_resume() {
+        assert_eq!(
+            codex_exec_args(Some("tid-1")),
+            vec![
+                "exec",
+                "resume",
+                "tid-1",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+                "--json"
+            ]
+        );
+    }
+}
+
+pub fn codex_exec_args(thread_id: Option<&str>) -> Vec<String> {
+    let mut args = vec!["exec".into()];
+    if let Some(tid) = thread_id.filter(|s| !s.trim().is_empty()) {
+        args.push("resume".into());
+        args.push(tid.trim().to_string());
+    }
+    args.extend([
+        "--skip-git-repo-check".into(),
+        "--color".into(),
+        "never".into(),
+        "--json".into(),
+    ]);
+    args
+}
 use crate::runtime::{WORKER_BEE_CLI_BIN, WORKER_BEE_CLI_PRESET};
 
 const EXTERNAL_CLI_PRESETS: &[&str] = &["claude", "codex-exec", "cursor"];

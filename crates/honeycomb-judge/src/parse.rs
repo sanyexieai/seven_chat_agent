@@ -20,6 +20,7 @@ impl JudgmentRaw {
             confidence: self.confidence,
             reason: self.reason,
             suggested_delay_ms: self.suggested_delay_ms,
+            source: None,
         }
     }
 }
@@ -41,6 +42,7 @@ pub fn parse_llm_response(text: &str) -> Judgment {
         confidence: 0.0,
         reason: Some("judge parse failed".into()),
         suggested_delay_ms: 0,
+        source: None,
     })
 }
 

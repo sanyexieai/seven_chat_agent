@@ -5,7 +5,7 @@ use crate::heuristic;
 use crate::parse;
 use crate::prompt::{build_llm_prompt, LLM_JUDGE_SYSTEM};
 use crate::resolve::resolve_llm_target;
-use crate::types::{JudgeMode, Judgment};
+use crate::types::{JudgeMode, JudgeSource, Judgment};
 
 /// LLM judge 由宿主（honeycomb-core）注入，避免 judge crate 依赖 Provider。
 #[derive(Debug, Clone)]
@@ -15,6 +15,7 @@ pub struct LlmJudgeInput {
     pub api_key_id: Option<String>,
     pub system: String,
     pub user_prompt: String,
+    pub max_tokens: Option<u32>,
 }
 
 #[async_trait]
@@ -34,24 +35,38 @@ impl JudgeEngine {
     ) -> Judgment {
         let mode = req.group_judge.mode;
         match mode {
-            JudgeMode::Heuristic => heuristic::evaluate(req),
+            JudgeMode::Heuristic => {
+                let mut j = heuristic::evaluate(req);
+                if j.source.is_none() {
+                    j.source = Some(JudgeSource::Heuristic);
+                }
+                j
+            }
             JudgeMode::Llm => {
                 Self::evaluate_llm(req, port, env_provider, registry_has)
                     .await
+                    .map(|mut j| {
+                        j.source = Some(JudgeSource::Llm);
+                        j
+                    })
                     .unwrap_or_else(|e| Judgment {
                         should_reply: false,
                         confidence: 0.0,
                         reason: Some(format!("LLM judge 失败: {e}")),
                         suggested_delay_ms: 0,
+                        source: Some(JudgeSource::LlmFailed),
                     })
             }
             JudgeMode::Auto => {
-                if let Ok(j) = Self::evaluate_llm(req, port, env_provider, registry_has).await {
+                if let Ok(mut j) = Self::evaluate_llm(req, port, env_provider, registry_has).await {
                     if j.confidence > 0.0 || j.should_reply {
+                        j.source = Some(JudgeSource::AutoLlm);
                         return j;
                     }
                 }
-                heuristic::evaluate(req)
+                let mut j = heuristic::evaluate(req);
+                j.source = Some(JudgeSource::AutoHeuristic);
+                j
             }
         }
     }
@@ -78,6 +93,7 @@ impl JudgeEngine {
                 api_key_id: target.api_key_id,
                 system: LLM_JUDGE_SYSTEM.into(),
                 user_prompt: build_llm_prompt(req),
+                max_tokens: None,
             })
             .await?;
         Ok(parse::parse_llm_response(&raw))

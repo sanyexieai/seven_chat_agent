@@ -1,11 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  configuredJudgeModeLabel,
+  judgeSourceLabel,
+  memberVerdictShort,
+  scheduleModeLabel,
+} from "../judgeLabels";
 import { useChat } from "../stores/chat";
 import { MessageBubble } from "./MessageBubble";
+import { TaskFlowPanel } from "./TaskFlowPanel";
 import { Avatar } from "./Avatar";
 
 export function ChatWindow() {
-  const { friends, groups, target, conversation, messages, sendMessage, thinking } =
-    useChat();
+  const {
+    friends,
+    groups,
+    target,
+    conversation,
+    messages,
+    sendMessage,
+    thinking,
+    judgeBanner,
+    taskFlow,
+  } = useChat();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const sendLock = useRef(false);
@@ -94,6 +110,58 @@ export function ChatWindow() {
         </div>
         <div className="text-xs text-slate-400">{header.right}</div>
       </header>
+      {target.kind === "group" && taskFlow && <TaskFlowPanel round={taskFlow} />}
+      {target.kind === "group" && judgeBanner && (
+        <div
+          className={`border-b px-4 py-2 text-xs leading-relaxed ${
+            judgeBanner.scheduleMode === "fallback"
+              ? "border-amber-200 bg-amber-50 text-amber-950"
+              : judgeBanner.scheduleMode === "none"
+                ? "border-slate-200 bg-slate-50 text-slate-600"
+                : judgeBanner.scheduleMode === "pending"
+                  ? "border-slate-200 bg-slate-50 text-slate-600"
+                  : "border-emerald-200 bg-emerald-50/80 text-emerald-950"
+          }`}
+        >
+          <div>
+            <span className="font-medium">Judge 本轮</span>
+            <span className="mx-1 text-slate-400">·</span>
+            配置 {configuredJudgeModeLabel(judgeBanner.configuredMode)}
+            <span className="mx-1 text-slate-400">·</span>
+            {scheduleModeLabel(judgeBanner.scheduleMode)}
+            <span className="mx-1 text-slate-400">·</span>
+            愿接话且过阈值 {judgeBanner.willingToReply} 人（阈值{" "}
+            {judgeBanner.threshold.toFixed(2)}）
+            <span className="mx-1 text-slate-400">·</span>
+            {judgeBanner.pickedViaFallback ? "兜底点名" : "将发言"}：
+            {judgeBanner.pickedNames.length > 0
+              ? judgeBanner.pickedNames.join("、")
+              : "（无）"}
+          </div>
+          {judgeBanner.verdicts.length > 0 && (
+            <div className="mt-1 text-[11px] text-slate-600">
+              LLM 判定：
+              {judgeBanner.verdicts
+                .map((v) =>
+                  memberVerdictShort(
+                    v.friendName,
+                    v.shouldReply,
+                    v.confidence,
+                    v.judgeSource,
+                  ),
+                )
+                .join(" · ")}
+            </div>
+          )}
+          {judgeBanner.scheduleMode === "fallback" &&
+            judgeBanner.verdicts.every((v) => !v.shouldReply) && (
+              <div className="mt-1 text-[11px] text-amber-800">
+                LLM 认为大家都不该接话，但群设置开启了「未过线兜底」，仍会强制选 1
+                人发言。若希望尊重 LLM 判断，可在群设置关闭该选项。
+              </div>
+            )}
+        </div>
+      )}
       {target.kind === "group" && (
         <div className="flex gap-2 overflow-x-auto border-b border-slate-200 bg-white px-4 py-2">
           {groupMembers.map((m) => {
@@ -114,6 +182,14 @@ export function ChatWindow() {
                   ? "text-honey-700"
                   : "text-emerald-600"
               : "text-slate-400";
+            const srcTag = state?.judgeSource
+              ? judgeSourceLabel(state.judgeSource)
+              : null;
+            const srcWarn =
+              state?.judgeSource === "llm_failed" ||
+              (state?.configuredJudgeMode === "llm" &&
+                state?.judgeSource &&
+                state.judgeSource !== "llm");
             return (
               <div
                 key={m.id}
@@ -121,6 +197,14 @@ export function ChatWindow() {
               >
                 <Avatar name={m.name} kind={m.backend_kind} size={20} />
                 <span className="text-slate-700">{m.name}</span>
+                {srcTag && (
+                  <span
+                    className={`text-[10px] ${srcWarn ? "text-amber-700" : "text-slate-500"}`}
+                    title={state?.reason ?? undefined}
+                  >
+                    {srcTag}
+                  </span>
+                )}
                 {label && (
                   <span className={`text-[10px] ${colorClass}`}>{label}</span>
                 )}

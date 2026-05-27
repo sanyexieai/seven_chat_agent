@@ -8,15 +8,18 @@ use tracing::error;
 use uuid::Uuid;
 
 use crate::agent::{AgentEvent, AgentHandle, AgentRegistry, ChatContext};
-use crate::judge::{JudgeService, Judgment};
+use crate::judge::{JudgeMode, JudgeService, JudgeSource, Judgment};
 use crate::domain::{
-    BackendKind, ConvKind, Conversation, Friend, GroupSettings, Message, MessageStatus,
-    SenderKind,
+    BackendKind, CliBlockDelta, ConvKind, Conversation, Friend, GroupSettings, Message,
+    MessageStatus, SenderKind,
 };
+use worker_bee_cli::{apply_cli_block_delta, cli_blocks_to_plain};
 use crate::scheduler::{CandidateInfo, ScheduleDecision, SpeakerScheduler};
 use crate::store::message::NewMessage;
 use crate::store::SqliteStore;
 use crate::{Error, Result};
+
+mod task_flow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -29,6 +32,11 @@ pub enum BusEvent {
         conversation_id: String,
         delta: String,
         thinking: bool,
+    },
+    MessageCliDelta {
+        message_id: String,
+        conversation_id: String,
+        delta: CliBlockDelta,
     },
     MessageDone {
         message: Message,
@@ -54,11 +62,75 @@ pub enum BusEvent {
         should_reply: bool,
         confidence: f32,
         reason: Option<String>,
+        /// 实际 judge 通路：`llm` / `heuristic` / `llm_failed` / `auto_llm` / `auto_heuristic`
+        judge_source: Option<String>,
+        /// 群配置的模式：`llm` / `heuristic` / `auto`
+        configured_judge_mode: String,
     },
     SchedulerPicked {
         conversation_id: String,
         turn_id: String,
         decisions: Vec<ScheduleDecision>,
+        /// `strict` | `fallback` | `none`
+        schedule_mode: String,
+        configured_judge_mode: String,
+        willing_to_reply: u32,
+        judge_threshold: f32,
+    },
+    /// 任务流阶段：`campaign` | `election` | `execute`
+    TaskFlowPhase {
+        conversation_id: String,
+        turn_id: String,
+        phase: String,
+        detail: Option<String>,
+    },
+    CampaignPitch {
+        conversation_id: String,
+        turn_id: String,
+        friend_id: String,
+        friend_name: String,
+    },
+    LeaderElected {
+        conversation_id: String,
+        turn_id: String,
+        friend_id: String,
+        friend_name: String,
+        reason: String,
+        confidence: f32,
+        /// true = LLM 选举成功；false = 互投/选举失败后的兜底
+        election_ok: bool,
+        peer_votes_summary: Option<String>,
+        pitches: Vec<(String, String)>,
+    },
+    PeerVote {
+        conversation_id: String,
+        turn_id: String,
+        voter_id: String,
+        voter_name: String,
+        endorse_id: String,
+        endorse_name: String,
+        reason: String,
+    },
+    PeerVoteFailed {
+        conversation_id: String,
+        turn_id: String,
+        voter_id: String,
+        voter_name: String,
+        error: String,
+    },
+    PlanPublished {
+        conversation_id: String,
+        turn_id: String,
+        friend_id: String,
+        friend_name: String,
+        plan_excerpt: String,
+    },
+    PlanReview {
+        conversation_id: String,
+        turn_id: String,
+        friend_id: String,
+        friend_name: String,
+        content: String,
     },
 }
 
@@ -218,6 +290,25 @@ impl MessageDispatcher {
             .await?
             .ok_or_else(|| Error::not_found("group"))?;
         let settings = group.settings.clone();
+
+        if user_msg.sender_kind == SenderKind::User && settings.task_flow.enabled {
+            let member_configs = self.store.list_group_member_configs(&group.id).await?;
+            let mut members = Vec::new();
+            for mid in member_configs.iter().map(|c| &c.friend_id) {
+                if let Some(f) = self.store.get_friend(mid).await? {
+                    if f.enabled {
+                        members.push(f);
+                    }
+                }
+            }
+            if self
+                .run_task_flow(&conv, &user_msg, &turn_id, &settings, &members)
+                .await?
+            {
+                return Ok(());
+            }
+        }
+
         let mut frontier = vec![user_msg.clone()];
 
         while !frontier.is_empty() {
@@ -251,7 +342,20 @@ impl MessageDispatcher {
                 )
                 .await;
 
+            let configured_mode = judge_mode_label(settings.judge.mode);
             for c in &candidates {
+                let src = judge_source_label(c.judgment.source);
+                tracing::info!(
+                    conversation_id = %conv.id,
+                    turn_id = %turn_id,
+                    friend = %c.friend_name,
+                    configured_judge_mode = configured_mode,
+                    judge_source = src.as_deref().unwrap_or("unknown"),
+                    should_reply = c.judgment.should_reply,
+                    confidence = c.judgment.confidence,
+                    reason = ?c.judgment.reason,
+                    "group: judgment_decided"
+                );
                 self.emit(BusEvent::JudgmentDecided {
                     conversation_id: conv.id.clone(),
                     turn_id: turn_id.clone(),
@@ -260,6 +364,8 @@ impl MessageDispatcher {
                     should_reply: c.judgment.should_reply,
                     confidence: c.judgment.confidence,
                     reason: c.judgment.reason.clone(),
+                    judge_source: src,
+                    configured_judge_mode: configured_mode.to_string(),
                 });
             }
 
@@ -269,7 +375,7 @@ impl MessageDispatcher {
             let willing = candidates
                 .iter()
                 .filter(|c| c.judgment.should_reply && c.judgment.confidence >= threshold)
-                .count();
+                .count() as u32;
             let decisions = self.scheduler.rank(
                 &turn_id,
                 &settings,
@@ -278,22 +384,57 @@ impl MessageDispatcher {
                 &parent_chain,
                 has_typing_human,
             );
+            let schedule_mode = if decisions.is_empty() {
+                "none"
+            } else if decisions[0]
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("兜底"))
+            {
+                "fallback"
+            } else {
+                "strict"
+            };
             if decisions.is_empty() {
                 tracing::info!(
                     conversation_id = %conv.id,
                     group_id = %group.id,
                     member_count = members.len(),
+                    configured_judge_mode = configured_mode,
                     willing_to_reply = willing,
                     judge_threshold = threshold,
+                    schedule_mode,
                     "group: no member scheduled to reply (strict + fallback both empty)"
                 );
+                self.emit(BusEvent::SchedulerPicked {
+                    conversation_id: conv.id.clone(),
+                    turn_id: turn_id.clone(),
+                    decisions: vec![],
+                    schedule_mode: schedule_mode.to_string(),
+                    configured_judge_mode: configured_mode.to_string(),
+                    willing_to_reply: willing,
+                    judge_threshold: threshold,
+                });
                 let _ = triggers_self;
                 continue;
             }
+            tracing::info!(
+                conversation_id = %conv.id,
+                turn_id = %turn_id,
+                configured_judge_mode = configured_mode,
+                schedule_mode,
+                willing_to_reply = willing,
+                picked = ?decisions.iter().map(|d| &d.friend_name).collect::<Vec<_>>(),
+                "group: scheduler_picked"
+            );
             self.emit(BusEvent::SchedulerPicked {
                 conversation_id: conv.id.clone(),
                 turn_id: turn_id.clone(),
                 decisions: decisions.clone(),
+                schedule_mode: schedule_mode.to_string(),
+                configured_judge_mode: configured_mode.to_string(),
+                willing_to_reply: willing,
+                judge_threshold: threshold,
             });
 
             for d in decisions {
@@ -366,6 +507,7 @@ impl MessageDispatcher {
                         confidence: 0.0,
                         reason: Some("真人成员不参与自动 judge".into()),
                         suggested_delay_ms: 0,
+                        source: None,
                     },
                     _ => {
                         judge
@@ -477,6 +619,7 @@ impl MessageDispatcher {
                         None,
                         None,
                         None,
+                        None,
                     )
                     .await;
                 self.emit(BusEvent::MessageFailed {
@@ -489,6 +632,7 @@ impl MessageDispatcher {
         };
 
         let mut content = String::new();
+        let mut content_blocks: Vec<worker_bee_cli::CliBlock> = Vec::new();
         let mut model_used: Option<String> = None;
         let mut tokens_in: Option<i64> = None;
         let mut tokens_out: Option<i64> = None;
@@ -503,6 +647,15 @@ impl MessageDispatcher {
                         conversation_id: conv.id.clone(),
                         delta: t,
                         thinking: false,
+                    });
+                }
+                AgentEvent::CliDelta(delta) => {
+                    apply_cli_block_delta(&mut content_blocks, &delta);
+                    content = cli_blocks_to_plain(&content_blocks);
+                    self.emit(BusEvent::MessageCliDelta {
+                        message_id: placeholder.id.clone(),
+                        conversation_id: conv.id.clone(),
+                        delta,
                     });
                 }
                 AgentEvent::Thinking(t) => {
@@ -526,6 +679,12 @@ impl MessageDispatcher {
             }
         }
 
+        let blocks_for_store = if content_blocks.is_empty() {
+            None
+        } else {
+            Some(content_blocks.as_slice())
+        };
+
         if let Some(reason) = failed_reason {
             let _ = self
                 .store
@@ -536,6 +695,7 @@ impl MessageDispatcher {
                     model_used.as_deref(),
                     tokens_in,
                     tokens_out,
+                    blocks_for_store,
                 )
                 .await;
             self.emit(BusEvent::MessageFailed {
@@ -555,6 +715,7 @@ impl MessageDispatcher {
                 model_used.as_deref(),
                 tokens_in,
                 tokens_out,
+                blocks_for_store,
             )
             .await;
         if let Ok(Some(m)) = self.store.get_message(&placeholder.id).await {
@@ -565,4 +726,22 @@ impl MessageDispatcher {
         }
         Ok(None)
     }
+}
+
+fn judge_mode_label(mode: JudgeMode) -> &'static str {
+    match mode {
+        JudgeMode::Heuristic => "heuristic",
+        JudgeMode::Llm => "llm",
+        JudgeMode::Auto => "auto",
+    }
+}
+
+fn judge_source_label(source: Option<JudgeSource>) -> Option<String> {
+    source.map(|s| match s {
+        JudgeSource::Heuristic => "heuristic",
+        JudgeSource::Llm => "llm",
+        JudgeSource::LlmFailed => "llm_failed",
+        JudgeSource::AutoLlm => "auto_llm",
+        JudgeSource::AutoHeuristic => "auto_heuristic",
+    }.to_string())
 }

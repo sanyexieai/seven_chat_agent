@@ -342,6 +342,7 @@ impl Agent for AssistantAgent {
             confidence: 0.7,
             reason: Some("Hex 助理愿意担当主持".into()),
             suggested_delay_ms: 200,
+            source: None,
         })
     }
 }

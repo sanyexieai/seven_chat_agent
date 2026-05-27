@@ -100,7 +100,8 @@ export function SettingsDrawer({ open, onClose }: Props) {
               </button>
             </div>
             <div className="text-xs text-slate-500">
-              内置已预置 10 个常见 Provider。你也可以把任何 OpenAI 兼容的自托管 / 第三方接口加进来。
+              内置已预置 10 个常见 Provider（只有接口地址与默认模型，<strong>不含 Token</strong>）。
+              API Key 在下方「API Keys」区填写。你也可以把任何 OpenAI 兼容的自托管 / 第三方接口加进来。
             </div>
             <ul className="space-y-1">
               {providers.map((p) => (

@@ -1,5 +1,31 @@
 use serde::{Deserialize, Serialize};
 
+/// 本次 judge 实际走的通路（与群配置的 `JudgeMode` 可能不同，例如 LLM 失败或 Auto 回退）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeSource {
+    Heuristic,
+    Llm,
+    /// 配置为 `llm` 但调用失败（未配 Provider、无 Key、解析失败等）。
+    LlmFailed,
+    /// `auto` 模式下 LLM 成功返回。
+    AutoLlm,
+    /// `auto` 模式下 LLM 未采用，回退启发式。
+    AutoHeuristic,
+}
+
+impl JudgeSource {
+    pub fn label_zh(self) -> &'static str {
+        match self {
+            Self::Heuristic => "启发式",
+            Self::Llm => "LLM",
+            Self::LlmFailed => "LLM 失败",
+            Self::AutoLlm => "Auto→LLM",
+            Self::AutoHeuristic => "Auto→启发式",
+        }
+    }
+}
+
 /// 单成员对「是否接话」的判断结果。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Judgment {
@@ -9,6 +35,8 @@ pub struct Judgment {
     pub reason: Option<String>,
     #[serde(default)]
     pub suggested_delay_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<JudgeSource>,
 }
 
 /// Judge 运行模式（群级可配置）。

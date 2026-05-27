@@ -1,3 +1,7 @@
+import type { CliBlock, CliBlockDelta } from "./cliBlocks";
+
+export type { CliBlock, CliBlockDelta };
+
 export type BackendKind = "pty" | "api" | "assistant" | "human";
 
 export type SenderKind = "user" | "friend" | "system";
@@ -75,6 +79,7 @@ export interface Message {
   sender_id: string;
   sender_name: string;
   content: string;
+  content_blocks?: CliBlock[] | null;
   mentions: string[];
   status: MessageStatus;
   seen_by: string[];
@@ -119,9 +124,20 @@ export interface MemberJudgeOverride {
   fallback_pick_top?: boolean | null;
 }
 
+export interface GroupTaskFlowSettings {
+  enabled: boolean;
+  campaign_enabled: boolean;
+  leader_only_execute: boolean;
+  plan_enabled?: boolean;
+  plan_review_enabled?: boolean;
+  peer_vote_enabled?: boolean;
+  appoint_by_mention_enabled?: boolean;
+}
+
 export interface GroupSettings {
   judge_threshold: number;
   judge: GroupJudgeSettings;
+  task_flow?: GroupTaskFlowSettings;
   max_replies_per_turn: number;
   per_agent_max_per_turn: number;
   cooldown_ms: number;
@@ -144,11 +160,23 @@ export interface GroupMemberConfig {
   judge_override?: MemberJudgeOverride | null;
 }
 
+export interface GroupTaskFlowReadiness {
+  task_flow_enabled: boolean;
+  ready: boolean;
+  errors: string[];
+  warnings: string[];
+  agent_member_count: number;
+  judge_provider_id: string | null;
+  judge_model: string | null;
+  judge_key_configured: boolean;
+}
+
 export interface GroupBundle {
   group: Group;
   member_ids: string[];
   members?: GroupMemberConfig[];
   conversation_id?: string;
+  task_flow_readiness?: GroupTaskFlowReadiness;
 }
 
 export interface AssistantMemory {
@@ -208,6 +236,12 @@ export type BusEvent =
       delta: string;
       thinking: boolean;
     }
+  | {
+      type: "message_cli_delta";
+      message_id: string;
+      conversation_id: string;
+      delta: CliBlockDelta;
+    }
   | { type: "message_done"; message: Message }
   | {
       type: "message_failed";
@@ -226,10 +260,76 @@ export type BusEvent =
       should_reply: boolean;
       confidence: number;
       reason: string | null;
+      judge_source: string | null;
+      configured_judge_mode: string;
     }
   | {
       type: "scheduler_picked";
       conversation_id: string;
       turn_id: string;
       decisions: ScheduleDecision[];
+      schedule_mode: string;
+      configured_judge_mode: string;
+      willing_to_reply: number;
+      judge_threshold: number;
+    }
+  | {
+      type: "task_flow_phase";
+      conversation_id: string;
+      turn_id: string;
+      phase: string;
+      detail: string | null;
+    }
+  | {
+      type: "campaign_pitch";
+      conversation_id: string;
+      turn_id: string;
+      friend_id: string;
+      friend_name: string;
+    }
+  | {
+      type: "leader_elected";
+      conversation_id: string;
+      turn_id: string;
+      friend_id: string;
+      friend_name: string;
+      reason: string;
+      confidence: number;
+      election_ok: boolean;
+      peer_votes_summary: string | null;
+      pitches: [string, string][];
+    }
+  | {
+      type: "peer_vote";
+      conversation_id: string;
+      turn_id: string;
+      voter_id: string;
+      voter_name: string;
+      endorse_id: string;
+      endorse_name: string;
+      reason: string;
+    }
+  | {
+      type: "peer_vote_failed";
+      conversation_id: string;
+      turn_id: string;
+      voter_id: string;
+      voter_name: string;
+      error: string;
+    }
+  | {
+      type: "plan_published";
+      conversation_id: string;
+      turn_id: string;
+      friend_id: string;
+      friend_name: string;
+      plan_excerpt: string;
+    }
+  | {
+      type: "plan_review";
+      conversation_id: string;
+      turn_id: string;
+      friend_id: string;
+      friend_name: string;
+      content: string;
     };

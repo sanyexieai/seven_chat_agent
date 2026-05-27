@@ -15,8 +15,10 @@ use tracing::warn;
 use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment, ProviderUsageInfo};
 use crate::cli_workspace;
 use crate::domain::{Friend, Message, PtyBackendConfig};
+use crate::friend_cli::{codex_exec_args, pty_cli_session_is_resume};
 use crate::judge::JudgeService;
 use crate::provider::ProviderRegistry;
+use crate::store::SqliteStore;
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,6 +197,7 @@ impl PtyAdapter {
 
 pub struct PtyAgent {
     friend: Friend,
+    store: Arc<SqliteStore>,
     judge: Arc<JudgeService>,
     adapter: PtyAdapter,
     last_raw: Arc<Mutex<Option<Vec<u8>>>>,
@@ -203,14 +206,17 @@ pub struct PtyAgent {
 impl PtyAgent {
     pub fn new(
         friend: Friend,
+        store: Arc<SqliteStore>,
         _providers: Arc<ProviderRegistry>,
         judge: Arc<JudgeService>,
     ) -> Result<Self> {
         let cfg: PtyBackendConfig = serde_json::from_value(friend.backend_config.clone())
             .map_err(|e| Error::Config(format!("invalid pty backend_config: {e}")))?;
-        let adapter = PtyAdapter::from_config_for_friend(&cfg, &friend.id)?;
+        let mut adapter = PtyAdapter::from_config_for_friend(&cfg, &friend.id)?;
+        apply_cli_session_adapter(&mut adapter, &cfg);
         Ok(Self {
             friend,
+            store,
             judge,
             adapter,
             last_raw: Arc::new(Mutex::new(None)),
@@ -233,35 +239,89 @@ impl Agent for PtyAgent {
         ctx: ChatContext,
         prompt: String,
     ) -> Result<BoxStream<'static, AgentEvent>> {
-        let adapter = self.adapter.clone();
-        let history_excerpt = render_history(&ctx, &self.friend.id);
-        let composed_prompt = if history_excerpt.is_empty() {
-            prompt.clone()
-        } else {
-            format!("{history_excerpt}\n\n[最新消息]\n{prompt}")
-        };
-        let raw_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let raw_for_save = raw_buf.clone();
+        let friend_id = self.friend.id.clone();
+        let store = self.store.clone();
+        let fallback_adapter = self.adapter.clone();
         let raw_store = self.last_raw.clone();
 
         let s = stream! {
-            match run_oneshot(adapter.clone(), composed_prompt, raw_for_save).await {
-                Ok(stream_rx) => {
-                    let mut rx = stream_rx;
-                    while let Some(text) = rx.recv().await {
-                        yield AgentEvent::Token(text);
-                    }
-                    yield AgentEvent::Done(ProviderUsageInfo {
-                        model: Some(adapter.label.clone()),
-                        tokens_in: 0,
-                        tokens_out: 0,
-                    });
-                    let buf = raw_buf.lock().await.clone();
-                    *raw_store.lock().await = Some(buf);
-                }
+            let (mut cfg, mut adapter) = match load_pty_session_state(&store, &friend_id, &fallback_adapter).await {
+                Ok(v) => v,
                 Err(e) => {
                     yield AgentEvent::Error(e.to_string());
+                    return;
                 }
+            };
+
+            let resume = pty_cli_session_is_resume(&cfg) && adapter.label == "codex-exec";
+            let composed_prompt = if resume {
+                prompt.clone()
+            } else {
+                let history_excerpt = render_history(&ctx, &friend_id);
+                if history_excerpt.is_empty() {
+                    prompt.clone()
+                } else {
+                    format!("{history_excerpt}\n\n[最新消息]\n{prompt}")
+                }
+            };
+
+            let raw_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+            let mut retried_fresh = false;
+
+            loop {
+                let raw_for_save = raw_buf.clone();
+                match run_oneshot(adapter.clone(), composed_prompt.clone(), raw_for_save).await {
+                    Ok(stream_rx) => {
+                        let mut rx = stream_rx;
+                        while let Some(chunk) = rx.recv().await {
+                            match chunk {
+                                PtyStreamChunk::CliDelta(d) => yield AgentEvent::CliDelta(d),
+                                PtyStreamChunk::Text(t) => yield AgentEvent::Token(t),
+                            }
+                        }
+                        yield AgentEvent::Done(ProviderUsageInfo {
+                            model: Some(adapter.label.clone()),
+                            tokens_in: 0,
+                            tokens_out: 0,
+                        });
+                    }
+                    Err(e) => {
+                        yield AgentEvent::Error(e.to_string());
+                        break;
+                    }
+                }
+
+                let buf = raw_buf.lock().await.clone();
+                *raw_store.lock().await = Some(buf.clone());
+
+                if resume
+                    && cfg
+                        .cli_thread_id
+                        .as_ref()
+                        .is_some_and(|s| !s.trim().is_empty())
+                    && codex_resume_likely_invalid(&buf)
+                    && !retried_fresh
+                {
+                    retried_fresh = true;
+                    let _ = store.patch_friend_cli_thread_id(&friend_id, None).await;
+                    cfg.cli_thread_id = None;
+                    adapter.args = codex_exec_args(None);
+                    apply_cli_session_adapter(&mut adapter, &cfg);
+                    raw_buf.lock().await.clear();
+                    continue;
+                }
+
+                if resume {
+                    if let Some(tid) = worker_bee_cli::parse_codex_thread_id_from_jsonl(&buf) {
+                        if cfg.cli_thread_id.as_deref() != Some(tid.as_str()) {
+                            let _ = store
+                                .patch_friend_cli_thread_id(&friend_id, Some(tid.clone()))
+                                .await;
+                            cfg.cli_thread_id = Some(tid);
+                        }
+                    }
+                }
+                break;
             }
         };
 
@@ -277,6 +337,47 @@ impl Agent for PtyAgent {
             .evaluate_member(settings, &self.friend, None, &ctx.history, msg)
             .await)
     }
+}
+
+async fn load_pty_session_state(
+    store: &SqliteStore,
+    friend_id: &str,
+    fallback_adapter: &PtyAdapter,
+) -> Result<(PtyBackendConfig, PtyAdapter)> {
+    let friend = store
+        .get_friend(friend_id)
+        .await?
+        .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
+    let cfg: PtyBackendConfig = serde_json::from_value(friend.backend_config.clone())
+        .map_err(|e| Error::Config(format!("invalid pty backend_config: {e}")))?;
+    let mut adapter =
+        PtyAdapter::from_config_for_friend(&cfg, friend_id).unwrap_or_else(|_| fallback_adapter.clone());
+    apply_cli_session_adapter(&mut adapter, &cfg);
+    Ok((cfg, adapter))
+}
+
+fn apply_cli_session_adapter(adapter: &mut PtyAdapter, cfg: &PtyBackendConfig) {
+    if adapter.label != "codex-exec" || !pty_cli_session_is_resume(cfg) {
+        return;
+    }
+    let tid = cfg
+        .cli_thread_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty());
+    adapter.args = codex_exec_args(tid);
+}
+
+/// Codex `exec resume` 失败时（会话 id 失效等）回退为全新 `exec`。
+fn codex_resume_likely_invalid(buf: &[u8]) -> bool {
+    let lower = String::from_utf8_lossy(buf).to_lowercase();
+    if lower.contains("turn.failed") {
+        return true;
+    }
+    (lower.contains("session") || lower.contains("thread"))
+        && (lower.contains("not found")
+            || lower.contains("unknown")
+            || lower.contains("invalid")
+            || lower.contains("no such"))
 }
 
 fn render_history(ctx: &ChatContext, self_id: &str) -> String {
@@ -295,13 +396,19 @@ fn render_history(ctx: &ChatContext, self_id: &str) -> String {
     out.trim_end().to_string()
 }
 
+#[derive(Debug, Clone)]
+enum PtyStreamChunk {
+    CliDelta(worker_bee_cli::CliBlockDelta),
+    Text(String),
+}
+
 async fn run_oneshot(
     adapter: PtyAdapter,
     prompt: String,
     raw_buf: Arc<Mutex<Vec<u8>>>,
-) -> Result<tokio::sync::mpsc::Receiver<String>> {
+) -> Result<tokio::sync::mpsc::Receiver<PtyStreamChunk>> {
     use tokio::sync::mpsc;
-    let (tx, rx) = mpsc::channel::<String>(64);
+    let (tx, rx) = mpsc::channel::<PtyStreamChunk>(64);
 
     let mut cmd = Command::new(&adapter.cmd);
     let mut args = adapter.args.clone();
@@ -366,7 +473,7 @@ async fn run_oneshot(
         let mut accumulated: Vec<u8> = Vec::new();
         let mut killed = false;
         let mut line_buf = String::new();
-        let mut codex_exec_parser = CodexExecJsonlParser::default();
+        let mut codex_block_parser = worker_bee_cli::CodexExecJsonlBlockParser::default();
 
         loop {
             tokio::select! {
@@ -383,15 +490,21 @@ async fn run_oneshot(
                                     let line: String = line_buf.drain(..=pos).collect();
                                     let line = line.trim();
                                     if !line.is_empty() {
-                                        if let Some(delta) = codex_exec_parser.push_line(line) {
-                                            if !delta.is_empty() {
-                                                let _ = tx.send(delta).await;
+                                        for delta in codex_block_parser.push_line(line) {
+                                            for part in worker_bee_cli::stream_split_cli_delta(
+                                                delta,
+                                                cli_stream_chunk_chars(),
+                                            ) {
+                                                let _ = tx
+                                                    .send(PtyStreamChunk::CliDelta(part))
+                                                    .await;
+                                                tokio::task::yield_now().await;
                                             }
                                         }
                                     }
                                 }
                             } else if !chunk.is_empty() {
-                                let _ = tx.send(chunk).await;
+                                let _ = tx.send(PtyStreamChunk::Text(chunk)).await;
                             }
                             deadline = tokio::time::Instant::now() + timeout;
                         }
@@ -408,9 +521,11 @@ async fn run_oneshot(
         }
 
         if codex_exec_jsonl && !line_buf.trim().is_empty() {
-            if let Some(delta) = codex_exec_parser.push_line(line_buf.trim()) {
-                if !delta.is_empty() {
-                    let _ = tx.send(delta).await;
+            for delta in codex_block_parser.push_line(line_buf.trim()) {
+                for part in worker_bee_cli::stream_split_cli_delta(delta, cli_stream_chunk_chars())
+                {
+                    let _ = tx.send(PtyStreamChunk::CliDelta(part)).await;
+                    tokio::task::yield_now().await;
                 }
             }
         }
@@ -427,16 +542,16 @@ async fn run_oneshot(
                     // JSON 模式下 stderr 多为 banner / 非致命提示，不打进聊天气泡。
                     if is_codex_exec_fatal_stderr(trimmed) {
                         let _ = tx
-                            .send(format!(
+                            .send(PtyStreamChunk::Text(format!(
                                 "\n（Codex CLI 报错：{}）",
                                 trimmed.lines().next().unwrap_or(trimmed)
-                            ))
+                            )))
                             .await;
                     } else {
                         tracing::debug!(stderr = %trimmed, "codex-exec stderr (suppressed from chat)");
                     }
                 } else if !trimmed.is_empty() {
-                    let _ = tx.send(format!("\n[stderr] {s}")).await;
+                    let _ = tx.send(PtyStreamChunk::Text(format!("\n[stderr] {s}"))).await;
                 }
             }
         }
@@ -450,6 +565,14 @@ async fn run_oneshot(
     Ok(rx)
 }
 
+fn cli_stream_chunk_chars() -> usize {
+    std::env::var("HONEYCOMB_CLI_STREAM_CHUNK")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(32)
+        .clamp(8, 256)
+}
+
 fn decode_chunk(bytes: &[u8], strip: bool) -> String {
     let cleaned = if strip {
         strip_ansi_escapes::strip(bytes)
@@ -457,38 +580,6 @@ fn decode_chunk(bytes: &[u8], strip: bool) -> String {
         bytes.to_vec()
     };
     String::from_utf8_lossy(&cleaned).to_string()
-}
-
-#[derive(Default)]
-struct CodexExecJsonlParser {
-    emitted: String,
-}
-
-impl CodexExecJsonlParser {
-    fn push_line(&mut self, line: &str) -> Option<String> {
-        let v: serde_json::Value = serde_json::from_str(line).ok()?;
-        if v.get("type")?.as_str()? != "item.completed" {
-            return None;
-        }
-        let item = v.get("item")?;
-        if item.get("type")?.as_str()? != "agent_message" {
-            return None;
-        }
-        let text = item.get("text")?.as_str()?.to_string();
-        if text.is_empty() {
-            return None;
-        }
-        if text.starts_with(&self.emitted) {
-            let delta = text[self.emitted.len()..].to_string();
-            if delta.is_empty() {
-                return None;
-            }
-            self.emitted = text;
-            return Some(delta);
-        }
-        self.emitted = text.clone();
-        Some(text)
-    }
 }
 
 /// 工作目录优先级：好友 `cwd` > `HONEYCOMB_CLI_CWD` > 自动 `{HONEYCOMB_DATA}/cli-workspaces/{friend_id}`（建目录 + 可选 git init）。
@@ -538,16 +629,4 @@ fn is_codex_exec_fatal_stderr(s: &str) -> bool {
         || s.contains("failed")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn codex_exec_jsonl_extracts_agent_message() {
-        let line = r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"你好"}}"#;
-        let mut p = CodexExecJsonlParser::default();
-        assert_eq!(p.push_line(line).as_deref(), Some("你好"));
-        assert_eq!(p.push_line(line), None);
-    }
-}
 

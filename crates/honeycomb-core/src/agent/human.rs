@@ -44,6 +44,7 @@ impl Agent for HumanAgent {
             confidence: 0.0,
             reason: Some("真人成员不参与 judge".into()),
             suggested_delay_ms: 0,
+            source: None,
         })
     }
 }

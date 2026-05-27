@@ -35,7 +35,7 @@ impl LlmJudgePort for ProviderLlmJudgePort {
             ],
             temperature: Some(0.3),
             top_p: None,
-            max_tokens: Some(200),
+            max_tokens: input.max_tokens.or(Some(200)),
             stream: false,
             response_format_json: true,
         };

@@ -92,37 +92,11 @@ pub(crate) async fn run_cli_oneshot_collect(
     let _ = child.wait().await;
 
     if adapter.uses_codex_exec_jsonl() {
-        return Ok(parse_codex_exec_jsonl_stdout(&buf));
+        let blocks = worker_bee_cli::parse_codex_exec_jsonl_to_blocks(&buf);
+        if blocks.is_empty() {
+            return Ok(String::from_utf8_lossy(&buf).to_string());
+        }
+        return Ok(worker_bee_cli::cli_blocks_to_plain(&blocks));
     }
     Ok(String::from_utf8_lossy(&buf).to_string())
-}
-
-fn parse_codex_exec_jsonl_stdout(buf: &[u8]) -> String {
-    let s = String::from_utf8_lossy(buf);
-    let mut last = String::new();
-    for line in s.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if v.get("type").and_then(|t| t.as_str()) != Some("item.completed") {
-                continue;
-            }
-            let item = match v.get("item") {
-                Some(i) => i,
-                None => continue,
-            };
-            if item.get("type").and_then(|t| t.as_str()) != Some("agent_message") {
-                continue;
-            }
-            if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                last = text.to_string();
-            }
-        }
-    }
-    if last.is_empty() {
-        last = s.to_string();
-    }
-    last
 }

@@ -194,4 +194,26 @@ impl SqliteStore {
             .await?;
         Ok(())
     }
+
+    /// 更新 Pty 好友 `backend_config.cli_thread_id`（Codex `exec resume`）。
+    pub async fn patch_friend_cli_thread_id(
+        &self,
+        friend_id: &str,
+        thread_id: Option<String>,
+    ) -> Result<()> {
+        let friend = self
+            .get_friend(friend_id)
+            .await?
+            .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
+        let mut cfg: PtyBackendConfig =
+            serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
+        cfg.cli_thread_id = thread_id.filter(|s| !s.trim().is_empty());
+        let backend_config = serde_json::to_string(&serde_json::to_value(&cfg)?)?;
+        sqlx::query("UPDATE friends SET backend_config = ? WHERE id = ?")
+            .bind(&backend_config)
+            .bind(friend_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
 }

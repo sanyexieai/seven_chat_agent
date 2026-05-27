@@ -98,6 +98,12 @@ pub struct PtyBackendConfig {
     #[serde(default)]
     pub memory_top_k: Option<usize>,
     pub skills_dir: Option<String>,
+    /// 外部 CLI 会话：`oneshot`（默认，每轮独立 exec）或 `resume`（Codex `exec resume` 续接）。
+    #[serde(default)]
+    pub cli_session_mode: Option<String>,
+    /// `cli_session_mode=resume` 时由运行时写入的 Codex `thread_id`（来自 JSONL `thread.started`）。
+    #[serde(default)]
+    pub cli_thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -267,6 +273,8 @@ impl MessageStatus {
     }
 }
 
+pub use worker_bee_cli::{CliBlock, CliBlockDelta};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -277,6 +285,9 @@ pub struct Message {
     pub sender_id: String,
     pub sender_name: String,
     pub content: String,
+    /// Codex / 工蜂 CLI 的结构化块；`content` 为其纯文本降级副本，供搜索与旧客户端。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_blocks: Option<Vec<CliBlock>>,
     pub mentions: Vec<String>,
     pub status: MessageStatus,
     pub seen_by: Vec<String>,
@@ -286,12 +297,58 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
 }
 
+/// 任务型群聊编排：竞选负责人 → 负责人执行（替代「接一句闲聊」）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupTaskFlowSettings {
+    /// 开启后，用户消息走任务流（竞选 + 选举 + 负责人执行），不再全员 judge 接话。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 是否先让每位 Agent 竞选陈述优势（再选举）。
+    #[serde(default = "default_true")]
+    pub campaign_enabled: bool,
+    /// 选举完成后仅负责人对用户任务做执行型回复（本轮不再 agent 接龙）。
+    #[serde(default = "default_true")]
+    pub leader_only_execute: bool,
+    /// 负责人先发布结构化计划，再进入执行（不跑工具）。
+    #[serde(default = "default_true")]
+    pub plan_enabled: bool,
+    /// 计划发布后，其他成员可简短评议（各 1 条，不抢执行）。
+    #[serde(default = "default_true")]
+    pub plan_review_enabled: bool,
+    /// 竞选后成员互投（背书）负责人，与 LLM 选举合并计票。
+    #[serde(default = "default_true")]
+    pub peer_vote_enabled: bool,
+    /// 用户 @ 成员或消息 mentions 含成员 id/名时，跳过竞选直接任命。
+    #[serde(default = "default_true")]
+    pub appoint_by_mention_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for GroupTaskFlowSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            campaign_enabled: true,
+            leader_only_execute: true,
+            plan_enabled: true,
+            plan_review_enabled: true,
+            peer_vote_enabled: true,
+            appoint_by_mention_enabled: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupSettings {
     /// 兼容旧数据；与 `judge.threshold` 同步。
     pub judge_threshold: f32,
     #[serde(default)]
     pub judge: honeycomb_judge::GroupJudgeSettings,
+    #[serde(default)]
+    pub task_flow: GroupTaskFlowSettings,
     pub max_replies_per_turn: u32,
     pub per_agent_max_per_turn: u32,
     pub cooldown_ms: u64,
@@ -307,6 +364,7 @@ impl Default for GroupSettings {
         Self {
             judge_threshold: judge.threshold,
             judge,
+            task_flow: GroupTaskFlowSettings::default(),
             max_replies_per_turn: 8,
             per_agent_max_per_turn: 2,
             cooldown_ms: 4000,

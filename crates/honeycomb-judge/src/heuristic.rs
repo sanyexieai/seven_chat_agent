@@ -1,5 +1,5 @@
 use crate::context::JudgeRequest;
-use crate::types::{Judgment, TriggerSenderKind};
+use crate::types::{JudgeSource, Judgment, TriggerSenderKind};
 
 pub fn evaluate(req: &JudgeRequest) -> Judgment {
     let h = &req.group_judge.heuristic;
@@ -13,6 +13,7 @@ pub fn evaluate(req: &JudgeRequest) -> Judgment {
             confidence: h.mention_confidence,
             reason: Some("被 @ 提及".into()),
             suggested_delay_ms: h.mention_delay_ms,
+            source: Some(JudgeSource::Heuristic),
         };
     }
     match req.trigger_sender {
@@ -21,12 +22,14 @@ pub fn evaluate(req: &JudgeRequest) -> Judgment {
             confidence: h.user_confidence,
             reason: Some("群聊用户消息（启发式 judge）".into()),
             suggested_delay_ms: h.user_delay_ms,
+            source: Some(JudgeSource::Heuristic),
         },
         TriggerSenderKind::Friend => Judgment {
             should_reply: true,
             confidence: h.friend_confidence,
             reason: Some("其他成员发言，可接话".into()),
             suggested_delay_ms: h.friend_delay_ms,
+            source: Some(JudgeSource::Heuristic),
         },
         TriggerSenderKind::System => Judgment::default(),
     }

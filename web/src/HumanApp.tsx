@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectWs } from "./api/client";
+import { applyCliBlockDelta, cliBlocksToPlain } from "./cliBlocks";
 import type { Friend, Message } from "./types";
 import { Avatar } from "./components/Avatar";
 import { MessageBubble } from "./components/MessageBubble";
@@ -48,6 +49,22 @@ export function HumanApp({ code }: Props) {
               ),
             );
           }
+          break;
+        case "message_cli_delta":
+          setMessages((ms) =>
+            ms.map((m) => {
+              if (m.id !== ev.message_id) return m;
+              const content_blocks = applyCliBlockDelta(
+                m.content_blocks ?? [],
+                ev.delta,
+              );
+              return {
+                ...m,
+                content_blocks,
+                content: cliBlocksToPlain(content_blocks),
+              };
+            }),
+          );
           break;
         case "message_done":
           setMessages((ms) =>

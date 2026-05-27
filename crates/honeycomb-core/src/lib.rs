@@ -5,6 +5,7 @@ pub mod runtime;
 pub mod config;
 pub mod dispatcher;
 pub mod domain;
+pub mod group_validate;
 pub mod error;
 pub mod judge;
 pub mod provider;

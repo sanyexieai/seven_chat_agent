@@ -98,7 +98,9 @@ export const api = {
     jsonFetch<{
       group: GroupBundle["group"];
       member_ids: string[];
+      members: GroupMemberConfig[];
       conversation_id: string;
+      task_flow_readiness?: GroupBundle["task_flow_readiness"];
     }>(`/groups/${id}`),
   upsertGroup: (body: {
     id?: string;

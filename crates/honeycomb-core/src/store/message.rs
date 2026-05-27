@@ -1,7 +1,7 @@
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::domain::{Message, MessageStatus, SenderKind};
+use crate::domain::{CliBlock, Message, MessageStatus, SenderKind};
 use crate::store::{parse_dt, SqliteStore};
 use crate::{Error, Result};
 
@@ -15,6 +15,7 @@ struct MessageRow {
     sender_id: String,
     sender_name: String,
     content: String,
+    content_blocks: Option<String>,
     mentions: String,
     status: String,
     seen_by: String,
@@ -41,6 +42,10 @@ impl MessageRow {
             sender_id: self.sender_id,
             sender_name: self.sender_name,
             content: self.content,
+            content_blocks: self
+                .content_blocks
+                .as_deref()
+                .and_then(worker_bee_cli::parse_cli_blocks_json),
             mentions,
             status,
             seen_by,
@@ -126,11 +131,17 @@ impl SqliteStore {
         model_used: Option<&str>,
         tokens_in: Option<i64>,
         tokens_out: Option<i64>,
+        content_blocks: Option<&[CliBlock]>,
     ) -> Result<()> {
+        let blocks_json = content_blocks
+            .filter(|b| !b.is_empty())
+            .map(serde_json::to_string)
+            .transpose()?;
         sqlx::query(
-            "UPDATE messages SET content = ?, status = ?, model_used = ?, tokens_in = ?, tokens_out = ? WHERE id = ?",
+            "UPDATE messages SET content = ?, content_blocks = ?, status = ?, model_used = ?, tokens_in = ?, tokens_out = ? WHERE id = ?",
         )
         .bind(content)
+        .bind(blocks_json)
         .bind(status.as_str())
         .bind(model_used)
         .bind(tokens_in)
@@ -143,7 +154,7 @@ impl SqliteStore {
 
     pub async fn get_message(&self, id: &str) -> Result<Option<Message>> {
         let row = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE id = ?",
+            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(self.pool())
@@ -157,7 +168,7 @@ impl SqliteStore {
         limit: i64,
     ) -> Result<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
+            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
         )
         .bind(conversation_id)
         .bind(limit)
@@ -172,7 +183,7 @@ impl SqliteStore {
         limit: i64,
     ) -> Result<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT * FROM (SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC",
+            "SELECT * FROM (SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC",
         )
         .bind(conversation_id)
         .bind(limit)
@@ -183,7 +194,7 @@ impl SqliteStore {
 
     pub async fn search_messages(&self, query: &str, limit: i64) -> Result<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT m.id, m.conversation_id, m.turn_id, m.parent_id, m.sender_kind, m.sender_id, m.sender_name, m.content, m.mentions, m.status, m.seen_by, m.model_used, m.tokens_in, m.tokens_out, m.created_at FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ? ORDER BY m.created_at DESC LIMIT ?",
+            "SELECT m.id, m.conversation_id, m.turn_id, m.parent_id, m.sender_kind, m.sender_id, m.sender_name, m.content, m.content_blocks, m.mentions, m.status, m.seen_by, m.model_used, m.tokens_in, m.tokens_out, m.created_at FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ? ORDER BY m.created_at DESC LIMIT ?",
         )
         .bind(query)
         .bind(limit)

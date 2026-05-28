@@ -222,7 +222,11 @@ export function ChatWindow() {
           </div>
         )}
         {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <MessageBubble
+            key={m.id}
+            message={m}
+            conversationId={conversation?.id}
+          />
         ))}
         <div ref={endRef} />
       </div>

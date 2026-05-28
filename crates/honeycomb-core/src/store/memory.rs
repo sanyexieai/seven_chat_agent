@@ -93,6 +93,26 @@ impl SqliteStore {
         Ok(row.map(Memory::from))
     }
 
+    pub async fn list_memories_by_category(
+        &self,
+        owner: &str,
+        category: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<Memory>> {
+        let all = self.list_memories(owner, None, limit).await?;
+        Ok(match category {
+            Some("memo") => all
+                .into_iter()
+                .filter(|m| crate::assistant_accumulation::is_memo_kind(&m.kind))
+                .collect(),
+            Some("knowledge") => all
+                .into_iter()
+                .filter(|m| crate::assistant_accumulation::is_knowledge_kind(&m.kind))
+                .collect(),
+            _ => all,
+        })
+    }
+
     pub async fn list_memories(
         &self,
         owner: &str,

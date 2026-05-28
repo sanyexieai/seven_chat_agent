@@ -138,25 +138,123 @@ impl MemoryService {
         turn_id: &str,
         prompt: &str,
         response: &str,
+        tokens_in: i64,
+        tokens_out: i64,
         provider_id: &str,
         model: &str,
         api_key_id: Option<&str>,
         providers: &crate::provider::ProviderRegistry,
     ) {
-        if let Err(e) = self
-            .extract_memories(friend_id, prompt, response, provider_id, model, api_key_id, providers)
+        let mut global = self
+            .store
+            .get_assistant_global_settings()
             .await
-        {
-            tracing::warn!(err = %e, "runtime.extract_memories failed");
-        }
-        if let Err(e) = self
-            .reflect(friend_id, turn_id, prompt, response, provider_id, model, api_key_id, providers)
+            .unwrap_or_default();
+        let is_builtin = self
+            .store
+            .builtin_assistant_id()
             .await
-        {
-            tracing::warn!(err = %e, "runtime.reflect failed");
+            .ok()
+            .flatten()
+            .is_some_and(|id| id == friend_id);
+        let used_tokens = (tokens_in.max(0) + tokens_out.max(0)) as u64;
+        if let Ok(updated) = self.store.consume_assistant_tokens(used_tokens).await {
+            global = updated;
         }
-        if let Err(e) = self.store.consolidate_memories(friend_id).await {
-            tracing::warn!(err = %e, "runtime.consolidate_memories failed");
+
+        if is_builtin && global.observe_enabled {
+            let summary = format!(
+                "[协助记录]\n用户：{}\n助理：{}",
+                crate::assistant_accumulation::truncate_chars(prompt, 280),
+                crate::assistant_accumulation::truncate_chars(response, 400),
+            );
+            if let Err(e) = self
+                .store
+                .insert_memory(NewMemory {
+                    owner_friend_id: friend_id.to_string(),
+                    kind: crate::assistant_accumulation::MEMORY_KIND_MEMO.to_string(),
+                    content: summary,
+                    source_message_id: None,
+                    weight: 0.5,
+                    pinned: false,
+                })
+                .await
+            {
+                tracing::warn!(err = %e, "runtime.session_memo failed");
+            }
+        }
+        let budget_ok = self.store.assistant_budget_available(&global);
+        if !budget_ok {
+            tracing::info!(
+                used = global.monthly_tokens_used,
+                budget = global.monthly_token_budget,
+                "assistant monthly token budget exhausted, skip proactive work"
+            );
+            return;
+        }
+
+        if global.auto_extract_memories {
+            if let Err(e) = self
+                .extract_memories(
+                    friend_id,
+                    prompt,
+                    response,
+                    provider_id,
+                    model,
+                    api_key_id,
+                    providers,
+                )
+                .await
+            {
+                tracing::warn!(err = %e, "runtime.extract_memories failed");
+            }
+        }
+        if global.evolution_enabled {
+            if let Err(e) = self
+                .reflect(
+                    friend_id,
+                    turn_id,
+                    prompt,
+                    response,
+                    provider_id,
+                    model,
+                    api_key_id,
+                    providers,
+                )
+                .await
+            {
+                tracing::warn!(err = %e, "runtime.reflect failed");
+            }
+        }
+        if global.auto_consolidate {
+            if is_builtin {
+                let _ = self
+                    .store
+                    .touch_observe_consolidate(friend_id, &global)
+                    .await;
+            } else if let Err(e) = self.store.consolidate_memories(friend_id).await {
+                tracing::warn!(err = %e, "runtime.consolidate_memories failed");
+            }
+        }
+
+        if is_builtin {
+            let _ = self
+                .store
+                .create_assistant_todo(
+                    friend_id,
+                    "整理本轮知识沉淀",
+                    Some("检查本轮的备忘录/知识/工具是否已更新"),
+                    None,
+                    None,
+                    2,
+                    Some(turn_id),
+                )
+                .await;
+            if let Ok(Some(dir)) = self.store.builtin_assistant_skills_dir().await {
+                if let Err(e) = self.store.sync_skills_from_disk(friend_id, &dir).await {
+                    tracing::debug!(err = %e, "runtime.sync_skills_from_disk failed");
+                }
+            }
         }
     }
 
@@ -180,7 +278,7 @@ impl MemoryService {
             model,
             vec![
                 ChatMessage::system(
-                    "从对话中抽取稳定事实。只输出 JSON 数组，每项含 kind(fact|preference|project|relation|lesson), content, weight(0~1)。",
+                    "从助理帮助用户的对话中抽取可复用知识。只输出 JSON 数组，每项 kind 固定为 knowledge，含 content、weight(0~1)。",
                 ),
                 ChatMessage::user(format!(
                     "用户：\n{prompt}\n\n助理：\n{response}\n\n最多 4 条。"
@@ -204,11 +302,8 @@ impl MemoryService {
         };
         if let Some(arr) = parsed.as_array() {
             for item in arr {
-                let kind = item
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("fact")
-                    .to_string();
+                let kind =
+                    crate::assistant_accumulation::MEMORY_KIND_KNOWLEDGE.to_string();
                 let content = item
                     .get("content")
                     .and_then(|v| v.as_str())
@@ -298,6 +393,23 @@ impl MemoryService {
         self.store
             .insert_reflection(friend_id, turn_id, score, &summary, &lessons)
             .await?;
+        for lesson in lessons {
+            let lesson = lesson.trim();
+            if lesson.is_empty() {
+                continue;
+            }
+            let _ = self
+                .store
+                .insert_memory(NewMemory {
+                    owner_friend_id: friend_id.to_string(),
+                    kind: crate::assistant_accumulation::MEMORY_KIND_KNOWLEDGE.to_string(),
+                    content: lesson.to_string(),
+                    source_message_id: None,
+                    weight: 0.65,
+                    pinned: false,
+                })
+                .await;
+        }
         Ok(())
     }
 }

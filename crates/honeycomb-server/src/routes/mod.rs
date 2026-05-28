@@ -3,13 +3,17 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use honeycomb_core::domain::{Provider, ProviderCapabilities, ProviderPrice};
+use honeycomb_core::domain::{
+    AssistantGlobalSettings, AssistantTodoStatus, Provider, ProviderCapabilities, ProviderPrice,
+};
+use honeycomb_core::assistant_intent::{AssistantIntent, parse_quick_intent};
+use honeycomb_core::assistant_task_planner::plan_from_intent;
 use honeycomb_core::store::friend::UpsertFriend;
 use honeycomb_core::group_validate::{
-    member_ids_from_upsert, validate_group_task_flow_readiness,
+    expert_member_ids_from_upsert, validate_group_task_flow_readiness,
 };
 use honeycomb_core::store::group::UpsertGroup;
-use honeycomb_core::Honeycomb;
+use honeycomb_core::{AssistantQueueTask, Honeycomb};
 use honeycomb_core::store::memory::NewMemory;
 use honeycomb_core::store::provider::UpsertProviderKey;
 use serde::Deserialize;
@@ -31,6 +35,15 @@ pub fn api_router() -> Router<AppState> {
         .route("/friends/:id/cli_auth/logout", post(friend_cli_logout))
         .route("/groups", get(list_groups).post(upsert_group))
         .route("/groups/:id", get(get_group))
+        .route("/groups/:id/im/inbound", post(group_im_inbound))
+        .route(
+            "/assistant-policy-templates",
+            get(list_assistant_policy_templates).post(upsert_assistant_policy_template),
+        )
+        .route(
+            "/assistant-policy-templates/:id",
+            delete(delete_assistant_policy_template),
+        )
         .route("/providers", get(list_providers).post(upsert_provider))
         .route("/providers/:id", delete(delete_provider))
         .route("/provider_keys", get(list_provider_keys).post(upsert_provider_key))
@@ -43,10 +56,34 @@ pub fn api_router() -> Router<AppState> {
             get(open_dm).post(send_message),
         )
         .route("/conversations/:id/send", post(send_to_conversation))
+        .route(
+            "/conversations/:conv_id/messages/:msg_id/delegate",
+            post(resolve_delegate_message),
+        )
+        .route(
+            "/assistant/global-settings",
+            get(get_assistant_global_settings).post(upsert_assistant_global_settings),
+        )
+        .route(
+            "/assistant/global-settings/consolidate",
+            post(consolidate_assistant_global_memories),
+        )
         .route("/assistant/:friend_id/memories", get(list_memories).post(add_memory))
         .route("/assistant/:friend_id/memories/:memory_id", delete(delete_memory))
         .route("/assistant/:friend_id/skills", get(list_skills))
         .route("/assistant/:friend_id/reflections", get(list_reflections))
+        .route(
+            "/assistant/:friend_id/todos",
+            get(list_assistant_todos).post(create_assistant_todo),
+        )
+        .route(
+            "/assistant/:friend_id/todos/:todo_id",
+            post(update_assistant_todo),
+        )
+        .route("/assistant/:friend_id/todos/run", post(run_assistant_todos_once))
+        .route("/assistant/queue/jobs", get(list_assistant_queue_jobs))
+        .route("/assistant/queue/stats", get(get_assistant_queue_stats))
+        .route("/assistant/queue/replay-failed", post(replay_failed_assistant_queue_jobs))
         .route("/invites", get(list_all_invites).post(create_invite))
         .route("/invites/:id", delete(delete_invite))
         .route("/human/:code/state", get(human_state))
@@ -158,12 +195,12 @@ async fn upsert_group(
     Json(mut req): Json<UpsertGroup>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     req.settings.sync_judge_threshold_fields();
-    let member_ids = member_ids_from_upsert(&req.members, &req.member_ids);
+    let expert_ids = expert_member_ids_from_upsert(&req.members, &req.member_ids);
     let readiness = validate_group_task_flow_readiness(
         &s.core.store,
         &s.core.providers,
         &req.settings,
-        &member_ids,
+        &expert_ids,
     )
     .await?;
     if !readiness.errors.is_empty() {
@@ -182,19 +219,84 @@ async fn group_bundle_json(
 ) -> Result<serde_json::Value, ApiError> {
     let members = core.store.list_group_member_configs(&g.id).await?;
     let member_ids: Vec<String> = members.iter().map(|m| m.friend_id.clone()).collect();
+    let expert_member_ids: Vec<String> = core.store.list_group_expert_friend_ids(&g.id).await?;
+    let assistant_member_id = core.store.group_assistant_member_id(&g.id).await?;
     let task_flow_readiness = validate_group_task_flow_readiness(
         &core.store,
         &core.providers,
         &g.settings,
-        &member_ids,
+        &expert_member_ids,
     )
     .await?;
+    let assistant_resolved = core
+        .store
+        .resolve_group_assistant_settings(&g.settings.assistant)
+        .await?;
     Ok(serde_json::json!({
         "group": g,
         "member_ids": member_ids,
+        "expert_member_ids": expert_member_ids,
+        "assistant_member_id": assistant_member_id,
+        "assistant_resolved": assistant_resolved,
         "members": members,
         "task_flow_readiness": task_flow_readiness,
     }))
+}
+
+async fn list_assistant_policy_templates(
+    State(s): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let templates = s.core.store.list_assistant_policy_templates().await?;
+    Ok(Json(serde_json::json!({ "templates": templates })))
+}
+
+async fn upsert_assistant_policy_template(
+    State(s): State<AppState>,
+    Json(req): Json<honeycomb_core::store::assistant_policy::UpsertAssistantPolicyTemplate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let t = s.core.store.upsert_assistant_policy_template(req).await?;
+    Ok(Json(serde_json::json!({ "template": t })))
+}
+
+async fn delete_assistant_policy_template(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    s.core.store.delete_assistant_policy_template(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupImInboundBody {
+    action: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    message_id: Option<String>,
+}
+
+async fn group_im_inbound(
+    State(s): State<AppState>,
+    Path(group_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<GroupImInboundBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let secret = headers
+        .get("X-Honeycomb-Im-Secret")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let message = s
+        .core
+        .dispatcher
+        .handle_group_im_inbound(
+            &group_id,
+            secret,
+            &body.action,
+            body.content,
+            body.message_id,
+        )
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true, "message": message })))
 }
 
 async fn list_providers(State(s): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
@@ -369,9 +471,54 @@ async fn send_to_conversation(
 }
 
 #[derive(Debug, Deserialize)]
+struct ResolveDelegateBody {
+    approve: bool,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+async fn resolve_delegate_message(
+    State(s): State<AppState>,
+    Path((conv_id, msg_id)): Path<(String, String)>,
+    Json(body): Json<ResolveDelegateBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let message = s
+        .core
+        .dispatcher
+        .resolve_group_delegate(&conv_id, &msg_id, body.approve, body.content)
+        .await?;
+    Ok(Json(serde_json::json!({ "message": message })))
+}
+
+#[derive(Debug, Deserialize)]
 struct MemoryQuery {
     kind: Option<String>,
+    /// `memo` | `knowledge` — 助理面板分区
+    category: Option<String>,
     limit: Option<i64>,
+}
+
+async fn get_assistant_global_settings(
+    State(s): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let settings = s.core.store.get_assistant_global_settings().await?;
+    Ok(Json(serde_json::json!({ "settings": settings })))
+}
+
+async fn upsert_assistant_global_settings(
+    State(s): State<AppState>,
+    Json(body): Json<AssistantGlobalSettings>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let settings = s.core.store.upsert_assistant_global_settings(body).await?;
+    Ok(Json(serde_json::json!({ "settings": settings })))
+}
+
+async fn consolidate_assistant_global_memories(
+    State(s): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    s.core.store.consolidate_assistant_memories().await?;
+    let settings = s.core.store.get_assistant_global_settings().await?;
+    Ok(Json(serde_json::json!({ "ok": true, "settings": settings })))
 }
 
 async fn list_memories(
@@ -379,11 +526,18 @@ async fn list_memories(
     Path(friend_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<MemoryQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let memories = s
-        .core
-        .store
-        .list_memories(&friend_id, q.kind.as_deref(), q.limit.unwrap_or(100))
-        .await?;
+    let limit = q.limit.unwrap_or(100);
+    let memories = if q.category.is_some() {
+        s.core
+            .store
+            .list_memories_by_category(&friend_id, q.category.as_deref(), limit)
+            .await?
+    } else {
+        s.core
+            .store
+            .list_memories(&friend_id, q.kind.as_deref(), limit)
+            .await?
+    };
     Ok(Json(serde_json::json!({ "memories": memories })))
 }
 
@@ -409,7 +563,24 @@ async fn list_skills(
     State(s): State<AppState>,
     Path(friend_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let skills = s.core.store.list_skills(&friend_id).await?;
+    let skills = if let Ok(friend) = s.core.store.get_friend(&friend_id).await {
+        if let Some(friend) = friend {
+            let cfg: honeycomb_core::domain::PtyBackendConfig =
+                serde_json::from_value(friend.backend_config).unwrap_or_default();
+            let dir = cfg
+                .skills_dir
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "data/skills".to_string());
+            s.core
+                .store
+                .sync_skills_from_disk(&friend_id, &dir)
+                .await?
+        } else {
+            s.core.store.list_skills(&friend_id).await?
+        }
+    } else {
+        s.core.store.list_skills(&friend_id).await?
+    };
     Ok(Json(serde_json::json!({ "skills": skills })))
 }
 
@@ -419,6 +590,176 @@ async fn list_reflections(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let reflections = s.core.store.list_reflections(&friend_id, 50).await?;
     Ok(Json(serde_json::json!({ "reflections": reflections })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AssistantTodoQuery {
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateAssistantTodoReq {
+    /// 原始自然语言输入（可选）：例如“1分钟后叫我开会”。
+    #[serde(default)]
+    raw_text: Option<String>,
+    title: String,
+    #[serde(default)]
+    detail: Option<String>,
+    #[serde(default = "default_assistant_todo_priority")]
+    priority: i64,
+    /// 创建后多少秒提醒一次（例如 60 = 1 分钟后）。
+    #[serde(default)]
+    remind_after_seconds: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateAssistantTodoReq {
+    title: String,
+    #[serde(default)]
+    detail: Option<String>,
+    priority: i64,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+fn default_assistant_todo_priority() -> i64 {
+    1
+}
+
+async fn list_assistant_todos(
+    State(s): State<AppState>,
+    Path(friend_id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<AssistantTodoQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let status = q
+        .status
+        .as_deref()
+        .map(AssistantTodoStatus::parse);
+    let todos = s
+        .core
+        .store
+        .list_assistant_todos(&friend_id, status, q.limit.unwrap_or(200))
+        .await?;
+    Ok(Json(serde_json::json!({ "todos": todos })))
+}
+
+async fn create_assistant_todo(
+    State(s): State<AppState>,
+    Path(friend_id): Path<String>,
+    Json(body): Json<CreateAssistantTodoReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let intent = if let Some(raw) = body.raw_text.as_deref().filter(|x| !x.trim().is_empty()) {
+        parse_quick_intent(raw).unwrap_or_else(|| AssistantIntent::TodoCreate {
+            title: if body.title.trim().is_empty() {
+                raw.trim().to_string()
+            } else {
+                body.title.trim().to_string()
+            },
+            detail: body.detail.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(str::to_string),
+            priority: body.priority,
+            remind_after_seconds: body.remind_after_seconds,
+        })
+    } else {
+        if body.title.trim().is_empty() {
+            return Err(ApiError::BadRequest("todo title is required".into()));
+        }
+        AssistantIntent::TodoCreate {
+            title: body.title.trim().to_string(),
+            detail: body.detail.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(str::to_string),
+            priority: body.priority,
+            remind_after_seconds: body.remind_after_seconds,
+        }
+    };
+    let plan = plan_from_intent(&friend_id, intent);
+    let todo = s
+        .core
+        .execute_assistant_task_plan(&friend_id, &plan)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("planner created no todo".into()))?;
+    Ok(Json(serde_json::json!({ "todo": todo, "intent": format!("{:?}", plan.intent) })))
+}
+
+async fn update_assistant_todo(
+    State(s): State<AppState>,
+    Path((_friend_id, todo_id)): Path<(String, String)>,
+    Json(body): Json<UpdateAssistantTodoReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.title.trim().is_empty() {
+        return Err(ApiError::BadRequest("todo title is required".into()));
+    }
+    let status = body.status.as_deref().map(AssistantTodoStatus::parse);
+    let todo = s
+        .core
+        .store
+        .update_assistant_todo(
+            &todo_id,
+            body.title.trim(),
+            body.detail.as_deref().map(str::trim).filter(|x| !x.is_empty()),
+            body.priority,
+            status,
+        )
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(serde_json::json!({ "todo": todo })))
+}
+
+async fn run_assistant_todos_once(
+    State(s): State<AppState>,
+    Path(friend_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    s.core
+        .enqueue_assistant_task(AssistantQueueTask::IdleTick)
+        .await?;
+    let todos = s
+        .core
+        .store
+        .list_assistant_todos(&friend_id, None, 200)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true, "queued": true, "todos": todos })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AssistantQueueQuery {
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn list_assistant_queue_jobs(
+    State(s): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<AssistantQueueQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let jobs = s
+        .core
+        .store
+        .list_assistant_queue_jobs(q.status.as_deref(), q.limit.unwrap_or(200))
+        .await?;
+    Ok(Json(serde_json::json!({ "jobs": jobs })))
+}
+
+async fn get_assistant_queue_stats(
+    State(s): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let stats = s.core.store.assistant_queue_stats().await?;
+    Ok(Json(serde_json::json!({ "stats": stats })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplayQueueReq {
+    #[serde(default = "default_replay_limit")]
+    limit: i64,
+}
+
+fn default_replay_limit() -> i64 {
+    100
+}
+
+async fn replay_failed_assistant_queue_jobs(
+    State(s): State<AppState>,
+    Json(body): Json<ReplayQueueReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let replayed = s.core.store.replay_failed_assistant_jobs(body.limit).await?;
+    Ok(Json(serde_json::json!({ "ok": true, "replayed": replayed })))
 }
 
 #[derive(Debug, Deserialize)]

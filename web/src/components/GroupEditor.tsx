@@ -3,6 +3,8 @@ import { api } from "../api/client";
 import { validateGroupTaskFlowReadiness } from "../groupReadiness";
 import { useChat } from "../stores/chat";
 import type {
+  AssistantPolicyTemplate,
+  GroupAssistantSettings,
   GroupJudgeSettings,
   GroupMemberConfig,
   GroupSettings,
@@ -40,10 +42,29 @@ const defaultTaskFlow = {
   appoint_by_mention_enabled: true,
 };
 
+const defaultImWriteback = {
+  enabled: false,
+  webhook_url: null as string | null,
+  inbound_secret: null as string | null,
+  notify_delegate: true,
+  notify_waiting_human: true,
+};
+
+const defaultAssistant: GroupAssistantSettings = {
+  enabled: true,
+  mode: "delegate",
+  max_autonomy: "l2",
+  reply_after_experts: true,
+  template_id: "preset-delegate",
+  autonomy_classifier: "auto",
+  im_writeback: defaultImWriteback,
+};
+
 const defaults: GroupSettings = {
   judge_threshold: defaultJudge.threshold,
   judge: defaultJudge,
   task_flow: defaultTaskFlow,
+  assistant: defaultAssistant,
   max_replies_per_turn: 8,
   per_agent_max_per_turn: 2,
   cooldown_ms: 4000,
@@ -65,6 +86,7 @@ function normalizeSettings(raw: Partial<GroupSettings>): GroupSettings {
   };
   base.judge_threshold = judge.threshold;
   base.task_flow = { ...defaultTaskFlow, ...raw.task_flow };
+  base.assistant = { ...defaultAssistant, ...raw.assistant };
   return base;
 }
 
@@ -73,13 +95,23 @@ export function GroupEditor({ groupId, onClose }: Props) {
     useChat();
   const [name, setName] = useState("");
   const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
+  const [assistantMemberId, setAssistantMemberId] = useState<string | null>(
+    null,
+  );
   /** 本群内各成员的 Judge 覆盖（key=friend_id） */
   const [memberJudges, setMemberJudges] = useState<
     Record<string, MemberJudgeOverride>
   >({});
   const [settings, setSettings] = useState<GroupSettings>(defaults);
+  const [policyTemplates, setPolicyTemplates] = useState<
+    AssistantPolicyTemplate[]
+  >([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listAssistantPolicyTemplates().then((r) => setPolicyTemplates(r.templates));
+  }, []);
   const readiness = useMemo(
     () =>
       validateGroupTaskFlowReadiness(
@@ -102,7 +134,15 @@ export function GroupEditor({ groupId, onClose }: Props) {
     }
     api.getGroup(groupId).then((bundle) => {
       setName(bundle.group.name);
-      setMemberIds(new Set(bundle.member_ids));
+      const aid =
+        bundle.assistant_member_id ??
+        bundle.members?.find((m) => m.role === "assistant")?.friend_id ??
+        null;
+      setAssistantMemberId(aid);
+      const experts =
+        bundle.expert_member_ids ??
+        bundle.member_ids.filter((id) => id !== aid);
+      setMemberIds(new Set(experts));
       const judges: Record<string, MemberJudgeOverride> = {};
       for (const m of bundle.members ?? []) {
         if (m.judge_override) {
@@ -136,7 +176,7 @@ export function GroupEditor({ groupId, onClose }: Props) {
       return;
     }
     if (memberIds.size === 0) {
-      setError("至少选一位好友进群");
+      setError("至少选一位专家好友进群（助理会自动加入）");
       return;
     }
     const toSave = normalizeSettings(settings);
@@ -154,14 +194,20 @@ export function GroupEditor({ groupId, onClose }: Props) {
     setBusy(true);
     setError(null);
     try {
+      const builtinAssistant = friends.find((f) => f.is_builtin);
+      const aid = assistantMemberId ?? builtinAssistant?.id ?? null;
       const members: GroupMemberConfig[] = Array.from(memberIds).map(
         (friend_id) => ({
           friend_id,
+          role: "member" as const,
           judge_override: memberJudges[friend_id]?.use_group_default
             ? { use_group_default: true }
             : memberJudges[friend_id] ?? null,
         }),
       );
+      if (aid) {
+        members.push({ friend_id: aid, role: "assistant" });
+      }
       const result = await api.upsertGroup({
         id: groupId ?? undefined,
         name: name.trim(),
@@ -200,10 +246,234 @@ export function GroupEditor({ groupId, onClose }: Props) {
               placeholder="例如：周末研讨"
             />
           </div>
+          {(() => {
+            const hex = friends.find((f) => f.is_builtin);
+            if (!hex) return null;
+            return (
+              <div className="rounded-md border border-violet-200 bg-violet-50/60 p-3">
+                <div className="text-xs font-semibold text-violet-900">
+                  群助理（用户代理人）
+                </div>
+                <p className="mt-1 text-xs text-slate-600">
+                  {hex.name} 默认加入本群，代你处理小事、大事上报；不参与专家抢答。
+                </p>
+                <label className="mt-2 flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settings.assistant?.enabled !== false}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        assistant: {
+                          ...defaultAssistant,
+                          ...settings.assistant,
+                          enabled: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  启用助理
+                </label>
+                <div className="mt-2">
+                  <label className="label text-xs">策略模板</label>
+                  <select
+                    className="input text-xs"
+                    value={settings.assistant?.template_id ?? ""}
+                    onChange={(e) => {
+                      const tid = e.target.value || null;
+                      const tpl = policyTemplates.find((t) => t.id === tid);
+                      setSettings({
+                        ...settings,
+                        assistant: {
+                          ...defaultAssistant,
+                          ...settings.assistant,
+                          ...(tpl
+                            ? { ...tpl.settings, template_id: tid }
+                            : { template_id: tid }),
+                        },
+                      });
+                    }}
+                  >
+                    <option value="">（无模板，仅自定义）</option>
+                    {policyTemplates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                  {settings.assistant?.template_id && (
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      {policyTemplates.find(
+                        (t) => t.id === settings.assistant?.template_id,
+                      )?.description ?? ""}
+                    </p>
+                  )}
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <select
+                    className="input text-xs"
+                    value={settings.assistant?.autonomy_classifier ?? "heuristic"}
+                    title="自治等级分类"
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        assistant: {
+                          ...defaultAssistant,
+                          ...settings.assistant,
+                          autonomy_classifier: e.target
+                            .value as GroupAssistantSettings["autonomy_classifier"],
+                        },
+                      })
+                    }
+                  >
+                    <option value="heuristic">分类：启发式</option>
+                    <option value="auto">分类：Auto（LLM+回退）</option>
+                    <option value="llm">分类：仅 LLM</option>
+                  </select>
+                  <select
+                    className="input text-xs"
+                    value={settings.assistant?.mode ?? "delegate"}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        assistant: {
+                          ...defaultAssistant,
+                          ...settings.assistant,
+                          mode: e.target.value as
+                            | "delegate"
+                            | "observe"
+                            | "moderate",
+                        },
+                      })
+                    }
+                  >
+                    <option value="delegate">delegate（代你）</option>
+                    <option value="observe">observe（仅观察）</option>
+                    <option value="moderate">moderate（仅 @ 时介入）</option>
+                  </select>
+                  <select
+                    className="input text-xs"
+                    title="最高自治等级"
+                    value={settings.assistant?.max_autonomy ?? "l2"}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        assistant: {
+                          ...defaultAssistant,
+                          ...settings.assistant,
+                          max_autonomy: e.target
+                            .value as typeof defaultAssistant.max_autonomy,
+                        },
+                      })
+                    }
+                  >
+                    <option value="l1">最高 L1</option>
+                    <option value="l2">最高 L2</option>
+                    <option value="l3">最高 L3</option>
+                  </select>
+                </div>
+                <div className="mt-3 border-t border-violet-100 pt-3">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={
+                        settings.assistant?.im_writeback?.enabled === true
+                      }
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          assistant: {
+                            ...defaultAssistant,
+                            ...settings.assistant,
+                            im_writeback: {
+                              ...defaultImWriteback,
+                              ...settings.assistant?.im_writeback,
+                              enabled: e.target.checked,
+                            },
+                          },
+                        })
+                      }
+                    />
+                    外部 IM 回写（Webhook）
+                  </label>
+                  {settings.assistant?.im_writeback?.enabled && (
+                    <div className="mt-2 space-y-2">
+                      <input
+                        className="input text-xs"
+                        placeholder="出站 Webhook URL（Telegram/企微机器人等）"
+                        value={
+                          settings.assistant?.im_writeback?.webhook_url ?? ""
+                        }
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            assistant: {
+                              ...defaultAssistant,
+                              ...settings.assistant,
+                              im_writeback: {
+                                ...defaultImWriteback,
+                                ...settings.assistant?.im_writeback,
+                                enabled: true,
+                                webhook_url: e.target.value || null,
+                              },
+                            },
+                          })
+                        }
+                      />
+                      <input
+                        className="input text-xs"
+                        placeholder="入站密钥（请求头 X-Honeycomb-Im-Secret）"
+                        value={
+                          settings.assistant?.im_writeback?.inbound_secret ??
+                          ""
+                        }
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            assistant: {
+                              ...defaultAssistant,
+                              ...settings.assistant,
+                              im_writeback: {
+                                ...defaultImWriteback,
+                                ...settings.assistant?.im_writeback,
+                                enabled: true,
+                                inbound_secret: e.target.value || null,
+                              },
+                            },
+                          })
+                        }
+                      />
+                      <p className="text-[11px] leading-relaxed text-slate-500">
+                        入站：
+                        <code className="rounded bg-white px-1">
+                          POST /api/groups/{groupId ?? "{group_id}"}/im/inbound
+                        </code>
+                        ，body 含{" "}
+                        <code className="rounded bg-white px-1">
+                          user_message
+                        </code>
+                        、
+                        <code className="rounded bg-white px-1">
+                          approve_delegate
+                        </code>
+                        、
+                        <code className="rounded bg-white px-1">
+                          reject_delegate
+                        </code>
+                        。
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
           <div>
-            <label className="label">成员（多选，可为本群单独设 Judge）</label>
+            <label className="label">专家成员（多选，可为本群单独设 Judge）</label>
             <div className="mt-1 max-h-48 space-y-2 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 p-3">
-              {friends.map((f) => {
+              {friends
+                .filter((f) => !f.is_builtin)
+                .map((f) => {
                 const inGroup = memberIds.has(f.id);
                 const mj =
                   memberJudges[f.id] ?? ({ use_group_default: true } as MemberJudgeOverride);

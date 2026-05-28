@@ -2,6 +2,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::agent::assistant::skills::SkillLibrary;
 use crate::store::{parse_dt, SqliteStore};
 use crate::{Error, Result};
 
@@ -129,6 +130,54 @@ impl From<ReflectionRow> for Reflection {
 }
 
 impl SqliteStore {
+    /// 将磁盘上的 SKILL.md 同步进 skills 表（助理工具箱自动积累）。
+    pub async fn sync_skills_from_disk(
+        &self,
+        owner_friend_id: &str,
+        skills_dir: &str,
+    ) -> Result<Vec<Skill>> {
+        let mut lib = SkillLibrary::new(skills_dir, owner_friend_id.to_string());
+        lib.reload();
+        for sk in lib.loaded() {
+            let guard_report = serde_json::to_value(&sk.guard).unwrap_or_default();
+            let _ = self
+                .upsert_skill(UpsertSkill {
+                    owner_friend_id: owner_friend_id.to_string(),
+                    name: sk.name.clone(),
+                    path: sk.path.display().to_string(),
+                    description: if sk.frontmatter.description.is_empty() {
+                        sk.summary.clone()
+                    } else {
+                        sk.frontmatter.description.clone()
+                    },
+                    triggers: sk.frontmatter.triggers.clone(),
+                    requires_toolsets: sk.frontmatter.requires_toolsets.clone(),
+                    platforms: sk.frontmatter.platforms.clone(),
+                    trust_level: sk.frontmatter.trust_level.clone(),
+                    guard_report,
+                })
+                .await?;
+        }
+        self.list_skills(owner_friend_id).await
+    }
+
+    pub async fn builtin_assistant_skills_dir(&self) -> Result<Option<String>> {
+        let Some(id) = self.builtin_assistant_id().await? else {
+            return Ok(None);
+        };
+        let friend = self
+            .get_friend(&id)
+            .await?
+            .ok_or_else(|| Error::not_found("builtin assistant"))?;
+        let cfg: crate::domain::PtyBackendConfig =
+            serde_json::from_value(friend.backend_config).unwrap_or_default();
+        let dir = cfg
+            .skills_dir
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "data/skills".to_string());
+        Ok(Some(dir))
+    }
+
     pub async fn list_skills(&self, owner: &str) -> Result<Vec<Skill>> {
         let rows: Vec<SkillRow> = sqlx::query_as(
             "SELECT id, owner_friend_id, name, version, path, description, triggers, requires_toolsets, platforms, trust_level, guard_report, enabled, created_at, updated_at FROM skills WHERE owner_friend_id = ? ORDER BY updated_at DESC",

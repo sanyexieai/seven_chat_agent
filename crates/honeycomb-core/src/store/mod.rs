@@ -1,3 +1,7 @@
+pub mod assistant_global;
+pub mod assistant_policy;
+pub mod assistant_queue;
+pub mod assistant_todo;
 pub mod conversation;
 pub mod friend;
 pub mod group;
@@ -203,7 +207,7 @@ impl SqliteStore {
             return Ok(());
         }
 
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = crate::domain::BUILTIN_HEX_ASSISTANT_ID.to_string();
         let cfg = serde_json::json!({
             "preset": "worker-bee-cli",
             "cmd": "worker-bee",

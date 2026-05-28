@@ -96,6 +96,10 @@ impl SkillLibrary {
         self.skills.iter().find(|s| s.name == name)
     }
 
+    pub fn loaded(&self) -> &[LoadedSkill] {
+        &self.skills
+    }
+
     pub fn create_or_update(
         &mut self,
         frontmatter: SkillFrontmatter,

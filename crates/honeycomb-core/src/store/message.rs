@@ -2,6 +2,16 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::domain::{CliBlock, Message, MessageStatus, SenderKind};
+
+fn strip_delegate_confirm_prefix(s: &str) -> String {
+    let t = s.trim();
+    for prefix in ["【待你确认】", "【待确认】"] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            return rest.trim_start().to_string();
+        }
+    }
+    t.to_string()
+}
 use crate::store::{parse_dt, SqliteStore};
 use crate::{Error, Result};
 
@@ -22,6 +32,7 @@ struct MessageRow {
     model_used: Option<String>,
     tokens_in: Option<i64>,
     tokens_out: Option<i64>,
+    on_behalf_of: i64,
     created_at: String,
 }
 
@@ -41,6 +52,7 @@ impl MessageRow {
             sender_kind,
             sender_id: self.sender_id,
             sender_name: self.sender_name,
+            on_behalf_of_user: self.on_behalf_of != 0,
             content: self.content,
             content_blocks: self
                 .content_blocks
@@ -68,6 +80,7 @@ pub struct NewMessage<'a> {
     pub content: &'a str,
     pub mentions: &'a [String],
     pub status: MessageStatus,
+    pub on_behalf_of_user: bool,
 }
 
 impl SqliteStore {
@@ -77,8 +90,8 @@ impl SqliteStore {
         let mentions = serde_json::to_string(m.mentions)?;
         sqlx::query(
             r#"INSERT INTO messages
-                (id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?)"#,
+                (id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, on_behalf_of, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
         )
         .bind(&id)
         .bind(m.conversation_id)
@@ -90,6 +103,7 @@ impl SqliteStore {
         .bind(m.content)
         .bind(&mentions)
         .bind(m.status.as_str())
+        .bind(if m.on_behalf_of_user { 1 } else { 0 })
         .bind(&now)
         .execute(self.pool())
         .await?;
@@ -123,6 +137,49 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// 用户确认或驳回助理「待你确认」草稿。
+    pub async fn resolve_delegate_message(
+        &self,
+        id: &str,
+        approve: bool,
+        content_override: Option<&str>,
+    ) -> Result<Message> {
+        let msg = self
+            .get_message(id)
+            .await?
+            .ok_or_else(|| Error::not_found("message"))?;
+        if msg.status != MessageStatus::WaitingHuman {
+            return Err(Error::bad_request("该消息不在待确认状态"));
+        }
+        if msg.sender_kind != SenderKind::Friend {
+            return Err(Error::bad_request("仅助理草稿可确认"));
+        }
+
+        let mut content = content_override
+            .map(str::to_string)
+            .unwrap_or_else(|| msg.content.clone());
+        content = strip_delegate_confirm_prefix(&content);
+
+        let on_behalf = if approve { 1 } else { 0 };
+        if !approve && !content.contains("用户未采纳") {
+            content.push_str("\n\n（用户未采纳此建议）");
+        }
+
+        sqlx::query(
+            "UPDATE messages SET content = ?, status = ?, on_behalf_of = ? WHERE id = ?",
+        )
+        .bind(&content)
+        .bind(MessageStatus::Done.as_str())
+        .bind(on_behalf)
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+
+        self.get_message(id)
+            .await?
+            .ok_or_else(|| Error::not_found("message after resolve"))
+    }
+
     pub async fn finalize_message(
         &self,
         id: &str,
@@ -154,7 +211,7 @@ impl SqliteStore {
 
     pub async fn get_message(&self, id: &str) -> Result<Option<Message>> {
         let row = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE id = ?",
+            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, created_at FROM messages WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(self.pool())
@@ -168,7 +225,7 @@ impl SqliteStore {
         limit: i64,
     ) -> Result<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
+            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
         )
         .bind(conversation_id)
         .bind(limit)
@@ -183,7 +240,7 @@ impl SqliteStore {
         limit: i64,
     ) -> Result<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT * FROM (SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC",
+            "SELECT * FROM (SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC",
         )
         .bind(conversation_id)
         .bind(limit)

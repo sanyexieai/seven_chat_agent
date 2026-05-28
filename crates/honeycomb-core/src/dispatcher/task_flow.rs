@@ -516,6 +516,7 @@ impl MessageDispatcher {
                 content: &content,
                 mentions: &[],
                 status: MessageStatus::Done,
+                on_behalf_of_user: false,
             })
             .await?;
         self.emit(BusEvent::MessageCreated { message: msg });

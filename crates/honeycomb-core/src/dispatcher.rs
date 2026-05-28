@@ -8,6 +8,8 @@ use tracing::error;
 use uuid::Uuid;
 
 use crate::agent::{AgentEvent, AgentHandle, AgentRegistry, ChatContext};
+use crate::assistant_intent::parse_quick_intent;
+use crate::assistant_task_planner::{PlannedTaskAction, ReminderSchedule, plan_from_intent};
 use crate::judge::{JudgeMode, JudgeService, JudgeSource, Judgment};
 use crate::domain::{
     BackendKind, CliBlockDelta, ConvKind, Conversation, Friend, GroupSettings, Message,
@@ -15,11 +17,20 @@ use crate::domain::{
 };
 use worker_bee_cli::{apply_cli_block_delta, cli_blocks_to_plain};
 use crate::scheduler::{CandidateInfo, ScheduleDecision, SpeakerScheduler};
+use crate::store::memory::NewMemory;
 use crate::store::message::NewMessage;
 use crate::store::SqliteStore;
 use crate::{Error, Result};
 
+mod assistant_autonomy;
+mod assistant_delegate;
+mod im_writeback;
 mod task_flow;
+
+pub use im_writeback::ImWritebackEvent;
+
+use assistant_delegate::{expert_friends_for_group, StreamReplyOptions};
+use crate::provider::ProviderRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -138,6 +149,7 @@ pub struct MessageDispatcher {
     store: Arc<SqliteStore>,
     agents: Arc<AgentRegistry>,
     judge: Arc<JudgeService>,
+    providers: Arc<ProviderRegistry>,
     tx: broadcast::Sender<BusEvent>,
     scheduler: SpeakerScheduler,
 }
@@ -147,12 +159,14 @@ impl MessageDispatcher {
         store: Arc<SqliteStore>,
         agents: Arc<AgentRegistry>,
         judge: Arc<JudgeService>,
+        providers: Arc<ProviderRegistry>,
     ) -> Self {
         let (tx, _) = broadcast::channel(1024);
         Self {
             store,
             agents,
             judge,
+            providers,
             tx,
             scheduler: SpeakerScheduler::new(),
         }
@@ -222,8 +236,13 @@ impl MessageDispatcher {
                 content,
                 mentions: &[],
                 status: MessageStatus::Done,
+                on_behalf_of_user: false,
             })
             .await?;
+        if sender_kind == SenderKind::User {
+            self.observe_user_message_for_builtin_assistant(&conv, &msg)
+                .await;
+        }
         self.emit(BusEvent::MessageCreated {
             message: msg.clone(),
         });
@@ -235,6 +254,17 @@ impl MessageDispatcher {
         match conv.kind {
             ConvKind::Dm => {
                 if matches!(sender_kind, SenderKind::User) {
+                    if self
+                        .maybe_handle_builtin_intent_in_dm(&conv, &turn_id, content)
+                        .await?
+                    {
+                        self.scheduler.reset_turn(&turn_id);
+                        self.emit(BusEvent::TurnEnded {
+                            conversation_id: conv.id,
+                            turn_id,
+                        });
+                        return Ok(msg);
+                    }
                     self.dispatch_dm(conv.clone(), msg.clone(), turn_id.clone())
                         .await?;
                 }
@@ -250,6 +280,111 @@ impl MessageDispatcher {
             turn_id,
         });
         Ok(msg)
+    }
+
+    async fn maybe_handle_builtin_intent_in_dm(
+        &self,
+        conv: &Conversation,
+        turn_id: &str,
+        content: &str,
+    ) -> Result<bool> {
+        let Some(builtin_id) = self.store.builtin_assistant_id().await? else {
+            return Ok(false);
+        };
+        if conv.target_id != builtin_id {
+            return Ok(false);
+        }
+        let Some(intent) = parse_quick_intent(content) else {
+            return Ok(false);
+        };
+        let plan = plan_from_intent(&builtin_id, intent);
+        let mut created_todo: Option<crate::domain::AssistantTodo> = None;
+        for action in &plan.actions {
+            match action {
+                PlannedTaskAction::CreateTodo {
+                    title,
+                    detail,
+                    repeat_rule,
+                    next_run_at,
+                    priority,
+                } => {
+                    let todo = self
+                        .store
+                        .create_assistant_todo(
+                            &builtin_id,
+                            title,
+                            detail.as_deref().filter(|x| !x.trim().is_empty()),
+                            repeat_rule.as_deref(),
+                            next_run_at.as_deref(),
+                            *priority,
+                            None,
+                        )
+                        .await?;
+                    created_todo = Some(todo);
+                }
+                PlannedTaskAction::EnqueueReminder {
+                    assistant_id,
+                    title,
+                    detail,
+                    schedule,
+                } => {
+                    let (delay_seconds, schedule_json) = match schedule {
+                        ReminderSchedule::AfterSeconds(secs) => ((*secs).max(1), serde_json::Value::Null),
+                        ReminderSchedule::DailyAt {
+                            hour,
+                            minute,
+                            timezone,
+                        } => (
+                            next_daily_delay_seconds(*hour, *minute, timezone),
+                            serde_json::json!({
+                                "type": "daily_at",
+                                "hour": hour,
+                                "minute": minute,
+                                "timezone": timezone,
+                            }),
+                        ),
+                    };
+                    let payload = serde_json::json!({
+                        "assistant_id": assistant_id,
+                        "title": title,
+                        "detail": detail,
+                        "schedule": schedule_json,
+                        "todo_id": created_todo.as_ref().map(|t| t.id.clone()),
+                    });
+                    self.store
+                        .enqueue_assistant_job(
+                            "todo_reminder",
+                            Some(&payload.to_string()),
+                            delay_seconds,
+                            3,
+                        )
+                        .await?;
+                }
+            }
+        }
+        let ack = if let Some(todo) = created_todo {
+            format!("已创建提醒任务：{}（按计划触发）", todo.title)
+        } else {
+            "已处理你的提醒请求。".to_string()
+        };
+        let reply = self
+            .store
+            .insert_message(NewMessage {
+                conversation_id: &conv.id,
+                turn_id,
+                parent_id: None,
+                sender_kind: SenderKind::Friend,
+                sender_id: &builtin_id,
+                sender_name: "Hex 助理",
+                content: &ack,
+                mentions: &[],
+                status: MessageStatus::Done,
+                on_behalf_of_user: false,
+            })
+            .await?;
+        self.emit(BusEvent::MessageCreated { message: reply.clone() });
+        self.emit(BusEvent::MessageDone { message: reply });
+        Ok(true)
     }
 
     async fn dispatch_dm(
@@ -292,19 +427,13 @@ impl MessageDispatcher {
         let settings = group.settings.clone();
 
         if user_msg.sender_kind == SenderKind::User && settings.task_flow.enabled {
-            let member_configs = self.store.list_group_member_configs(&group.id).await?;
-            let mut members = Vec::new();
-            for mid in member_configs.iter().map(|c| &c.friend_id) {
-                if let Some(f) = self.store.get_friend(mid).await? {
-                    if f.enabled {
-                        members.push(f);
-                    }
-                }
-            }
+            let members = expert_friends_for_group(&self.store, &group.id).await?;
             if self
                 .run_task_flow(&conv, &user_msg, &turn_id, &settings, &members)
                 .await?
             {
+                self.maybe_dispatch_group_assistant(&conv.id, &group, &user_msg, &turn_id)
+                    .await?;
                 return Ok(());
             }
         }
@@ -319,8 +448,11 @@ impl MessageDispatcher {
                 .map(|c| (c.friend_id.clone(), c.judge_override.clone()))
                 .collect();
             let mut members = Vec::new();
-            for mid in member_configs.iter().map(|c| &c.friend_id) {
-                if let Some(f) = self.store.get_friend(mid).await? {
+            for c in &member_configs {
+                if !c.role.participates_in_expert_scheduling() {
+                    continue;
+                }
+                if let Some(f) = self.store.get_friend(&c.friend_id).await? {
                     if f.enabled {
                         members.push(f);
                     }
@@ -474,6 +606,11 @@ impl MessageDispatcher {
                 }
             }
         }
+
+        if user_msg.sender_kind == SenderKind::User {
+            self.maybe_dispatch_group_assistant(&conv.id, &group, &user_msg, &turn_id)
+                .await?;
+        }
         Ok(())
     }
 
@@ -577,6 +714,33 @@ impl MessageDispatcher {
         prompt: &str,
         _depth: usize,
     ) -> Result<Option<Message>> {
+        self.stream_one_reply_with_options(
+            conv,
+            parent,
+            turn_id,
+            friend,
+            agent,
+            ctx,
+            prompt,
+            StreamReplyOptions {
+                on_behalf_of_user: false,
+                final_status: MessageStatus::Done,
+            },
+        )
+        .await
+    }
+
+    async fn stream_one_reply_with_options(
+        &self,
+        conv: &Conversation,
+        parent: &Message,
+        turn_id: &str,
+        friend: &Friend,
+        agent: AgentHandle,
+        ctx: ChatContext,
+        prompt: &str,
+        opts: StreamReplyOptions,
+    ) -> Result<Option<Message>> {
         let placeholder = self
             .store
             .insert_message(NewMessage {
@@ -589,6 +753,7 @@ impl MessageDispatcher {
                 content: "",
                 mentions: &[],
                 status: MessageStatus::Streaming,
+                on_behalf_of_user: opts.on_behalf_of_user,
             })
             .await?;
         self.emit(BusEvent::MessageCreated {
@@ -711,7 +876,7 @@ impl MessageDispatcher {
             .finalize_message(
                 &placeholder.id,
                 &content,
-                MessageStatus::Done,
+                opts.final_status,
                 model_used.as_deref(),
                 tokens_in,
                 tokens_out,
@@ -726,6 +891,206 @@ impl MessageDispatcher {
         }
         Ok(None)
     }
+
+    /// 用户采纳/驳回群助理待确认草稿。
+    pub async fn resolve_group_delegate(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        approve: bool,
+        content_override: Option<String>,
+    ) -> Result<Message> {
+        let msg = self
+            .store
+            .get_message(message_id)
+            .await?
+            .ok_or_else(|| Error::not_found("message"))?;
+        if msg.conversation_id != conversation_id {
+            return Err(Error::bad_request("消息不属于该会话"));
+        }
+        let updated = self
+            .store
+            .resolve_delegate_message(
+                message_id,
+                approve,
+                content_override.as_deref(),
+            )
+            .await?;
+        self.emit(BusEvent::MessageDone {
+            message: updated.clone(),
+        });
+
+        if let Ok(Some(conv)) = self.store.get_conversation(conversation_id).await {
+            if conv.kind == ConvKind::Group {
+                if let Ok(Some(group)) = self.store.get_group(&conv.target_id).await {
+                    let ast = self
+                        .store
+                        .resolve_group_assistant_settings(&group.settings.assistant)
+                        .await
+                        .unwrap_or_else(|_| group.settings.assistant.clone());
+                    let event = if approve {
+                        ImWritebackEvent::DelegateApproved
+                    } else {
+                        ImWritebackEvent::DelegateRejected
+                    };
+                    im_writeback::spawn_im_writeback_notify(
+                        group,
+                        ast,
+                        conversation_id.to_string(),
+                        updated.clone(),
+                        event,
+                    );
+                }
+            }
+        }
+
+        Ok(updated)
+    }
+
+    async fn observe_user_message_for_builtin_assistant(&self, conv: &Conversation, msg: &Message) {
+        let Ok(Some(assistant_id)) = self.store.builtin_assistant_id().await else {
+            return;
+        };
+        let Ok(global) = self.store.get_assistant_global_settings().await else {
+            return;
+        };
+        let allowed = match conv.kind {
+            ConvKind::Dm => global.should_observe_dm(),
+            ConvKind::Group => global.should_observe_group(),
+        };
+        if !allowed {
+            return;
+        }
+
+        let scope = match conv.kind {
+            ConvKind::Dm => {
+                let friend_name = self
+                    .store
+                    .get_friend(&conv.target_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|f| f.name)
+                    .unwrap_or_else(|| "未知好友".to_string());
+                format!("私聊:{friend_name}")
+            }
+            ConvKind::Group => {
+                let group_name = self
+                    .store
+                    .get_group(&conv.target_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|g| g.name)
+                    .unwrap_or_else(|| "未知群聊".to_string());
+                format!("群聊:{group_name}")
+            }
+        };
+
+        let max_chars = global.record_max_chars.max(80) as usize;
+        let summary = format!(
+            "[默认观察/{scope}] 用户:{}\n内容:{}",
+            msg.sender_name,
+            truncate_chars(&msg.content, max_chars)
+        );
+        if let Err(err) = self
+            .store
+            .insert_memory(NewMemory {
+                owner_friend_id: assistant_id.clone(),
+                kind: crate::assistant_accumulation::MEMORY_KIND_MEMO.to_string(),
+                content: summary,
+                source_message_id: Some(msg.id.clone()),
+                weight: global.record_weight.clamp(0.05, 1.0),
+                pinned: false,
+            })
+            .await
+        {
+            tracing::warn!(err = %err, "assistant observe memory insert failed");
+            return;
+        }
+        if let Err(err) = self
+            .store
+            .touch_observe_consolidate(&assistant_id, &global)
+            .await
+        {
+            tracing::debug!(err = %err, "assistant observe consolidate tick failed");
+        }
+    }
+
+    /// 外部 IM 入站：用户发言或确认助理草稿。
+    pub async fn handle_group_im_inbound(
+        &self,
+        group_id: &str,
+        secret: &str,
+        action: &str,
+        content: Option<String>,
+        message_id: Option<String>,
+    ) -> Result<Message> {
+        let group = self
+            .store
+            .get_group(group_id)
+            .await?
+            .ok_or_else(|| Error::not_found("group"))?;
+        let ast = self
+            .store
+            .resolve_group_assistant_settings(&group.settings.assistant)
+            .await?;
+        let expected = ast
+            .im_writeback
+            .inbound_secret
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::bad_request("该群未配置 IM 入站密钥"))?;
+        if secret != expected {
+            return Err(Error::bad_request("IM 入站密钥无效"));
+        }
+
+        let conv = self.store.get_or_create_group_conversation(group_id).await?;
+
+        match action {
+            "user_message" => {
+                let text = content
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| Error::bad_request("user_message 需要 content"))?;
+                self.send_user_message(&conv.id, &text).await
+            }
+            "approve_delegate" | "reject_delegate" => {
+                let mid = message_id
+                    .ok_or_else(|| Error::bad_request("需要 message_id"))?;
+                let approve = action == "approve_delegate";
+                self.resolve_group_delegate(&conv.id, &mid, approve, content)
+                    .await
+            }
+            _ => Err(Error::bad_request(format!("未知 action: {action}"))),
+        }
+    }
+}
+
+fn next_daily_delay_seconds(hour: u32, minute: u32, timezone: &str) -> i64 {
+    use chrono::{Datelike, Duration, TimeZone, Utc};
+    let offset_seconds = match timezone {
+        "UTC" | "Etc/UTC" => 0,
+        _ => 8 * 3600,
+    };
+    let offset = chrono::FixedOffset::east_opt(offset_seconds)
+        .unwrap_or_else(|| chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"));
+    let now_utc = Utc::now();
+    let now_local = now_utc.with_timezone(&offset);
+    let mut next = offset
+        .with_ymd_and_hms(
+            now_local.year(),
+            now_local.month(),
+            now_local.day(),
+            hour.min(23),
+            minute.min(59),
+            0,
+        )
+        .single()
+        .unwrap_or(now_local + Duration::minutes(1));
+    if next <= now_local {
+        next += Duration::days(1);
+    }
+    (next.with_timezone(&Utc) - now_utc).num_seconds().max(1)
 }
 
 fn judge_mode_label(mode: JudgeMode) -> &'static str {
@@ -734,6 +1099,15 @@ fn judge_mode_label(mode: JudgeMode) -> &'static str {
         JudgeMode::Llm => "llm",
         JudgeMode::Auto => "auto",
     }
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 fn judge_source_label(source: Option<JudgeSource>) -> Option<String> {

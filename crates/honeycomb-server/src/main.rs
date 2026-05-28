@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use honeycomb_core::config::CoreConfig;
-use honeycomb_core::Honeycomb;
+use honeycomb_core::{AssistantQueueTask, Honeycomb};
 use honeycomb_server::{build_app_with_static, static_assets};
 use tracing_subscriber::EnvFilter;
 
@@ -22,6 +22,15 @@ async fn main() -> anyhow::Result<()> {
     let honeycomb = Honeycomb::boot(&cfg.database_url)
         .await
         .context("boot honeycomb core")?;
+    let _ = honeycomb
+        .enqueue_assistant_task_after(AssistantQueueTask::IdleTick, 5)
+        .await;
+    let _ = honeycomb
+        .enqueue_assistant_task_after(AssistantQueueTask::SyncSkills, 20)
+        .await;
+    let _ = honeycomb
+        .enqueue_assistant_task_after(AssistantQueueTask::ConsolidateMemory, 30)
+        .await;
 
     match honeycomb_core::friend_cli::ensure_worker_bee_executable() {
         Ok(path) => tracing::info!(%path, "worker-bee CLI available (optional tools)"),

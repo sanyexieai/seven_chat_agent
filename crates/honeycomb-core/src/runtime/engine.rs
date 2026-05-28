@@ -161,6 +161,8 @@ impl AgentRuntime {
                         &turn_id,
                         &prompt_post,
                         &full,
+                        tokens_in,
+                        tokens_out,
                         &pid,
                         &model,
                         key.as_deref(),

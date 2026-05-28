@@ -284,6 +284,352 @@ impl MessageStatus {
 
 pub use worker_bee_cli::{CliBlock, CliBlockDelta};
 
+/// 新安装时内置 Hex 助理的稳定 id；旧库通过 `builtin_assistant_id()` 解析最早 builtin。
+pub const BUILTIN_HEX_ASSISTANT_ID: &str = "builtin-hex-assistant";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupMemberRole {
+    #[default]
+    Member,
+    Assistant,
+    Muted,
+}
+
+impl GroupMemberRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Assistant => "assistant",
+            Self::Muted => "muted",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "assistant" => Self::Assistant,
+            "muted" => Self::Muted,
+            _ => Self::Member,
+        }
+    }
+
+    pub fn participates_in_expert_scheduling(self) -> bool {
+        matches!(self, Self::Member)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantMode {
+    #[default]
+    Delegate,
+    Observe,
+    Moderate,
+}
+
+/// 用户消息自治等级如何判定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomyClassifier {
+    #[default]
+    Heuristic,
+    /// 仅 LLM；失败则回退启发式。
+    Auto,
+    Llm,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantPolicyTemplate {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub settings: GroupAssistantSettings,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomyLevel {
+    L0,
+    #[default]
+    L1,
+    L2,
+    L3,
+    L4,
+}
+
+impl AutonomyLevel {
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::L0 => 0,
+            Self::L1 => 1,
+            Self::L2 => 2,
+            Self::L3 => 3,
+            Self::L4 => 4,
+        }
+    }
+}
+
+/// 群助理事件回写到外部 IM（Webhook）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantImWriteback {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
+    /// 入站 Webhook 校验密钥（与请求头 `X-Honeycomb-Im-Secret` 一致）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_secret: Option<String>,
+    #[serde(default = "default_true")]
+    pub notify_delegate: bool,
+    #[serde(default = "default_true")]
+    pub notify_waiting_human: bool,
+}
+
+impl Default for AssistantImWriteback {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            webhook_url: None,
+            inbound_secret: None,
+            notify_delegate: true,
+            notify_waiting_human: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupAssistantSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: AssistantMode,
+    #[serde(default)]
+    pub max_autonomy: AutonomyLevel,
+    #[serde(default = "default_true")]
+    pub reply_after_experts: bool,
+    /// 引用的策略模板 id（与内联字段合并后生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub autonomy_classifier: AutonomyClassifier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_model: Option<String>,
+    #[serde(default)]
+    pub im_writeback: AssistantImWriteback,
+}
+
+impl Default for GroupAssistantSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: AssistantMode::Delegate,
+            max_autonomy: AutonomyLevel::L2,
+            reply_after_experts: true,
+            template_id: None,
+            autonomy_classifier: AutonomyClassifier::Heuristic,
+            classifier_provider_id: None,
+            classifier_model: None,
+            im_writeback: AssistantImWriteback::default(),
+        }
+    }
+}
+
+/// 内置 Hex 助理的全局能力策略（跨私聊/群聊）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantGlobalSettings {
+    /// 总开关：是否自动观察用户发言并写入记忆。
+    #[serde(default = "default_true")]
+    pub observe_enabled: bool,
+    #[serde(default = "default_true")]
+    pub observe_dm: bool,
+    #[serde(default = "default_true")]
+    pub observe_group: bool,
+    /// 观察记忆正文截断长度（字符）。
+    #[serde(default = "default_record_max_chars")]
+    pub record_max_chars: u32,
+    #[serde(default = "default_record_weight")]
+    pub record_weight: f64,
+    /// 观察后是否周期性整理记忆。
+    #[serde(default = "default_true")]
+    pub auto_consolidate: bool,
+    /// 每累计 N 条观察记忆触发一次整理。
+    #[serde(default = "default_consolidate_every_n")]
+    pub consolidate_every_n: u32,
+    /// 回合结束后反思 + 知识沉淀（reflections）。
+    #[serde(default = "default_true")]
+    pub evolution_enabled: bool,
+    /// 回合结束后从对话提取长期记忆。
+    #[serde(default = "default_true")]
+    pub auto_extract_memories: bool,
+    /// 助理主动处理（扫待办/做整理）总开关。
+    #[serde(default = "default_true")]
+    pub proactive_enabled: bool,
+    /// 每轮最多自动处理多少条待办。
+    #[serde(default = "default_proactive_batch")]
+    pub proactive_batch_size: u32,
+    /// 是否允许空闲守护把 Todo 调度给其他 agent 好友。
+    #[serde(default)]
+    pub proactive_delegate_enabled: bool,
+    /// 允许被调度的 agent 好友 id 列表；空表示不限制（仍需打开 proactive_delegate_enabled）。
+    #[serde(default)]
+    pub proactive_delegate_friend_ids: Vec<String>,
+    /// 助理月度 token 预算（0 表示不限制）。
+    #[serde(default)]
+    pub monthly_token_budget: u64,
+    /// 助理当月已消耗 token（用于预算控制）。
+    #[serde(default)]
+    pub monthly_tokens_used: u64,
+    /// 预算周期，格式 `YYYY-MM`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_period_ym: Option<String>,
+    /// CLI 工具预设白名单；空列表表示不限制。
+    #[serde(default)]
+    pub tool_whitelist: Vec<String>,
+    /// 服务端维护：距上次整理以来的观察条数。
+    #[serde(default)]
+    pub observe_streak: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+fn default_record_max_chars() -> u32 {
+    500
+}
+
+fn default_record_weight() -> f64 {
+    0.45
+}
+
+fn default_consolidate_every_n() -> u32 {
+    1
+}
+
+fn default_proactive_batch() -> u32 {
+    2
+}
+
+impl Default for AssistantGlobalSettings {
+    fn default() -> Self {
+        Self {
+            observe_enabled: true,
+            observe_dm: true,
+            observe_group: true,
+            record_max_chars: default_record_max_chars(),
+            record_weight: default_record_weight(),
+            auto_consolidate: true,
+            consolidate_every_n: default_consolidate_every_n(),
+            evolution_enabled: true,
+            auto_extract_memories: true,
+            proactive_enabled: true,
+            proactive_batch_size: default_proactive_batch(),
+            proactive_delegate_enabled: false,
+            proactive_delegate_friend_ids: Vec::new(),
+            monthly_token_budget: 0,
+            monthly_tokens_used: 0,
+            budget_period_ym: None,
+            tool_whitelist: Vec::new(),
+            observe_streak: 0,
+            updated_at: None,
+        }
+    }
+}
+
+impl AssistantGlobalSettings {
+    pub fn should_observe_dm(&self) -> bool {
+        self.observe_enabled && self.observe_dm
+    }
+
+    pub fn should_observe_group(&self) -> bool {
+        self.observe_enabled && self.observe_group
+    }
+
+    pub fn allows_cli_preset(&self, preset: &str) -> bool {
+        if self.tool_whitelist.is_empty() {
+            return true;
+        }
+        self.tool_whitelist
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(preset))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantTodoStatus {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
+
+impl AssistantTodoStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "running" => Self::Running,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            _ => Self::Pending,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantTodo {
+    pub id: String,
+    pub owner_friend_id: String,
+    pub title: String,
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_rule: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub status: AssistantTodoStatus,
+    pub priority: i64,
+    pub source_turn_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl GroupAssistantSettings {
+    /// 模板为底、群内联字段覆盖（非默认 classifier 等始终覆盖）。
+    pub fn merge_with_template(&self, template: &GroupAssistantSettings) -> Self {
+        let mut base = template.clone();
+        base.template_id = self.template_id.clone();
+        base.enabled = self.enabled;
+        base.mode = self.mode;
+        base.max_autonomy = self.max_autonomy;
+        base.reply_after_experts = self.reply_after_experts;
+        if self.autonomy_classifier != AutonomyClassifier::default() {
+            base.autonomy_classifier = self.autonomy_classifier;
+        }
+        if self.classifier_provider_id.is_some() {
+            base.classifier_provider_id = self.classifier_provider_id.clone();
+        }
+        if self.classifier_model.is_some() {
+            base.classifier_model = self.classifier_model.clone();
+        }
+        if self.im_writeback.enabled
+            || self.im_writeback.webhook_url.is_some()
+            || self.im_writeback.inbound_secret.is_some()
+        {
+            base.im_writeback = self.im_writeback.clone();
+        }
+        base
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -293,6 +639,9 @@ pub struct Message {
     pub sender_kind: SenderKind,
     pub sender_id: String,
     pub sender_name: String,
+    /// 群助理代用户发言时为 true。
+    #[serde(default)]
+    pub on_behalf_of_user: bool,
     pub content: String,
     /// Codex / 工蜂 CLI 的结构化块；`content` 为其纯文本降级副本，供搜索与旧客户端。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -365,6 +714,8 @@ pub struct GroupSettings {
     pub human_pause_ms: u64,
     pub allow_agent_to_agent: bool,
     pub extra_system_prompt: Option<String>,
+    #[serde(default)]
+    pub assistant: GroupAssistantSettings,
 }
 
 impl Default for GroupSettings {
@@ -381,6 +732,7 @@ impl Default for GroupSettings {
             human_pause_ms: 30_000,
             allow_agent_to_agent: true,
             extra_system_prompt: None,
+            assistant: GroupAssistantSettings::default(),
         }
     }
 }
@@ -406,6 +758,8 @@ impl GroupSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupMemberConfig {
     pub friend_id: String,
+    #[serde(default)]
+    pub role: GroupMemberRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_override: Option<honeycomb_judge::MemberJudgeOverride>,
 }

@@ -199,3 +199,19 @@ pub fn member_ids_from_upsert(
         legacy_member_ids.to_vec()
     }
 }
+
+/// 参与专家调度（Judge / 任务流）的成员 id。
+pub fn expert_member_ids_from_upsert(
+    members: &[GroupMemberConfig],
+    legacy_member_ids: &[String],
+) -> Vec<String> {
+    if !members.is_empty() {
+        members
+            .iter()
+            .filter(|m| m.role.participates_in_expert_scheduling())
+            .map(|m| m.friend_id.clone())
+            .collect()
+    } else {
+        legacy_member_ids.to_vec()
+    }
+}

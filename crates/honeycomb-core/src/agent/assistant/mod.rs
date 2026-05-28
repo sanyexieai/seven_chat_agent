@@ -168,7 +168,7 @@ impl AssistantAgent {
     async fn extract_memories(&self, prompt: &str, response: &str) -> Result<()> {
         let msgs = vec![
             ChatMessage::system(
-                "你是一个用于事实抽取的助手。从对话中抽出关于用户偏好、项目、约定的稳定事实。只输出 JSON 数组，每个对象包含 kind(fact|preference|project|relation|lesson), content, weight(0~1)。不要输出多余文字。",
+                "你是一个用于知识沉淀的助手。从助理帮助用户解决问题的对话中，抽出可长期复用的知识点。只输出 JSON 数组，每项含 kind（固定填 knowledge）、content、weight(0~1)。不要输出多余文字。",
             ),
             ChatMessage::user(format!(
                 "用户消息：\n{prompt}\n\n助理回应：\n{response}\n\n请抽出最多 4 条结构化记忆。"
@@ -182,11 +182,7 @@ impl AssistantAgent {
         };
         if let Some(arr) = parsed.as_array() {
             for item in arr {
-                let kind = item
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("fact")
-                    .to_string();
+                let kind = crate::assistant_accumulation::MEMORY_KIND_KNOWLEDGE.to_string();
                 let content = item
                     .get("content")
                     .and_then(|v| v.as_str())
@@ -248,6 +244,23 @@ impl AssistantAgent {
         self.store
             .insert_reflection(&self.friend.id, turn_id, score, &summary, &lessons)
             .await?;
+        for lesson in lessons {
+            let lesson = lesson.trim();
+            if lesson.is_empty() {
+                continue;
+            }
+            let _ = self
+                .store
+                .insert_memory(crate::store::memory::NewMemory {
+                    owner_friend_id: self.friend.id.clone(),
+                    kind: crate::assistant_accumulation::MEMORY_KIND_KNOWLEDGE.to_string(),
+                    content: lesson.to_string(),
+                    source_message_id: None,
+                    weight: 0.65,
+                    pinned: false,
+                })
+                .await;
+        }
         Ok(())
     }
 }
@@ -261,6 +274,15 @@ impl Agent for AssistantAgent {
     async fn warmup(&self) -> Result<()> {
         let mut lib = self.skills.lock().await;
         lib.reload();
+        let dir = if self.cfg.skills_dir.trim().is_empty() {
+            "data/skills".to_string()
+        } else {
+            self.cfg.skills_dir.clone()
+        };
+        let _ = self
+            .store
+            .sync_skills_from_disk(&self.friend.id, &dir)
+            .await;
         Ok(())
     }
 
@@ -322,14 +344,44 @@ impl Agent for AssistantAgent {
             });
 
             tokio::spawn(async move {
-                if let Err(e) = assistant.extract_memories(&prompt_for_post, &full).await {
-                    tracing::warn!(err=%e, "assistant.extract_memories failed");
+                let global = store.get_assistant_global_settings().await.unwrap_or_default();
+                let is_builtin = store
+                    .builtin_assistant_id()
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|id| id == friend_id);
+                if is_builtin && global.observe_enabled {
+                    let summary = format!(
+                        "[协助记录]\n用户：{}\n助理：{}",
+                        crate::assistant_accumulation::truncate_chars(&prompt_for_post, 280),
+                        crate::assistant_accumulation::truncate_chars(&full, 400),
+                    );
+                    let _ = store
+                        .insert_memory(crate::store::memory::NewMemory {
+                            owner_friend_id: friend_id.clone(),
+                            kind: crate::assistant_accumulation::MEMORY_KIND_MEMO.to_string(),
+                            content: summary,
+                            source_message_id: None,
+                            weight: 0.5,
+                            pinned: false,
+                        })
+                        .await;
                 }
-                if let Err(e) = assistant.reflect(&turn_id, &prompt_for_post, &full).await {
-                    tracing::warn!(err=%e, "assistant.reflect failed");
+                if global.auto_extract_memories {
+                    if let Err(e) = assistant.extract_memories(&prompt_for_post, &full).await {
+                        tracing::warn!(err=%e, "assistant.extract_memories failed");
+                    }
                 }
-                if let Err(e) = store.consolidate_memories(&friend_id).await {
-                    tracing::warn!(err=%e, "consolidate_memories failed");
+                if global.evolution_enabled {
+                    if let Err(e) = assistant.reflect(&turn_id, &prompt_for_post, &full).await {
+                        tracing::warn!(err=%e, "assistant.reflect failed");
+                    }
+                }
+                if global.auto_consolidate {
+                    if let Err(e) = store.consolidate_memories(&friend_id).await {
+                        tracing::warn!(err=%e, "consolidate_memories failed");
+                    }
                 }
             });
         };

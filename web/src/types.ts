@@ -78,6 +78,8 @@ export interface Message {
   sender_kind: SenderKind;
   sender_id: string;
   sender_name: string;
+  /** 群助理代用户发言 */
+  on_behalf_of_user?: boolean;
   content: string;
   content_blocks?: CliBlock[] | null;
   mentions: string[];
@@ -124,6 +126,99 @@ export interface MemberJudgeOverride {
   fallback_pick_top?: boolean | null;
 }
 
+export type GroupMemberRole = "member" | "assistant" | "muted";
+
+export type AssistantMode = "delegate" | "observe" | "moderate";
+
+export type AutonomyLevel = "l0" | "l1" | "l2" | "l3" | "l4";
+
+export type AutonomyClassifier = "heuristic" | "auto" | "llm";
+
+export interface AssistantImWriteback {
+  enabled: boolean;
+  webhook_url?: string | null;
+  inbound_secret?: string | null;
+  notify_delegate?: boolean;
+  notify_waiting_human?: boolean;
+}
+
+export interface GroupAssistantSettings {
+  enabled: boolean;
+  mode: AssistantMode;
+  max_autonomy: AutonomyLevel;
+  reply_after_experts: boolean;
+  template_id?: string | null;
+  autonomy_classifier?: AutonomyClassifier;
+  classifier_provider_id?: string | null;
+  classifier_model?: string | null;
+  im_writeback?: AssistantImWriteback;
+}
+
+export interface AssistantGlobalSettings {
+  observe_enabled: boolean;
+  observe_dm: boolean;
+  observe_group: boolean;
+  record_max_chars: number;
+  record_weight: number;
+  auto_consolidate: boolean;
+  consolidate_every_n: number;
+  evolution_enabled: boolean;
+  auto_extract_memories: boolean;
+  proactive_enabled: boolean;
+  proactive_batch_size: number;
+  proactive_delegate_enabled: boolean;
+  proactive_delegate_friend_ids: string[];
+  monthly_token_budget: number;
+  monthly_tokens_used: number;
+  budget_period_ym?: string | null;
+  tool_whitelist: string[];
+  observe_streak?: number;
+  updated_at?: string | null;
+}
+
+export type AssistantTodoStatus = "pending" | "running" | "done" | "failed";
+
+export interface AssistantTodo {
+  id: string;
+  owner_friend_id: string;
+  title: string;
+  detail?: string | null;
+  repeat_rule?: string | null;
+  next_run_at?: string | null;
+  status: AssistantTodoStatus;
+  priority: number;
+  source_turn_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantQueueJob {
+  id: string;
+  kind: string;
+  payload?: string | null;
+  attempts: number;
+  max_attempts: number;
+  status: string;
+  last_error?: string | null;
+  run_at: string;
+}
+
+export interface AssistantQueueStats {
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+  due_pending: number;
+}
+
+export interface AssistantPolicyTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  settings: GroupAssistantSettings;
+  created_at: string;
+}
+
 export interface GroupTaskFlowSettings {
   enabled: boolean;
   campaign_enabled: boolean;
@@ -138,6 +233,7 @@ export interface GroupSettings {
   judge_threshold: number;
   judge: GroupJudgeSettings;
   task_flow?: GroupTaskFlowSettings;
+  assistant?: GroupAssistantSettings;
   max_replies_per_turn: number;
   per_agent_max_per_turn: number;
   cooldown_ms: number;
@@ -157,6 +253,7 @@ export interface Group {
 
 export interface GroupMemberConfig {
   friend_id: string;
+  role?: GroupMemberRole;
   judge_override?: MemberJudgeOverride | null;
 }
 
@@ -174,6 +271,9 @@ export interface GroupTaskFlowReadiness {
 export interface GroupBundle {
   group: Group;
   member_ids: string[];
+  expert_member_ids?: string[];
+  assistant_member_id?: string | null;
+  assistant_resolved?: GroupAssistantSettings;
   members?: GroupMemberConfig[];
   conversation_id?: string;
   task_flow_readiness?: GroupTaskFlowReadiness;

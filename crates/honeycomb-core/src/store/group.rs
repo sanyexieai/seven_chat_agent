@@ -4,7 +4,9 @@ use chrono::Utc;
 use honeycomb_judge::MemberJudgeOverride;
 use uuid::Uuid;
 
-use crate::domain::{Group, GroupMemberConfig, GroupSettings};
+use crate::domain::{
+    Group, GroupMemberConfig, GroupMemberRole, GroupSettings, BUILTIN_HEX_ASSISTANT_ID,
+};
 use crate::store::{parse_dt, SqliteStore};
 use crate::{Error, Result};
 
@@ -66,6 +68,19 @@ impl SqliteStore {
         row.map(|r| r.into_group()).transpose()
     }
 
+    /// 解析内置 Hex 助理 id（稳定 id 或最早 builtin）。
+    pub async fn builtin_assistant_id(&self) -> Result<Option<String>> {
+        if self.get_friend(BUILTIN_HEX_ASSISTANT_ID).await?.is_some() {
+            return Ok(Some(BUILTIN_HEX_ASSISTANT_ID.to_string()));
+        }
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM friends WHERE is_builtin = 1 ORDER BY created_at ASC LIMIT 1",
+        )
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
     pub async fn list_group_members(&self, group_id: &str) -> Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT friend_id FROM group_members WHERE group_id = ? AND role <> 'muted'",
@@ -80,21 +95,64 @@ impl SqliteStore {
         &self,
         group_id: &str,
     ) -> Result<Vec<GroupMemberConfig>> {
-        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-            "SELECT friend_id, judge_override FROM group_members WHERE group_id = ? AND role <> 'muted'",
+        let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT friend_id, role, judge_override FROM group_members WHERE group_id = ? AND role <> 'muted'",
         )
         .bind(group_id)
         .fetch_all(self.pool())
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(friend_id, judge_raw)| GroupMemberConfig {
+            .map(|(friend_id, role, judge_raw)| GroupMemberConfig {
                 friend_id,
+                role: GroupMemberRole::parse(&role),
                 judge_override: judge_raw
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok()),
             })
             .collect())
+    }
+
+    pub async fn list_group_expert_friend_ids(&self, group_id: &str) -> Result<Vec<String>> {
+        Ok(self
+            .list_group_member_configs(group_id)
+            .await?
+            .into_iter()
+            .filter(|m| m.role.participates_in_expert_scheduling())
+            .map(|m| m.friend_id)
+            .collect())
+    }
+
+    pub async fn group_assistant_member_id(&self, group_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .list_group_member_configs(group_id)
+            .await?
+            .into_iter()
+            .find(|m| m.role == GroupMemberRole::Assistant)
+            .map(|m| m.friend_id))
+    }
+
+    /// 为所有群补齐助理成员（启动迁移）。
+    pub async fn migrate_ensure_group_assistants(&self) -> Result<()> {
+        let Some(assistant_id) = self.builtin_assistant_id().await? else {
+            return Ok(());
+        };
+        let groups = self.list_groups().await?;
+        for g in groups {
+            let has = self.group_assistant_member_id(&g.id).await?.is_some();
+            if has {
+                continue;
+            }
+            sqlx::query(
+                "INSERT OR IGNORE INTO group_members (group_id, friend_id, role, judge_override) VALUES (?, ?, 'assistant', NULL)",
+            )
+            .bind(&g.id)
+            .bind(&assistant_id)
+            .execute(self.pool())
+            .await?;
+            tracing::info!(group_id = %g.id, assistant_id = %assistant_id, "migrate: added group assistant member");
+        }
+        Ok(())
     }
 
     pub async fn upsert_group(&self, req: UpsertGroup) -> Result<Group> {
@@ -105,7 +163,10 @@ impl SqliteStore {
         let now = Utc::now().to_rfc3339();
 
         let legacy_only = req.members.is_empty() && !req.member_ids.is_empty();
-        let members = normalize_group_members(req.members, req.member_ids);
+        let mut members = normalize_group_members(req.members, req.member_ids);
+        if let Some(aid) = self.builtin_assistant_id().await? {
+            ensure_assistant_in_members(&mut members, &aid);
+        }
 
         let exists: i64 = sqlx::query_scalar("SELECT COUNT(1) FROM groups WHERE id = ?")
             .bind(&id)
@@ -132,11 +193,11 @@ impl SqliteStore {
                 .await?;
         }
 
-        let preserved: HashMap<String, Option<MemberJudgeOverride>> = self
+        let preserved: HashMap<String, (GroupMemberRole, Option<MemberJudgeOverride>)> = self
             .list_group_member_configs(&id)
             .await?
             .into_iter()
-            .map(|m| (m.friend_id, m.judge_override))
+            .map(|m| (m.friend_id, (m.role, m.judge_override)))
             .collect();
 
         sqlx::query("DELETE FROM group_members WHERE group_id = ?")
@@ -145,8 +206,16 @@ impl SqliteStore {
             .await?;
 
         for m in &members {
+            let role = if legacy_only {
+                preserved
+                    .get(&m.friend_id)
+                    .map(|(r, _)| *r)
+                    .unwrap_or(m.role)
+            } else {
+                m.role
+            };
             let judge_override = if legacy_only {
-                preserved.get(&m.friend_id).cloned().flatten()
+                preserved.get(&m.friend_id).and_then(|(_, j)| j.clone())
             } else {
                 m.judge_override.clone()
             };
@@ -155,10 +224,11 @@ impl SqliteStore {
                 .map(serde_json::to_string)
                 .transpose()?;
             sqlx::query(
-                "INSERT OR IGNORE INTO group_members (group_id, friend_id, role, judge_override) VALUES (?, ?, 'member', ?)",
+                "INSERT OR IGNORE INTO group_members (group_id, friend_id, role, judge_override) VALUES (?, ?, ?, ?)",
             )
             .bind(&id)
             .bind(&m.friend_id)
+            .bind(role.as_str())
             .bind(&judge_json)
             .execute(self.pool())
             .await?;
@@ -214,7 +284,27 @@ fn normalize_group_members(
         .into_iter()
         .map(|friend_id| GroupMemberConfig {
             friend_id,
+            role: GroupMemberRole::Member,
             judge_override: None,
         })
         .collect()
+}
+
+fn ensure_assistant_in_members(members: &mut Vec<GroupMemberConfig>, assistant_id: &str) {
+    let mut found_assistant_role = false;
+    for m in members.iter_mut() {
+        if m.friend_id == assistant_id {
+            m.role = GroupMemberRole::Assistant;
+            found_assistant_role = true;
+        } else if m.role == GroupMemberRole::Assistant {
+            m.role = GroupMemberRole::Member;
+        }
+    }
+    if !found_assistant_role {
+        members.push(GroupMemberConfig {
+            friend_id: assistant_id.to_string(),
+            role: GroupMemberRole::Assistant,
+            judge_override: None,
+        });
+    }
 }

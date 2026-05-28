@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { api } from "../api/client";
 import { hasCliBlocks } from "../cliBlocks";
 import { splitMessageContent } from "../messageContent";
 import type { Message } from "../types";
@@ -9,11 +11,20 @@ import { renderCliText } from "./cli/drivers";
 interface Props {
   message: Message;
   showAvatar?: boolean;
+  conversationId?: string | null;
 }
 
-export function MessageBubble({ message, showAvatar = true }: Props) {
+export function MessageBubble({
+  message,
+  showAvatar = true,
+  conversationId,
+}: Props) {
   const isUser = message.sender_kind === "user";
   const isSystem = message.sender_kind === "system";
+  const showDelegateActions =
+    !!conversationId &&
+    message.status === "waiting_human" &&
+    message.sender_kind === "friend";
 
   return (
     <div
@@ -26,6 +37,16 @@ export function MessageBubble({ message, showAvatar = true }: Props) {
         {!isUser && (
           <span className="text-xs text-slate-500">
             {message.sender_name}
+            {message.on_behalf_of_user && (
+              <span className="ml-1.5 rounded bg-honey-100 px-1.5 py-0.5 text-[10px] font-medium text-honey-800">
+                代你
+              </span>
+            )}
+            {message.status === "waiting_human" && (
+              <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                待你确认
+              </span>
+            )}
             {message.model_used && (
               <span className="ml-2 text-slate-400">
                 · {message.model_used}
@@ -44,6 +65,9 @@ export function MessageBubble({ message, showAvatar = true }: Props) {
             message.status === "streaming" ? "ring-2 ring-honey-200" : "",
             message.status === "failed"
               ? "border border-red-300 bg-red-50 text-red-700"
+              : "",
+            message.status === "waiting_human"
+              ? "border border-amber-200 bg-amber-50/80"
               : "",
           ].join(" ")}
         >
@@ -64,8 +88,61 @@ export function MessageBubble({ message, showAvatar = true }: Props) {
             ""
           )}
         </div>
+        {showDelegateActions && (
+          <DelegateActions
+            conversationId={conversationId!}
+            message={message}
+          />
+        )}
       </div>
       {isUser && showAvatar && <Avatar name="我" kind="user" size={32} />}
+    </div>
+  );
+}
+
+function DelegateActions({
+  conversationId,
+  message,
+}: {
+  conversationId: string;
+  message: Message;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function resolve(approve: boolean) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.resolveDelegate(conversationId, message.id, {
+        approve,
+        content: message.content,
+      });
+    } catch (e) {
+      console.error(e);
+      alert(e instanceof Error ? e.message : "操作失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2 pl-1">
+      <button
+        type="button"
+        className="rounded-md bg-honey-500 px-2.5 py-1 text-xs font-medium text-slate-900 shadow-sm hover:bg-honey-400 disabled:opacity-50"
+        disabled={busy}
+        onClick={() => resolve(true)}
+      >
+        采纳代发
+      </button>
+      <button
+        type="button"
+        className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        disabled={busy}
+        onClick={() => resolve(false)}
+      >
+        不采纳
+      </button>
     </div>
   );
 }

@@ -2,6 +2,7 @@ pub mod routes;
 pub mod state;
 pub mod static_assets;
 pub mod ws;
+pub mod ws_api;
 
 pub use state::AppState;
 
@@ -30,7 +31,8 @@ pub fn build_app_with_static(core: Honeycomb, static_dir: Option<PathBuf>) -> Ro
 
     let router = Router::new()
         .nest("/api", routes::api_router())
-        .route("/ws", axum::routing::get(ws::ws_handler));
+        .route("/ws", axum::routing::get(ws::ws_handler))
+        .route("/ws-api", axum::routing::get(ws_api::ws_api_handler));
     let router = static_assets::mount(router)
         .with_state(state)
         .layer(cors)

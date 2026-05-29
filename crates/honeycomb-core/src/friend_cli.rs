@@ -27,6 +27,56 @@ pub fn launch_from_pty(cfg: &PtyBackendConfig) -> CliLaunchConfig {
     }
 }
 
+pub fn pty_execution_is_relay(cfg: &PtyBackendConfig) -> bool {
+    cfg.execution_mode.as_deref() == Some("relay")
+}
+
+pub fn pty_relay_id(cfg: &PtyBackendConfig) -> Option<&str> {
+    cfg.relay_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// CLI 工作目录：群聊用群共享目录；私聊用好友目录。
+pub fn resolve_cli_workspace(
+    cfg: &PtyBackendConfig,
+    friend_id: &str,
+    group_id: Option<&str>,
+    group_cli_workspace: Option<&str>,
+) -> crate::Result<String> {
+    if let Some(gid) = group_id.filter(|s| !s.is_empty()) {
+        if let Some(ws) = group_cli_workspace {
+            let t = ws.trim();
+            if !t.is_empty() {
+                return crate::cli_workspace::ensure_at(t);
+            }
+        }
+        return crate::cli_workspace::ensure_for_group(gid);
+    }
+    resolve_cli_workspace_dm(cfg, friend_id)
+}
+
+fn resolve_cli_workspace_dm(cfg: &PtyBackendConfig, friend_id: &str) -> crate::Result<String> {
+    if let Some(ref p) = cfg.cwd {
+        let t = p.trim();
+        if !t.is_empty() {
+            return crate::cli_workspace::ensure_at(t);
+        }
+    }
+    if let Ok(global) = std::env::var("HONEYCOMB_CLI_CWD") {
+        let t = global.trim();
+        if !t.is_empty() {
+            return crate::cli_workspace::ensure_at(t);
+        }
+    }
+    if friend_id.is_empty() {
+        return Err(crate::Error::Config(
+            "pty friend id required to resolve default cli workspace".into(),
+        ));
+    }
+    crate::cli_workspace::ensure_for_friend(friend_id)
+}
+
 pub fn pty_cli_session_is_resume(cfg: &PtyBackendConfig) -> bool {
     launch_from_pty(cfg).session_mode() == CliSessionMode::Resume
 }
@@ -64,23 +114,33 @@ pub fn persist_pty_cli_api_key(
     Ok(())
 }
 
+/// 从 vault 解析外部 CLI API Key 环境变量（供本机 spawn 或远程转发任务使用）。
+pub fn cli_auth_env_pairs(
+    cfg: &PtyBackendConfig,
+    vault: &SecretVault,
+) -> Vec<(String, String)> {
+    let preset = cfg.preset.as_deref().unwrap_or("");
+    let Some(var) = cli_api_key_env_var(preset) else {
+        return Vec::new();
+    };
+    let Some(ref secret_ref) = cfg.cli_api_key_ref else {
+        return Vec::new();
+    };
+    let Some(key) = vault.get(secret_ref) else {
+        return Vec::new();
+    };
+    vec![(var.to_string(), key)]
+}
+
 /// 向即将 spawn 的外部 CLI 子进程注入 API Key 环境变量。
 pub fn apply_cli_auth_env(
     cmd: &mut tokio::process::Command,
     cfg: &PtyBackendConfig,
     vault: &SecretVault,
 ) {
-    let preset = cfg.preset.as_deref().unwrap_or("");
-    let Some(var) = cli_api_key_env_var(preset) else {
-        return;
-    };
-    let Some(ref secret_ref) = cfg.cli_api_key_ref else {
-        return;
-    };
-    let Some(key) = vault.get(secret_ref) else {
-        return;
-    };
-    cmd.env(var, key);
+    for (k, v) in cli_auth_env_pairs(cfg, vault) {
+        cmd.env(k, v);
+    }
 }
 
 /// 探测外部 CLI 登录状态（供 Web 展示；不返回密钥）。

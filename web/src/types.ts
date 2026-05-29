@@ -46,6 +46,15 @@ export interface ProviderKey {
   status: string;
 }
 
+/** 在线 CLI 转发节点（远程电脑上的 honeycomb-cli-relay） */
+export interface CliRelayNode {
+  relay_id: string;
+  name: string;
+  host_label: string | null;
+  online: boolean;
+  connected_at: string;
+}
+
 export interface Friend {
   id: string;
   name: string;
@@ -152,6 +161,7 @@ export interface GroupAssistantSettings {
   classifier_provider_id?: string | null;
   classifier_model?: string | null;
   im_writeback?: AssistantImWriteback;
+  notify_owner_proactively?: boolean;
 }
 
 export interface AssistantGlobalSettings {
@@ -241,6 +251,8 @@ export interface GroupSettings {
   human_pause_ms: number;
   allow_agent_to_agent: boolean;
   extra_system_prompt: string | null;
+  /** 群聊共享 CLI 工作目录 */
+  cli_workspace?: string | null;
 }
 
 export interface Group {
@@ -432,4 +444,13 @@ export type BusEvent =
       friend_id: string;
       friend_name: string;
       content: string;
+    }
+  | {
+      type: "assistant_owner_notify";
+      conversation_id: string;
+      group_id: string;
+      group_name: string;
+      title: string;
+      body: string;
+      message_id?: string | null;
     };

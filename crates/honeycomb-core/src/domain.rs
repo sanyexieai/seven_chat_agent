@@ -113,6 +113,12 @@ pub struct PtyBackendConfig {
     /// 保存时一次性提交的 CLI API Key（仅 upsert 入参，不落库）。
     #[serde(default, skip_serializing)]
     pub cli_api_key: Option<String>,
+    /// CLI 执行位置：`local`（服务端本机，默认）或 `relay`（经转发程序在远程本机执行）。
+    #[serde(default)]
+    pub execution_mode: Option<String>,
+    /// `execution_mode=relay` 时绑定的转发节点 id（`relay_*`）。
+    #[serde(default)]
+    pub relay_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -155,6 +161,17 @@ fn default_skills_dir() -> String {
 }
 fn default_memory_top_k() -> usize {
     5
+}
+
+/// 去掉历史上内置 Provider 名称末尾的「(本地)」等后缀。
+pub fn normalize_provider_display_name(name: &str) -> String {
+    let n = name.trim();
+    for suffix in [" (本地)", "（本地）", "(本地)"] {
+        if let Some(stripped) = n.strip_suffix(suffix) {
+            return stripped.trim().to_string();
+        }
+    }
+    n.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -419,6 +436,9 @@ pub struct GroupAssistantSettings {
     pub classifier_model: Option<String>,
     #[serde(default)]
     pub im_writeback: AssistantImWriteback,
+    /// 超出拍板范围时，向前端/助理私聊/Todo 主动推送主人知悉（不阻断群内 Agent）。
+    #[serde(default = "default_true")]
+    pub notify_owner_proactively: bool,
 }
 
 impl Default for GroupAssistantSettings {
@@ -433,6 +453,7 @@ impl Default for GroupAssistantSettings {
             classifier_provider_id: None,
             classifier_model: None,
             im_writeback: AssistantImWriteback::default(),
+            notify_owner_proactively: true,
         }
     }
 }
@@ -714,6 +735,9 @@ pub struct GroupSettings {
     pub human_pause_ms: u64,
     pub allow_agent_to_agent: bool,
     pub extra_system_prompt: Option<String>,
+    /// 群聊共享 CLI 工作目录；留空则 `cli-workspaces/groups/<群ID>`。
+    #[serde(default)]
+    pub cli_workspace: Option<String>,
     #[serde(default)]
     pub assistant: GroupAssistantSettings,
 }
@@ -732,6 +756,7 @@ impl Default for GroupSettings {
             human_pause_ms: 30_000,
             allow_agent_to_agent: true,
             extra_system_prompt: None,
+            cli_workspace: None,
             assistant: GroupAssistantSettings::default(),
         }
     }

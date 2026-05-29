@@ -48,10 +48,20 @@ pub use crate::judge::Judgment;
 #[derive(Debug, Clone)]
 pub struct ChatContext {
     pub conversation_id: String,
+    /// 群聊时为群 `id`；私聊为 `None`。
+    pub group_id: Option<String>,
     pub group_settings: Option<GroupSettings>,
     pub history: Vec<Message>,
     pub self_friend: Friend,
     pub peers: Vec<Friend>,
+}
+
+impl ChatContext {
+    pub fn group_cli_workspace(&self) -> Option<&str> {
+        self.group_settings
+            .as_ref()
+            .and_then(|g| g.cli_workspace.as_deref())
+    }
 }
 
 #[async_trait]

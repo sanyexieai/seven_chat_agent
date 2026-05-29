@@ -1,10 +1,17 @@
-# honeycomb
+# Seven Chat Agent
+
+[![仓库](https://img.shields.io/github/v/tag/sanyexieai/seven_chat_agent?label=v2)](https://github.com/sanyexieai/seven_chat_agent)
 
 > 类微信的多 Agent 聊天室：**Agent 好友**（外部 CLI 或 **工蜂** 实例）与**真人好友**同屏聊天；工蜂可选 codex / claude 式外部 CLI，或自研 **Worker Bee**（记忆 + MCP + Skill）。
 
+**v2（本仓库主线）**：Rust 重写，仓库 [sanyexieai/seven_chat_agent](https://github.com/sanyexieai/seven_chat_agent)。  
+**v1（已归档）**：FastAPI + React（`agent-backend` / `agent-ui`），见 Git 标签 **`v1.0.0`** 或在线演示 [3ye.co:32004](http://3ye.co:32004/)。
+
+内部实现 crate / 二进制仍使用 `honeycomb-*` 代号；环境变量前缀为 `HONEYCOMB_*`。变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 形态
 
-honeycomb 有三种形态，共用同一份 Rust 内核 `honeycomb-core`：
+Seven Chat Agent 有三种形态，共用同一份 Rust 内核 `honeycomb-core`：
 
 1. **Web** — `crates/honeycomb-server` 起 HTTP + WebSocket，`web/` 是 React 前端，浏览器访问。
 2. **桌面** — `apps/honeycomb-desktop` 是 Tauri 2 壳，直接把 `honeycomb-server::build_app()` 编进进程并启动本地服务，Webview 加载前端。
@@ -107,9 +114,9 @@ cargo run --bin honeycomb-server
 | `qwen` | 通义千问 | `QWEN_API_KEY` |
 | `moonshot` | Moonshot Kimi | `MOONSHOT_API_KEY` |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
-| `ollama` | Ollama 本地 | `OLLAMA_API_KEY`（通常留空） |
-| `lmstudio` | LM Studio 本地 | `LMSTUDIO_API_KEY`（通常留空） |
-| `vllm` | vLLM 本地 | `VLLM_API_KEY`（通常留空） |
+| `ollama` | Ollama | `OLLAMA_API_KEY`（通常留空） |
+| `lmstudio` | LM Studio | `LMSTUDIO_API_KEY`（通常留空） |
+| `vllm` | vLLM | `VLLM_API_KEY`（通常留空） |
 
 自定义 Provider 同理，例如 id 为 `my-api` 则用 `MY_API_API_KEY`。完整列表见 [.env.example](.env.example)。
 
@@ -207,8 +214,8 @@ cargo build --release -p honeycomb-server --features embed-frontend
 ## 仓库结构
 
 ```
-honeycomb/
-├── Cargo.toml                      workspace
+seven_chat_agent/                   # 克隆目录名可与仓库一致
+├── Cargo.toml                      workspace（v2.0.0）
 ├── crates/
 │   ├── honeycomb-core/             领域模型 / store / provider / agent / dispatcher / scheduler
 │   │   └── src/
@@ -267,4 +274,16 @@ honeycomb/
 
 ## 设计文档
 
-完整架构、Hermes 风格"自主进化助理"以及真人好友接入方案，见 `.cursor/plans/honeycomb_多_agent_聊天室_*.plan.md`。
+完整架构、Hermes 风格"自主进化助理"以及真人好友接入方案，见 `.cursor/plans/honeycomb_多_agent_聊天室_*.plan.md`（内部规划文档，产品对外名称为 Seven Chat Agent）。
+
+## 发布到 GitHub（v2）
+
+```bash
+git remote add origin https://github.com/sanyexieai/seven_chat_agent.git
+# 若远程 main 仍是 v1：先在 GitHub 为当前 main 打 tag v1.0.0，再推送 v2
+git push -u origin main
+git tag v2.0.0
+git push origin v2.0.0
+```
+
+在 GitHub 创建 Release **v2.0.0**，正文可粘贴 [CHANGELOG.md](CHANGELOG.md) 中 v2 一节。

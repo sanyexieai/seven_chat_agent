@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { api, connectWs } from "./api/client";
 import { applyCliBlockDelta, cliBlocksToPlain } from "./cliBlocks";
 import type { Friend, Message } from "./types";
 import { Avatar } from "./components/Avatar";
 import { MessageBubble } from "./components/MessageBubble";
+import { MessageTimeDivider } from "./components/MessageTimeDivider";
+import { shouldShowMessageTime } from "./messageTime";
 
 interface Props {
   code: string;
@@ -132,7 +134,7 @@ export function HumanApp({ code }: Props) {
             {friend.name}
           </div>
           <div className="text-xs text-slate-500">
-            你正以这位好友的身份接入 honeycomb
+            你正以这位好友的身份接入 Seven Chat Agent
           </div>
         </div>
         <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs text-emerald-700">
@@ -145,18 +147,27 @@ export function HumanApp({ code }: Props) {
             还没有人说话，先发一条试试。
           </div>
         )}
-        {messages.map((m) => (
-          <MessageBubble
-            key={m.id}
-            message={{
-              ...m,
-              sender_kind:
-                m.sender_kind === "friend" && m.sender_id === friend.id
-                  ? "user"
-                  : m.sender_kind,
-            }}
-          />
-        ))}
+        {messages.map((m, i) => {
+          const prev = messages[i - 1];
+          const showTime = shouldShowMessageTime(
+            m.created_at,
+            prev?.created_at,
+          );
+          return (
+            <Fragment key={m.id}>
+              {showTime && <MessageTimeDivider createdAt={m.created_at} />}
+              <MessageBubble
+                message={{
+                  ...m,
+                  sender_kind:
+                    m.sender_kind === "friend" && m.sender_id === friend.id
+                      ? "user"
+                      : m.sender_kind,
+                }}
+              />
+            </Fragment>
+          );
+        })}
         <div ref={endRef} />
       </div>
       <form

@@ -180,6 +180,32 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// 将库里仍带「(本地)」后缀的 Provider 显示名写回规范化值。
+    pub async fn migrate_fixup_provider_display_names(&self) -> Result<()> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, display_name FROM providers WHERE display_name LIKE '%本地%'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for (id, name) in rows {
+            let fixed = crate::domain::normalize_provider_display_name(&name);
+            if fixed != name {
+                sqlx::query("UPDATE providers SET display_name = ? WHERE id = ?")
+                    .bind(&fixed)
+                    .bind(&id)
+                    .execute(&self.pool)
+                    .await?;
+                tracing::info!(
+                    provider_id = %id,
+                    old = %name,
+                    new = %fixed,
+                    "fixup provider display_name"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub async fn seed_builtins(&self) -> Result<()> {
         // 自愈：历史上判断条件曾经只看 backend_kind='assistant'，
         // 如果用户把内置 Hex 改成了 pty/api 等其它后端，下次启动就会再插一条。
@@ -336,7 +362,7 @@ impl ProviderRow {
         Ok(Provider {
             id: self.id,
             kind: self.kind,
-            display_name: self.display_name,
+            display_name: crate::domain::normalize_provider_display_name(&self.display_name),
             base_url: self.base_url,
             default_model: self.default_model,
             capabilities: caps,

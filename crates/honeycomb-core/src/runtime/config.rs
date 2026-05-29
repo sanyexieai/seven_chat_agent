@@ -151,8 +151,16 @@ impl RuntimeProfile {
             BackendKind::Human => {}
         }
 
-        p.workspace_cwd = resolve_workspace(friend)?;
+        p.workspace_cwd = resolve_workspace(friend, None)?;
         Ok(p)
+    }
+
+    pub fn workspace_for_context(
+        &self,
+        friend: &Friend,
+        ctx: &crate::agent::ChatContext,
+    ) -> crate::Result<Option<String>> {
+        resolve_workspace(friend, Some(ctx))
     }
 
     pub fn provider_inference(&self) -> Option<&ProviderInferenceConfig> {
@@ -221,9 +229,19 @@ fn sync_memory_from_worker_bee(p: &mut RuntimeProfile) {
     }
 }
 
-fn resolve_workspace(friend: &Friend) -> crate::Result<Option<String>> {
+fn resolve_workspace(friend: &Friend, ctx: Option<&crate::agent::ChatContext>) -> crate::Result<Option<String>> {
     let cfg: PtyBackendConfig =
         serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
+    if let Some(ctx) = ctx {
+        if ctx.group_id.is_some() {
+            return Ok(Some(crate::friend_cli::resolve_cli_workspace(
+                &cfg,
+                &friend.id,
+                ctx.group_id.as_deref(),
+                ctx.group_cli_workspace(),
+            )?));
+        }
+    }
     if let Some(ref cwd) = cfg.cwd {
         let t = cwd.trim();
         if !t.is_empty() {

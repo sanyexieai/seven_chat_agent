@@ -29,7 +29,7 @@ mod task_flow;
 
 pub use im_writeback::ImWritebackEvent;
 
-use assistant_delegate::{expert_friends_for_group, StreamReplyOptions};
+use assistant_delegate::{expert_friends_for_group, GroupAssistantPhase, StreamReplyOptions};
 use crate::provider::ProviderRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +142,15 @@ pub enum BusEvent {
         friend_id: String,
         friend_name: String,
         content: String,
+    },
+    /// 群代理人将需主人知悉的事项写入备忘录后，推送给前端（不阻断群内 Agent）。
+    AssistantOwnerNotify {
+        conversation_id: String,
+        group_id: String,
+        group_name: String,
+        title: String,
+        body: String,
+        message_id: Option<String>,
     },
 }
 
@@ -403,6 +412,7 @@ impl MessageDispatcher {
         let history = self.store.recent_messages(&conv.id, 40).await?;
         let ctx = ChatContext {
             conversation_id: conv.id.clone(),
+            group_id: None,
             group_settings: None,
             history,
             self_friend: friend.clone(),
@@ -432,8 +442,14 @@ impl MessageDispatcher {
                 .run_task_flow(&conv, &user_msg, &turn_id, &settings, &members)
                 .await?
             {
-                self.maybe_dispatch_group_assistant(&conv.id, &group, &user_msg, &turn_id)
-                    .await?;
+                self.maybe_dispatch_group_assistant(
+                    &conv.id,
+                    &group,
+                    &user_msg,
+                    &turn_id,
+                    GroupAssistantPhase::AfterExperts,
+                )
+                .await?;
                 return Ok(());
             }
         }
@@ -583,6 +599,7 @@ impl MessageDispatcher {
                 let history = self.store.recent_messages(&conv.id, 60).await?;
                 let ctx = ChatContext {
                     conversation_id: conv.id.clone(),
+                    group_id: Some(group.id.clone()),
                     group_settings: Some(settings.clone()),
                     history,
                     self_friend: friend.clone(),
@@ -608,8 +625,14 @@ impl MessageDispatcher {
         }
 
         if user_msg.sender_kind == SenderKind::User {
-            self.maybe_dispatch_group_assistant(&conv.id, &group, &user_msg, &turn_id)
-                .await?;
+            self.maybe_dispatch_group_assistant(
+                &conv.id,
+                &group,
+                &user_msg,
+                &turn_id,
+                GroupAssistantPhase::AfterExperts,
+            )
+            .await?;
         }
         Ok(())
     }

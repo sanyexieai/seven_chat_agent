@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   configuredJudgeModeLabel,
   judgeSourceLabel,
@@ -7,6 +7,8 @@ import {
 } from "../judgeLabels";
 import { useChat } from "../stores/chat";
 import { MessageBubble } from "./MessageBubble";
+import { MessageTimeDivider } from "./MessageTimeDivider";
+import { shouldShowMessageTime } from "../messageTime";
 import { TaskFlowPanel } from "./TaskFlowPanel";
 import { Avatar } from "./Avatar";
 
@@ -20,6 +22,7 @@ export function ChatWindow() {
     sendMessage,
     thinking,
     judgeBanner,
+    ownerNotify,
     taskFlow,
   } = useChat();
   const [draft, setDraft] = useState("");
@@ -111,6 +114,17 @@ export function ChatWindow() {
         <div className="text-xs text-slate-400">{header.right}</div>
       </header>
       {target.kind === "group" && taskFlow && <TaskFlowPanel round={taskFlow} />}
+      {target.kind === "group" &&
+        ownerNotify &&
+        target.id === ownerNotify.groupId && (
+          <div className="border-b border-violet-200 bg-violet-50 px-4 py-2 text-xs text-violet-950">
+            <div className="font-medium">{ownerNotify.title}</div>
+            <p className="mt-1 leading-relaxed">{ownerNotify.body}</p>
+            <p className="mt-1 text-violet-700/80">
+              代理人已代你拍板并写入备忘录；专家可继续推进。可在 Hex 助理面板查看 Todo。
+            </p>
+          </div>
+        )}
       {target.kind === "group" && judgeBanner && (
         <div
           className={`border-b px-4 py-2 text-xs leading-relaxed ${
@@ -213,7 +227,7 @@ export function ChatWindow() {
           })}
         </div>
       )}
-      <div className="flex-1 space-y-3 overflow-y-auto px-6 py-4">
+      <div className="flex-1 space-y-2 overflow-y-auto px-4 py-4 sm:px-6">
         {messages.length === 0 && (
           <div className="mt-12 text-center text-sm text-slate-400">
             {target.kind === "friend"
@@ -221,13 +235,22 @@ export function ChatWindow() {
               : "在群里说点什么，看大家会不会出声。"}
           </div>
         )}
-        {messages.map((m) => (
-          <MessageBubble
-            key={m.id}
-            message={m}
-            conversationId={conversation?.id}
-          />
-        ))}
+        {messages.map((m, i) => {
+          const prev = messages[i - 1];
+          const showTime = shouldShowMessageTime(
+            m.created_at,
+            prev?.created_at,
+          );
+          return (
+            <Fragment key={m.id}>
+              {showTime && <MessageTimeDivider createdAt={m.created_at} />}
+              <MessageBubble
+                message={m}
+                conversationId={conversation?.id}
+              />
+            </Fragment>
+          );
+        })}
         <div ref={endRef} />
       </div>
       <form

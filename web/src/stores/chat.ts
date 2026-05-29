@@ -57,6 +57,14 @@ export interface JudgeRoundBanner {
   updatedAt: number;
 }
 
+export interface OwnerNotifyBanner {
+  groupId: string;
+  groupName: string;
+  title: string;
+  body: string;
+  updatedAt: number;
+}
+
 interface ChatState {
   ready: boolean;
   friends: Friend[];
@@ -68,6 +76,7 @@ interface ChatState {
   messages: Message[];
   thinking: Record<string, ThinkingState>;
   judgeBanner: JudgeRoundBanner | null;
+  ownerNotify: OwnerNotifyBanner | null;
   taskFlow: TaskFlowRound | null;
   ws: WebSocket | null;
   init: () => Promise<void>;
@@ -90,6 +99,7 @@ export const useChat = create<ChatState>((set, get) => ({
   messages: [],
   thinking: {},
   judgeBanner: null,
+  ownerNotify: null,
   taskFlow: null,
   ws: null,
   async init() {
@@ -510,6 +520,18 @@ function applyBusEvent(
       if (sameConv(ev.conversation_id)) {
         set({ thinking: {} });
       }
+      break;
+    }
+    case "assistant_owner_notify": {
+      set({
+        ownerNotify: {
+          groupId: ev.group_id,
+          groupName: ev.group_name,
+          title: ev.title,
+          body: ev.body,
+          updatedAt: Date.now(),
+        },
+      });
       break;
     }
   }

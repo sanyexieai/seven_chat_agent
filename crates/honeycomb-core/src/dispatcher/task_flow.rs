@@ -172,6 +172,7 @@ impl MessageDispatcher {
         let history = self.store.recent_messages(&conv.id, 60).await?;
         let ctx = ChatContext {
             conversation_id: conv.id.clone(),
+            group_id: Some(conv.target_id.clone()),
             group_settings: Some(settings.clone()),
             history,
             self_friend: leader.clone(),
@@ -223,6 +224,7 @@ impl MessageDispatcher {
                 let history = self.store.recent_messages(&conv.id, 40).await?;
                 let ctx = ChatContext {
                     conversation_id: conv.id.clone(),
+                    group_id: Some(conv.target_id.clone()),
                     group_settings: Some(settings.clone()),
                     history,
                     self_friend: friend.clone(),
@@ -429,6 +431,7 @@ impl MessageDispatcher {
         let history = self.store.recent_messages(&conv.id, 60).await?;
         let ctx = ChatContext {
             conversation_id: conv.id.clone(),
+            group_id: Some(conv.target_id.clone()),
             group_settings: Some(settings.clone()),
             history,
             self_friend: leader.clone(),
@@ -467,6 +470,7 @@ impl MessageDispatcher {
                 let history = self.store.recent_messages(&conv.id, 60).await?;
                 let ctx = ChatContext {
                     conversation_id: conv.id.clone(),
+                    group_id: Some(conv.target_id.clone()),
                     group_settings: Some(settings.clone()),
                     history,
                     self_friend: member.clone(),

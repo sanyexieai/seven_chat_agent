@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "honeycomb",
+  "productName": "Seven Chat Agent",
   "version": "0.1.0",
   "identifier": "io.honeycomb.app",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "honeycomb",
+        "title": "Seven Chat Agent",
         "label": "main",
         "width": 1180,
         "height": 760,

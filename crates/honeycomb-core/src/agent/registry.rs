@@ -14,6 +14,7 @@ use crate::runtime::UnifiedAgent;
 use crate::domain::{BackendKind, Friend, Message};
 use crate::judge::JudgeService;
 use crate::provider::ProviderRegistry;
+use crate::cli_relay::RelayHub;
 use crate::store::SqliteStore;
 use crate::{Error, Result};
 
@@ -21,6 +22,7 @@ pub struct AgentRegistry {
     store: Arc<SqliteStore>,
     providers: Arc<ProviderRegistry>,
     judge: Arc<JudgeService>,
+    cli_relay: Arc<RelayHub>,
     handles: DashMap<String, AgentHandle>,
 }
 
@@ -29,11 +31,13 @@ impl AgentRegistry {
         store: Arc<SqliteStore>,
         providers: Arc<ProviderRegistry>,
         judge: Arc<JudgeService>,
+        cli_relay: Arc<RelayHub>,
     ) -> Self {
         Self {
             store,
             providers,
             judge,
+            cli_relay,
             handles: DashMap::new(),
         }
     }
@@ -68,6 +72,7 @@ impl AgentRegistry {
                         self.store.clone(),
                         self.providers.clone(),
                         self.judge.clone(),
+                        self.cli_relay.clone(),
                     )?))
                 } else if pty_preset_is_worker_bee(&cfg) {
                     Ok(Arc::new(UnifiedAgent::new(

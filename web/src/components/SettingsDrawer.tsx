@@ -1,5 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import {
+  defaultBaseUrlForProvider,
+  providerDisplayName,
+} from "../providerDefaults";
 import { useChat } from "../stores/chat";
 import type { Provider, ProviderKey } from "../types";
 
@@ -12,7 +16,7 @@ const PROVIDER_KINDS: { id: string; label: string; hint: string }[] = [
   { id: "openai_compat", label: "openai_compat", hint: "标准 OpenAI Chat Completions 兼容（DeepSeek/通义/LM Studio/vLLM/OpenRouter 等都走这个）" },
   { id: "anthropic", label: "anthropic", hint: "Anthropic Messages API（claude-*）" },
   { id: "gemini", label: "gemini", hint: "Google Generative Language API（gemini-*）" },
-  { id: "ollama", label: "ollama", hint: "Ollama 本地 NDJSON 接口" },
+  { id: "ollama", label: "ollama", hint: "Ollama NDJSON 接口" },
 ];
 
 export function SettingsDrawer({ open, onClose }: Props) {
@@ -65,11 +69,11 @@ export function SettingsDrawer({ open, onClose }: Props) {
       keyCount > 0
         ? `\n这会顺带删除 ${keyCount} 个 API key（ON DELETE CASCADE）。`
         : "";
-    if (!confirm(`确定删除 Provider「${p.display_name}」吗？${extra}`)) return;
+    if (!confirm(`确定删除 Provider「${providerDisplayName(p.display_name)}」吗？${extra}`)) return;
     try {
       await api.deleteProvider(p.id);
       await reloadProviders();
-      setMsg(`已删除 ${p.display_name}`);
+      setMsg(`已删除 ${providerDisplayName(p.display_name)}`);
     } catch (e: any) {
       setMsg(e.message || String(e));
     }
@@ -100,8 +104,9 @@ export function SettingsDrawer({ open, onClose }: Props) {
               </button>
             </div>
             <div className="text-xs text-slate-500">
-              内置已预置 10 个常见 Provider（只有接口地址与默认模型，<strong>不含 Token</strong>）。
-              API Key 在下方「API Keys」区填写。你也可以把任何 OpenAI 兼容的自托管 / 第三方接口加进来。
+              内置已预置常见 Provider（默认 Base URL 与模型，<strong>不含 Token</strong>）。
+              点「编辑」可修改任意 Provider 的 Base URL（代理、局域网 Ollama/vLLM 等），保存后写入数据库并立即生效。
+              API Key 在下方「API Keys」区填写；也可新增自定义 OpenAI 兼容端点。
             </div>
             <ul className="space-y-1">
               {providers.map((p) => (
@@ -111,7 +116,9 @@ export function SettingsDrawer({ open, onClose }: Props) {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium">{p.display_name}</div>
+                      <div className="font-medium">
+                        {providerDisplayName(p.display_name)}
+                      </div>
                       <div className="truncate text-xs text-slate-500">
                         [{p.kind}] {p.base_url}
                         {p.default_model && <span> · {p.default_model}</span>}
@@ -151,7 +158,7 @@ export function SettingsDrawer({ open, onClose }: Props) {
                   >
                     {providers.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.display_name}
+                        {providerDisplayName(p.display_name)}
                       </option>
                     ))}
                   </select>
@@ -341,7 +348,7 @@ function ProviderKeyEditor({
             >
               {providers.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.display_name}
+                  {providerDisplayName(p.display_name)}
                 </option>
               ))}
             </select>
@@ -436,6 +443,11 @@ function ProviderEditor({ initial, onClose, onSaved }: ProviderEditorProps) {
   const [form, setForm] = useState(() => initFromProvider(initial));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setForm(initFromProvider(initial));
+    setErr(null);
+  }, [initial?.id, isNew]);
   const idHint = useMemo(
     () =>
       isNew
@@ -481,7 +493,9 @@ function ProviderEditor({ initial, onClose, onSaved }: ProviderEditorProps) {
       <div className="card flex max-h-[90vh] w-[640px] flex-col overflow-hidden p-0">
         <header className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
           <h2 className="text-base font-semibold">
-            {isNew ? "新增 Provider" : `编辑 Provider · ${initial?.display_name}`}
+            {isNew
+              ? "新增 Provider"
+              : `编辑 Provider · ${providerDisplayName(initial?.display_name)}`}
           </h2>
           <button className="btn-ghost" onClick={onClose}>
             ×
@@ -508,7 +522,7 @@ function ProviderEditor({ initial, onClose, onSaved }: ProviderEditorProps) {
                 onChange={(e) =>
                   setForm({ ...form, display_name: e.target.value })
                 }
-                placeholder="My vLLM 本地"
+                placeholder="My vLLM"
               />
             </div>
           </div>
@@ -518,8 +532,16 @@ function ProviderEditor({ initial, onClose, onSaved }: ProviderEditorProps) {
               {PROVIDER_KINDS.map((k) => (
                 <button
                   key={k.id}
+                  type="button"
                   className={`btn text-left ${form.kind === k.id ? "border-honey-500 bg-honey-50" : ""}`}
-                  onClick={() => setForm({ ...form, kind: k.id })}
+                  onClick={() => {
+                    const next: typeof form = { ...form, kind: k.id };
+                    if (isNew && !form.base_url.trim()) {
+                      const suggested = defaultBaseUrlForProvider(form.id.trim(), k.id);
+                      if (suggested) next.base_url = suggested;
+                    }
+                    setForm(next);
+                  }}
                   title={k.hint}
                 >
                   <span className="font-medium">{k.label}</span>
@@ -531,14 +553,34 @@ function ProviderEditor({ initial, onClose, onSaved }: ProviderEditorProps) {
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Base URL</label>
-              <input
-                className="input"
-                value={form.base_url}
-                onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-                placeholder="https://api.example.com/v1"
-              />
+            <div className="col-span-2 sm:col-span-2">
+              <label className="label">Base URL（可改）</label>
+              <div className="mt-1 flex gap-2">
+                <input
+                  className="input min-w-0 flex-1 font-mono text-xs"
+                  value={form.base_url}
+                  onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+                  placeholder="https://api.example.com/v1 或 http://192.168.1.10:11434"
+                />
+                <button
+                  type="button"
+                  className="btn shrink-0 text-xs"
+                  title="填入该 Provider / 类型的官方或常用默认地址"
+                  onClick={() => {
+                    const suggested = defaultBaseUrlForProvider(
+                      form.id.trim(),
+                      form.kind,
+                    );
+                    if (suggested) setForm({ ...form, base_url: suggested });
+                  }}
+                >
+                  填入默认
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                第三方网关、One-API、局域网 Ollama / LM Studio / vLLM 等均可在此修改；保存后全站好友共用该
+                Provider 的地址。
+              </p>
             </div>
             <div>
               <label className="label">默认 model</label>
@@ -676,7 +718,7 @@ function initFromProvider(p: Provider | null) {
   return {
     id: p.id,
     kind: p.kind,
-    display_name: p.display_name,
+    display_name: providerDisplayName(p.display_name),
     base_url: p.base_url,
     default_model: p.default_model ?? "",
     stream: p.capabilities.stream,

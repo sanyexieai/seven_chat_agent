@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { api, type CliAuthStatus } from "../api/client";
+import { providerDisplayName } from "../providerDefaults";
 import { useChat } from "../stores/chat";
-import type { BackendKind, Friend, Provider, ProviderKey } from "../types";
+import type {
+  BackendKind,
+  CliRelayNode,
+  Friend,
+  Provider,
+  ProviderKey,
+} from "../types";
 
 interface Props {
   friendId: string | null;
@@ -12,9 +19,15 @@ export function FriendEditor({ friendId, onClose }: Props) {
   const { providers, providerKeys, reloadFriends, reloadProviders, selectFriend } =
     useChat();
   const [draft, setDraft] = useState<FriendDraft>(emptyDraft());
+  const [providerBaseUrl, setProviderBaseUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const canDelete = !!friendId && !draft.is_builtin;
+  const workerBeeProvider = providers.find((p) => p.id === draft.pty.provider_id);
+
+  useEffect(() => {
+    setProviderBaseUrl(workerBeeProvider?.base_url ?? "");
+  }, [draft.pty.provider_id, workerBeeProvider?.base_url]);
 
   useEffect(() => {
     if (!friendId) {
@@ -41,6 +54,18 @@ export function FriendEditor({ friendId, onClose }: Props) {
           label: `${d.name || "工蜂"} · ${d.pty.provider_id}`,
         });
         d = { ...d, pty: { ...d.pty, api_key_id: id, api_key_secret: "" } };
+      }
+      if (
+        d.backend_kind === "pty" &&
+        d.pty.preset === "worker-bee-cli" &&
+        d.pty.provider_id.trim()
+      ) {
+        const urlDirty = await persistProviderBaseUrlIfChanged(
+          d.pty.provider_id,
+          providerBaseUrl,
+          providers,
+        );
+        if (urlDirty) await reloadProviders();
       }
       if (d.backend_kind === "pty" && !d.pty.preset.trim()) {
         setError("请选择 CLI 预设（Codex / Claude / Worker Bee 等）");
@@ -166,6 +191,8 @@ export function FriendEditor({ friendId, onClose }: Props) {
               setDraft={setDraft}
               providers={providers}
               providerKeys={providerKeys}
+              providerBaseUrl={providerBaseUrl}
+              onProviderBaseUrlChange={setProviderBaseUrl}
             />
           )}
           {draft.backend_kind === "human" && (
@@ -244,6 +271,9 @@ interface FriendDraft {
     api_key_secret: string;
     skills_dir: string;
     memory_top_k: number;
+    /** CLI 执行位置：服务端本机或远程转发 */
+    execution_mode: "local" | "relay";
+    relay_id: string;
   };
   human: {
     channel: string;
@@ -257,7 +287,7 @@ function emptyDraft(): FriendDraft {
     is_builtin: false,
     name: "",
     personality: "",
-    system_prompt: "你是 [name]，活跃在 honeycomb 多 Agent 聊天室。",
+    system_prompt: "你是 [name]，活跃在 Seven Chat Agent 多 Agent 聊天室。",
     focus_tags: [],
     backend_kind: "pty",
     api: { provider_id: "openai", model: "gpt-4o-mini", api_key_id: null },
@@ -277,6 +307,8 @@ function emptyDraft(): FriendDraft {
       api_key_secret: "",
       skills_dir: "data/skills",
       memory_top_k: 5,
+      execution_mode: "local",
+      relay_id: "",
     },
     human: { channel: "invite", endpoint: "" },
   };
@@ -309,6 +341,8 @@ function fromFriend(f: Friend): FriendDraft {
       api_key_secret: "",
       skills_dir: f.backend_config?.skills_dir || "data/skills",
       memory_top_k: f.backend_config?.memory_top_k ?? 5,
+      execution_mode: "local",
+      relay_id: "",
     };
   } else if (f.backend_kind === "pty" || f.backend_kind === "assistant") {
     const rawPreset = f.backend_config?.preset;
@@ -351,6 +385,12 @@ function fromFriend(f: Friend): FriendDraft {
       api_key_secret: "",
       skills_dir: isExternal ? "data/skills" : f.backend_config?.skills_dir || "data/skills",
       memory_top_k: isExternal ? 5 : f.backend_config?.memory_top_k ?? 5,
+      execution_mode:
+        f.backend_config?.execution_mode === "relay" ? "relay" : "local",
+      relay_id:
+        typeof f.backend_config?.relay_id === "string"
+          ? f.backend_config.relay_id
+          : "",
     };
   } else if (f.backend_kind === "human") {
     draft.human = {
@@ -411,6 +451,16 @@ function toApi(d: FriendDraft) {
       if (d.pty.cli_api_key_secret.trim()) {
         backend_config.cli_api_key = d.pty.cli_api_key_secret.trim();
       }
+      backend_config.execution_mode = d.pty.execution_mode;
+      if (d.pty.execution_mode === "relay") {
+        const rid = d.pty.relay_id.trim();
+        if (!rid) {
+          throw new Error("远程转发模式下请选择在线转发节点");
+        }
+        backend_config.relay_id = rid;
+      } else {
+        backend_config.relay_id = null;
+      }
     }
   } else if (d.backend_kind === "human") {
     backend_config = {
@@ -428,6 +478,29 @@ function toApi(d: FriendDraft) {
     backend_config,
     judge_provider_ref: null,
   };
+}
+
+/** 工蜂绑定的 Provider Base URL 有改动时写入数据库；返回是否已保存 */
+async function persistProviderBaseUrlIfChanged(
+  providerId: string,
+  baseUrl: string,
+  providers: Provider[],
+): Promise<boolean> {
+  const p = providers.find((x) => x.id === providerId);
+  if (!p) return false;
+  const trimmed = baseUrl.trim();
+  if (!trimmed || trimmed === p.base_url) return false;
+  await api.upsertProvider({
+    id: p.id,
+    kind: p.kind,
+    display_name: p.display_name,
+    base_url: trimmed,
+    default_model: p.default_model,
+    capabilities: p.capabilities,
+    price: p.price,
+    enabled: p.enabled,
+  });
+  return true;
 }
 
 async function persistProviderKey(opts: {
@@ -459,14 +532,17 @@ function backendLabel(k: BackendKind) {
 function WorkerBeeApiFields({
   providerId,
   model,
+  baseUrl,
   apiKeyId,
   apiKeySecret,
   onChange,
+  onBaseUrlChange,
   providers,
   providerKeys,
 }: {
   providerId: string;
   model: string;
+  baseUrl: string;
   apiKeyId: string | null;
   apiKeySecret: string;
   onChange: (api: {
@@ -475,6 +551,7 @@ function WorkerBeeApiFields({
     api_key_id: string | null;
     api_key_secret: string;
   }) => void;
+  onBaseUrlChange: (url: string) => void;
   providers: Provider[];
   providerKeys: ProviderKey[];
 }) {
@@ -511,7 +588,7 @@ function WorkerBeeApiFields({
           >
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.display_name}
+                {providerDisplayName(p.display_name)}
               </option>
             ))}
           </select>
@@ -534,6 +611,22 @@ function WorkerBeeApiFields({
             }
           />
         </div>
+      </div>
+      <div>
+        <label className="label">Base URL</label>
+        <input
+          className="input font-mono text-xs"
+          value={baseUrl}
+          onChange={(e) => onBaseUrlChange(e.target.value)}
+          placeholder={
+            providers.find((p) => p.id === providerId)?.base_url ||
+            "http://localhost:11434"
+          }
+        />
+        <p className="mt-1 text-xs text-slate-500">
+          修改后保存好友即写入 Provider 配置（该 Provider 下所有工蜂实例共用）。也可在「设置 →
+          Providers」中编辑。
+        </p>
       </div>
       <div>
         <label className="label">API Key</label>
@@ -622,9 +715,174 @@ function cliApiKeyEnvHint(preset: string): string {
   }
 }
 
+function CliRelayConfigPanel({
+  executionMode,
+  relayId,
+  onChange,
+}: {
+  executionMode: "local" | "relay";
+  relayId: string;
+  onChange: (patch: Partial<FriendDraft["pty"]>) => void;
+}) {
+  const [relays, setRelays] = useState<CliRelayNode[]>([]);
+  const [relaysBusy, setRelaysBusy] = useState(false);
+  const [pairingToken, setPairingToken] = useState<string | null>(null);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [relayError, setRelayError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const refreshRelays = () => {
+    setRelaysBusy(true);
+    setRelayError(null);
+    api
+      .listCliRelays()
+      .then((r) => setRelays(r.relays || []))
+      .catch((e) => setRelayError(e.message || String(e)))
+      .finally(() => setRelaysBusy(false));
+  };
+
+  useEffect(() => {
+    refreshRelays();
+  }, []);
+
+  useEffect(() => {
+    if (executionMode !== "relay") return;
+    const t = window.setInterval(refreshRelays, 5000);
+    return () => window.clearInterval(t);
+  }, [executionMode]);
+
+  async function createPairingToken() {
+    setPairingBusy(true);
+    setRelayError(null);
+    try {
+      const { pairing_token } = await api.createCliRelayPairingToken();
+      setPairingToken(pairing_token);
+      setCopied(false);
+    } catch (e: any) {
+      setRelayError(e.message || String(e));
+    } finally {
+      setPairingBusy(false);
+    }
+  }
+
+  async function copyToken() {
+    if (!pairingToken) return;
+    try {
+      await navigator.clipboard.writeText(pairingToken);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setRelayError("无法写入剪贴板，请手动复制配对码");
+    }
+  }
+
+  const wsRelayUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/cli-relay`;
+  const relayCmd = pairingToken
+    ? `cargo run -p honeycomb-cli-relay -- --url ${wsRelayUrl} --pairing-token ${pairingToken} --name my-pc`
+    : null;
+
+  return (
+    <div className="space-y-3 rounded-md border border-sky-200 bg-sky-50/80 p-3">
+      <label className="label mb-0">CLI 执行位置</label>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className={`btn text-xs ${executionMode === "local" ? "border-sky-500 bg-white" : ""}`}
+          onClick={() => onChange({ execution_mode: "local" })}
+        >
+          服务端本机
+        </button>
+        <button
+          type="button"
+          className={`btn text-xs ${executionMode === "relay" ? "border-sky-500 bg-white" : ""}`}
+          onClick={() => onChange({ execution_mode: "relay" })}
+        >
+          远程电脑（转发程序）
+        </button>
+      </div>
+      <p className="text-xs text-sky-900/90">
+        {executionMode === "local"
+          ? "CLI 在 honeycomb-server 所在机器上启动（与改造前相同）。"
+          : "CLI 在已配对的远程电脑上执行；Web 只发指令到服务端，由转发程序在本机调用 codex/claude 等。"}
+      </p>
+
+      {executionMode === "relay" && (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-primary text-xs"
+              disabled={pairingBusy}
+              onClick={createPairingToken}
+            >
+              {pairingBusy ? "生成中…" : "生成配对码（15 分钟有效）"}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              disabled={relaysBusy}
+              onClick={refreshRelays}
+            >
+              {relaysBusy ? "刷新中…" : "刷新在线节点"}
+            </button>
+          </div>
+          {relayError && (
+            <p className="text-xs text-red-700">{relayError}</p>
+          )}
+          {pairingToken && (
+            <div className="space-y-2 rounded border border-sky-300/70 bg-white/70 p-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="break-all text-xs text-sky-950">{pairingToken}</code>
+                <button type="button" className="btn-ghost text-xs" onClick={copyToken}>
+                  {copied ? "已复制" : "复制"}
+                </button>
+              </div>
+              <p className="text-xs text-sky-900">
+                在<strong>远程电脑</strong>项目目录执行（需已安装 Rust 与本机 CLI）：
+              </p>
+              <pre className="overflow-x-auto rounded bg-slate-900 p-2 text-[11px] text-slate-100">
+                {relayCmd}
+              </pre>
+            </div>
+          )}
+          <div>
+            <label className="label">绑定转发节点</label>
+            {relays.length === 0 ? (
+              <p className="text-xs text-amber-800">
+                暂无在线节点。请先生成配对码并在远程电脑启动{" "}
+                <code>honeycomb-cli-relay</code>。
+              </p>
+            ) : (
+              <select
+                className="input font-mono text-xs"
+                value={relayId}
+                onChange={(e) => onChange({ relay_id: e.target.value })}
+              >
+                <option value="">请选择…</option>
+                {relays.map((r) => (
+                  <option key={r.relay_id} value={r.relay_id}>
+                    {r.name}
+                    {r.host_label ? ` · ${r.host_label}` : ""} ({r.relay_id})
+                  </option>
+                ))}
+              </select>
+            )}
+            {relayId && !relays.some((r) => r.relay_id === relayId) && (
+              <p className="mt-1 text-xs text-amber-800">
+                当前绑定的节点未在线，对话将失败直至重新连接。
+              </p>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ExternalCliAuthFields({
   friendId,
   preset,
+  executionMode,
   apiKeySecret,
   apiKeyConfigured,
   clearApiKey,
@@ -632,6 +890,7 @@ function ExternalCliAuthFields({
 }: {
   friendId: string | null;
   preset: string;
+  executionMode: "local" | "relay";
   apiKeySecret: string;
   apiKeyConfigured: boolean;
   clearApiKey?: boolean;
@@ -745,9 +1004,18 @@ function ExternalCliAuthFields({
       <div className="space-y-2 rounded border border-violet-300/60 bg-white/60 p-2">
         <label className="label">服务器 OAuth 登录</label>
         <p className="text-xs text-violet-900/80">
-          在 honeycomb-server 本机启动 <code>agent login</code> /{" "}
-          <code>codex login --device-auth</code> 等，登录态写在服务器用户目录（与 API Key
-          二选一或并存）。
+          {executionMode === "relay" ? (
+            <>
+              远程转发模式下，OAuth 需在<strong>远程电脑</strong>本机完成（转发程序所在环境）。
+              下方 API Key 会随任务下发到远程 CLI 环境变量。
+            </>
+          ) : (
+            <>
+              在 honeycomb-server 本机启动 <code>agent login</code> /{" "}
+              <code>codex login --device-auth</code> 等，登录态写在服务器用户目录（与 API Key
+              二选一或并存）。
+            </>
+          )}
         </p>
         {!friendId ? (
           <p className="text-xs text-amber-800">请先保存好友，再使用 OAuth 登录。</p>
@@ -887,11 +1155,15 @@ function PtyConfigEditor({
   setDraft,
   providers,
   providerKeys,
+  providerBaseUrl,
+  onProviderBaseUrlChange,
 }: {
   draft: FriendDraft;
   setDraft: (d: FriendDraft) => void;
   providers: Provider[];
   providerKeys: ProviderKey[];
+  providerBaseUrl: string;
+  onProviderBaseUrlChange: (url: string) => void;
 }) {
   const isCustom = draft.pty.preset === "custom";
   const isWorkerBee = draft.pty.preset === "worker-bee-cli";
@@ -948,6 +1220,7 @@ function PtyConfigEditor({
         <WorkerBeeApiFields
           providerId={draft.pty.provider_id}
           model={draft.pty.model}
+          baseUrl={providerBaseUrl}
           apiKeyId={draft.pty.api_key_id}
           apiKeySecret={draft.pty.api_key_secret}
           onChange={(api) =>
@@ -962,6 +1235,7 @@ function PtyConfigEditor({
               },
             })
           }
+          onBaseUrlChange={onProviderBaseUrlChange}
           providers={providers}
           providerKeys={providerKeys}
         />
@@ -1003,9 +1277,22 @@ function PtyConfigEditor({
         </div>
       )}
       {isExternalCli && (
+        <CliRelayConfigPanel
+          executionMode={draft.pty.execution_mode}
+          relayId={draft.pty.relay_id}
+          onChange={(patch) =>
+            setDraft({
+              ...draft,
+              pty: { ...draft.pty, ...patch },
+            })
+          }
+        />
+      )}
+      {isExternalCli && (
         <ExternalCliAuthFields
           friendId={draft.id}
           preset={draft.pty.preset}
+          executionMode={draft.pty.execution_mode}
           apiKeySecret={draft.pty.cli_api_key_secret}
           apiKeyConfigured={draft.pty.cli_api_key_configured}
           clearApiKey={!!draft.pty.clear_cli_api_key}
@@ -1105,7 +1392,7 @@ function PtyConfigEditor({
           onChange={(e) =>
             setDraft({ ...draft, pty: { ...draft.pty, cwd: e.target.value } })
           }
-          placeholder="留空则自动：data/cli-workspaces/<好友ID>（自动建目录并 git init）"
+          placeholder="留空则自动：私聊 data/cli-workspaces/&lt;好友ID&gt;；群聊请在群设置里配置共享目录"
         />
       </div>
       {isCustom ? (
@@ -1151,10 +1438,15 @@ function PtyConfigEditor({
             <strong>工蜂</strong>固定执行 <code>worker-bee</code>，平台 API / 技能库 / 记忆在上方配置；与
             Codex、Claude 等外部 CLI 无关。
           </>
+        ) : draft.pty.execution_mode === "relay" ? (
+          <>
+            外部 CLI 经转发程序在远程本机执行；工作目录为远程机器上的路径（留空则服务端配置的
+            cwd 规则，建议在远程使用绝对路径）。
+          </>
         ) : (
           <>
-            外部 CLI（claude / codex）在子进程内完成推理。工作目录留空则{" "}
-            <code>data/cli-workspaces/&lt;好友ID&gt;</code>。
+            外部 CLI（claude / codex）在子进程内完成推理。私聊工作目录留空则{" "}
+            <code>data/cli-workspaces/&lt;好友ID&gt;</code>；群聊使用群设置中的共享目录。
           </>
         )}
       </p>

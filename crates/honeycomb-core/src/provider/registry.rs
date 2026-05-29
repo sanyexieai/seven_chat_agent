@@ -169,10 +169,6 @@ impl StoreKeyResolver {
 }
 
 async fn seed_default_providers(store: &SqliteStore) -> Result<()> {
-    let existing = store.list_providers().await?;
-    if !existing.is_empty() {
-        return Ok(());
-    }
     let now = || chrono::Utc::now();
     let defaults = vec![
         Provider {
@@ -316,7 +312,7 @@ async fn seed_default_providers(store: &SqliteStore) -> Result<()> {
         Provider {
             id: "ollama".into(),
             kind: "ollama".into(),
-            display_name: "Ollama (本地)".into(),
+            display_name: "Ollama".into(),
             base_url: "http://localhost:11434".into(),
             default_model: Some("llama3.2".into()),
             capabilities: ProviderCapabilities {
@@ -334,7 +330,7 @@ async fn seed_default_providers(store: &SqliteStore) -> Result<()> {
         Provider {
             id: "lmstudio".into(),
             kind: "openai_compat".into(),
-            display_name: "LM Studio (本地)".into(),
+            display_name: "LM Studio".into(),
             base_url: "http://localhost:1234/v1".into(),
             default_model: None,
             capabilities: ProviderCapabilities {
@@ -352,7 +348,7 @@ async fn seed_default_providers(store: &SqliteStore) -> Result<()> {
         Provider {
             id: "vllm".into(),
             kind: "openai_compat".into(),
-            display_name: "vLLM (本地)".into(),
+            display_name: "vLLM".into(),
             base_url: "http://localhost:8000/v1".into(),
             default_model: None,
             capabilities: ProviderCapabilities {
@@ -369,7 +365,9 @@ async fn seed_default_providers(store: &SqliteStore) -> Result<()> {
         },
     ];
     for p in defaults {
-        store.upsert_provider(&p).await?;
+        if store.get_provider(&p.id).await?.is_none() {
+            store.upsert_provider(&p).await?;
+        }
     }
     Ok(())
 }

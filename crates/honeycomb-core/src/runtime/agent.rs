@@ -62,8 +62,10 @@ impl Agent for UnifiedAgent {
         ctx: ChatContext,
         prompt: String,
     ) -> Result<BoxStream<'static, AgentEvent>> {
+        let mut profile = self.profile.clone();
+        profile.workspace_cwd = self.profile.workspace_for_context(&self.friend, &ctx)?;
         self.runtime
-            .run_turn(&self.friend, &self.profile, &ctx, prompt)
+            .run_turn(&self.friend, &profile, &ctx, prompt)
             .await
     }
 

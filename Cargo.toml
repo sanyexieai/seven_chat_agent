@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/honeycomb-cli-relay-protocol",
+    "crates/honeycomb-cli-relay",
     "crates/honeycomb-cli-protocol",
     "crates/honeycomb-cli-codex",
     "crates/honeycomb-cli-claude",
@@ -19,11 +21,11 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
-repository = "https://github.com/yourname/honeycomb"
+repository = "https://github.com/sanyexieai/seven_chat_agent"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -79,6 +81,7 @@ honeycomb-cli-claude = { path = "crates/honeycomb-cli-claude" }
 honeycomb-cli-cursor = { path = "crates/honeycomb-cli-cursor" }
 honeycomb-cli-worker-bee = { path = "crates/honeycomb-cli-worker-bee" }
 honeycomb-judge = { path = "crates/honeycomb-judge" }
+honeycomb-cli-relay-protocol = { path = "crates/honeycomb-cli-relay-protocol" }
 
 [profile.release]
 opt-level = 3

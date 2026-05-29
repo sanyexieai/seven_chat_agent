@@ -4,6 +4,7 @@ pub mod assistant_task_planner;
 pub mod agent;
 pub use honeycomb_cli;
 pub mod cli_auth;
+pub mod cli_relay;
 pub mod cli_workspace;
 pub mod friend_cli;
 pub mod runtime;
@@ -18,6 +19,7 @@ pub mod scheduler;
 pub mod store;
 
 pub use cli_auth::{CliAuthStatus, CliOAuthManager, CliOAuthPhase, CliOAuthSnapshot};
+pub use cli_relay::{RelayHub, RelayJobSpec, RelayNodeInfo};
 pub use error::{Error, Result};
 
 use std::sync::Arc;
@@ -36,6 +38,7 @@ pub struct Honeycomb {
     pub agents: Arc<AgentRegistry>,
     pub dispatcher: Arc<MessageDispatcher>,
     pub cli_oauth: Arc<CliOAuthManager>,
+    pub cli_relay: Arc<RelayHub>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +52,7 @@ impl Honeycomb {
     pub async fn boot(database_url: &str) -> Result<Self> {
         let store = Arc::new(SqliteStore::connect(database_url).await?);
         store.migrate().await?;
+        store.migrate_fixup_provider_display_names().await?;
         store.migrate_legacy_assistant_friends().await?;
         store.migrate_fixup_pty_worker_bee_configs().await?;
         store.migrate_fixup_unconfigured_pty_friends().await?;
@@ -60,10 +64,12 @@ impl Honeycomb {
 
         let providers = Arc::new(ProviderRegistry::new(store.clone()).await?);
         let judge = Arc::new(crate::judge::JudgeService::new(providers.clone()));
+        let cli_relay = RelayHub::new();
         let agents = Arc::new(AgentRegistry::new(
             store.clone(),
             providers.clone(),
             judge.clone(),
+            cli_relay.clone(),
         ));
         let dispatcher = Arc::new(MessageDispatcher::new(
             store.clone(),
@@ -78,6 +84,7 @@ impl Honeycomb {
             agents,
             dispatcher,
             cli_oauth: Arc::new(CliOAuthManager::new()),
+            cli_relay,
         };
         core.spawn_assistant_queue_worker();
         Ok(core)

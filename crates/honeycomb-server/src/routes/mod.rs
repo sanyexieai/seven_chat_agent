@@ -331,16 +331,42 @@ async fn upsert_provider(
     if req.id.trim().is_empty() {
         return Err(ApiError::BadRequest("provider id is required".into()));
     }
-    // 保留原 created_at，没有就用 now
-    let created_at = match s.core.store.get_provider(&req.id).await? {
-        Some(existing) => existing.created_at,
-        None => chrono::Utc::now(),
+    let id = req.id.clone();
+    let existing = s.core.store.get_provider(&id).await?;
+    let created_at = existing
+        .as_ref()
+        .map(|e| e.created_at)
+        .unwrap_or_else(chrono::Utc::now);
+    let base_url = {
+        let t = req.base_url.trim();
+        if t.is_empty() {
+            existing
+                .as_ref()
+                .map(|e| e.base_url.clone())
+                .ok_or_else(|| ApiError::BadRequest("base_url is required for new provider".into()))?
+        } else {
+            t.to_string()
+        }
     };
     let provider = Provider {
-        id: req.id,
-        kind: req.kind,
-        display_name: req.display_name,
-        base_url: req.base_url,
+        id,
+        kind: if req.kind.trim().is_empty() {
+            existing
+                .as_ref()
+                .map(|e| e.kind.clone())
+                .unwrap_or_else(|| "openai_compat".to_string())
+        } else {
+            req.kind
+        },
+        display_name: if req.display_name.trim().is_empty() {
+            existing
+                .as_ref()
+                .map(|e| e.display_name.clone())
+                .unwrap_or_else(|| req.id)
+        } else {
+            req.display_name
+        },
+        base_url,
         default_model: req.default_model,
         capabilities: req.capabilities.unwrap_or_default(),
         price: req.price.unwrap_or_default(),

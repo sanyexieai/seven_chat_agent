@@ -13,12 +13,14 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment, ProviderUsageInfo};
-use crate::cli_workspace;
+use crate::cli_relay::{RelayHub, RelayJobSpec};
 use crate::domain::{Friend, Message, PtyBackendConfig};
 use crate::friend_cli::{
-    apply_cli_auth_env, ensure_cursor_agent_executable, ensure_cursor_chat_session,
-    external_cli_argv, is_external_cli_preset, launch_from_pty, parse_session_id,
-    pty_cli_session_is_resume, resolve_cli_session_id,
+    apply_cli_auth_env, cli_auth_env_pairs, ensure_cursor_agent_executable,
+    ensure_cursor_chat_session,
+    effective_pty_preset, external_cli_argv, is_external_cli_preset, launch_from_pty,
+    parse_session_id, pty_cli_session_is_resume, pty_execution_is_relay, pty_relay_id,
+    resolve_cli_session_id, resolve_cli_workspace,
     resume_session_likely_invalid, uses_codex_jsonl_stream,
 };
 use crate::store::SecretVault;
@@ -212,6 +214,7 @@ pub struct PtyAgent {
     friend: Friend,
     store: Arc<SqliteStore>,
     judge: Arc<JudgeService>,
+    cli_relay: Arc<RelayHub>,
     adapter: PtyAdapter,
     last_raw: Arc<Mutex<Option<Vec<u8>>>>,
 }
@@ -222,6 +225,7 @@ impl PtyAgent {
         store: Arc<SqliteStore>,
         _providers: Arc<ProviderRegistry>,
         judge: Arc<JudgeService>,
+        cli_relay: Arc<RelayHub>,
     ) -> Result<Self> {
         let cfg: PtyBackendConfig = serde_json::from_value(friend.backend_config.clone())
             .map_err(|e| Error::Config(format!("invalid pty backend_config: {e}")))?;
@@ -231,6 +235,7 @@ impl PtyAgent {
             friend,
             store,
             judge,
+            cli_relay,
             adapter,
             last_raw: Arc::new(Mutex::new(None)),
         })
@@ -256,6 +261,7 @@ impl Agent for PtyAgent {
         let store = self.store.clone();
         let fallback_adapter = self.adapter.clone();
         let raw_store = self.last_raw.clone();
+        let cli_relay = self.cli_relay.clone();
 
         let s = stream! {
             let (mut cfg, mut adapter) = match load_pty_session_state(&store, &friend_id, &fallback_adapter).await {
@@ -265,6 +271,22 @@ impl Agent for PtyAgent {
                     return;
                 }
             };
+
+            match resolve_cli_workspace(
+                &cfg,
+                &friend_id,
+                ctx.group_id.as_deref(),
+                ctx.group_cli_workspace(),
+            ) {
+                Ok(ws) => {
+                    adapter.cwd = Some(ws.clone());
+                    cfg.cwd = Some(ws);
+                }
+                Err(e) => {
+                    yield AgentEvent::Error(e.to_string());
+                    return;
+                }
+            }
 
             let resume =
                 pty_cli_session_is_resume(&cfg) && external_cli_label(&adapter.label).is_some();
@@ -294,6 +316,47 @@ impl Agent for PtyAgent {
 
             let raw_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
             let mut retried_fresh = false;
+
+            if pty_execution_is_relay(&cfg) {
+                let relay_id = match pty_relay_id(&cfg) {
+                    Some(id) => id.to_string(),
+                    None => {
+                        yield AgentEvent::Error("已选择远程转发但未配置 relay_id".into());
+                        return;
+                    }
+                };
+                if !cli_relay.is_online(&relay_id) {
+                    yield AgentEvent::Error(format!("转发节点 {relay_id} 未在线，请先在远程电脑启动 honeycomb-cli-relay"));
+                    return;
+                }
+                let preset = effective_pty_preset(&cfg);
+                let mut env = cfg.env.clone();
+                env.extend(cli_auth_env_pairs(&cfg, &store.vault));
+                let spec = RelayJobSpec {
+                    preset,
+                    prompt: composed_prompt.clone(),
+                    cwd: cfg.cwd.clone(),
+                    cli_session_mode: cfg.cli_session_mode.clone(),
+                    cli_session_id: cfg.cli_session_id.clone(),
+                    env,
+                };
+                let timeout = Duration::from_secs(adapter.timeout_seconds);
+                match cli_relay.run_job(&relay_id, spec, timeout).await {
+                    Ok(result) => {
+                        raw_buf.lock().await.extend_from_slice(result.text.as_bytes());
+                        if !result.text.is_empty() {
+                            yield AgentEvent::Token(result.text);
+                        }
+                        yield AgentEvent::Done(ProviderUsageInfo {
+                            model: Some(adapter.label.clone()),
+                            tokens_in: 0,
+                            tokens_out: 0,
+                        });
+                    }
+                    Err(e) => yield AgentEvent::Error(e),
+                }
+                return;
+            }
 
             loop {
                 let raw_for_save = raw_buf.clone();
@@ -626,26 +689,9 @@ fn decode_chunk(bytes: &[u8], strip: bool) -> String {
     String::from_utf8_lossy(&cleaned).to_string()
 }
 
-/// 工作目录优先级：好友 `cwd` > `HONEYCOMB_CLI_CWD` > 自动 `{HONEYCOMB_DATA}/cli-workspaces/{friend_id}`（建目录 + 可选 git init）。
+/// 私聊默认工作区（Agent 构造时用）；群聊在 `send` 时按 `ChatContext` 重算。
 fn resolve_pty_cwd(cfg: &PtyBackendConfig, friend_id: &str) -> Result<String> {
-    if let Some(ref p) = cfg.cwd {
-        let t = p.trim();
-        if !t.is_empty() {
-            return cli_workspace::ensure_at(t);
-        }
-    }
-    if let Ok(global) = std::env::var("HONEYCOMB_CLI_CWD") {
-        let t = global.trim();
-        if !t.is_empty() {
-            return cli_workspace::ensure_at(t);
-        }
-    }
-    if friend_id.is_empty() {
-        return Err(Error::Config(
-            "pty friend id required to resolve default cli workspace".into(),
-        ));
-    }
-    cli_workspace::ensure_for_friend(friend_id)
+    resolve_cli_workspace(cfg, friend_id, None, None)
 }
 
 /// codex exec 除进程 `current_dir` 外还支持 `-C` 指定 agent 工作根目录。

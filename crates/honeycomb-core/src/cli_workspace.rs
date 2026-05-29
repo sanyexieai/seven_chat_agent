@@ -20,6 +20,10 @@ pub fn default_path_for_friend(friend_id: &str) -> PathBuf {
     workspace_root().join(friend_id)
 }
 
+pub fn default_path_for_group(group_id: &str) -> PathBuf {
+    workspace_root().join("groups").join(group_id)
+}
+
 /// 默认 `true`；设 `HONEYCOMB_CLI_AUTO_GIT=0` 可关闭自动 `git init`。
 pub fn auto_git_enabled() -> bool {
     match std::env::var("HONEYCOMB_CLI_AUTO_GIT")
@@ -72,6 +76,13 @@ fn absolutize(path: &Path) -> Result<PathBuf> {
 /// 每位 CLI 好友的默认工作区：`{workspace_root}/{friend_id}`。
 pub fn ensure_for_friend(friend_id: &str) -> Result<String> {
     let path = default_path_for_friend(friend_id);
+    ensure_workspace(&path, true)?;
+    Ok(absolutize(&path)?.to_string_lossy().into_owned())
+}
+
+/// 群聊共享工作区：`{workspace_root}/groups/{group_id}`。
+pub fn ensure_for_group(group_id: &str) -> Result<String> {
+    let path = default_path_for_group(group_id);
     ensure_workspace(&path, true)?;
     Ok(absolutize(&path)?.to_string_lossy().into_owned())
 }

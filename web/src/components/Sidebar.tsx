@@ -26,8 +26,10 @@ export function Sidebar({
     <aside className="flex h-full w-72 shrink-0 flex-col border-r border-slate-200 bg-slate-50">
       <header className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
         <div>
-          <div className="text-base font-semibold text-slate-800">honeycomb</div>
-          <div className="text-xs text-slate-500">多 Agent 聊天室</div>
+          <div className="text-base font-semibold text-slate-800">
+            Seven Chat Agent
+          </div>
+          <div className="text-xs text-slate-500">多 Agent 聊天室 · v2</div>
         </div>
         <div className="flex gap-1">
           <button

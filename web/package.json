@@ -1,7 +1,7 @@
 {
-  "name": "honeycomb-web",
+  "name": "seven-chat-agent-web",
   "private": true,
-  "version": "0.1.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js",

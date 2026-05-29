@@ -28,6 +28,7 @@ import type {
   AssistantQueueStats,
   AssistantSkill,
   AssistantTodo,
+  CliRelayNode,
   Conversation,
   Friend,
   GroupBundle,
@@ -565,6 +566,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ duration_ms }),
     }),
+  createCliRelayPairingToken: () =>
+    wsInvoke<{ pairing_token: string }>("createCliRelayPairingToken"),
+  listCliRelays: () => wsInvoke<{ relays: CliRelayNode[] }>("listCliRelays"),
 };
 
 export function connectWs(onEvent: (ev: any) => void): WebSocket {

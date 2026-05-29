@@ -214,27 +214,52 @@ async fn handle_method(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "provider id required".to_string())?;
-            let created_at = match core.store.get_provider(id).await.map_err(|e| e.to_string())? {
-                Some(existing) => existing.created_at,
-                None => chrono::Utc::now(),
+            let existing = core
+                .store
+                .get_provider(id)
+                .await
+                .map_err(|e| e.to_string())?;
+            let created_at = existing
+                .as_ref()
+                .map(|e| e.created_at)
+                .unwrap_or_else(chrono::Utc::now);
+            let base_url_in = req
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let base_url = if base_url_in.is_empty() {
+                existing
+                    .as_ref()
+                    .map(|e| e.base_url.clone())
+                    .ok_or_else(|| "base_url is required for new provider".to_string())?
+            } else {
+                base_url_in
             };
             let provider = honeycomb_core::domain::Provider {
                 id: id.to_string(),
                 kind: req
                     .get("kind")
                     .and_then(|v| v.as_str())
-                    .unwrap_or_default()
+                    .unwrap_or_else(|| {
+                        existing
+                            .as_ref()
+                            .map(|e| e.kind.as_str())
+                            .unwrap_or("openai_compat")
+                    })
                     .to_string(),
                 display_name: req
                     .get("display_name")
                     .and_then(|v| v.as_str())
-                    .unwrap_or_default()
+                    .unwrap_or_else(|| {
+                        existing
+                            .as_ref()
+                            .map(|e| e.display_name.as_str())
+                            .unwrap_or(id)
+                    })
                     .to_string(),
-                base_url: req
-                    .get("base_url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
+                base_url,
                 default_model: req
                     .get("default_model")
                     .and_then(|v| v.as_str())
@@ -743,6 +768,14 @@ async fn handle_method(
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "ok": true }))
+        }
+        "createCliRelayPairingToken" => {
+            let token = core.cli_relay.create_pairing_token();
+            Ok(serde_json::json!({ "pairing_token": token }))
+        }
+        "listCliRelays" => {
+            let relays = core.cli_relay.list_nodes();
+            Ok(serde_json::json!({ "relays": relays }))
         }
         _ => Err(format!("unsupported method: {method}")),
     }

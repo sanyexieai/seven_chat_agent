@@ -1,4 +1,4 @@
-//! 群助理（用户代理人）独立通道：不参与 Judge 抢答。
+//! 群助理（用户代理人）独立通道：不参与 Judge 抢答，作为主人替身决策。
 
 use crate::agent::ChatContext;
 use crate::domain::{
@@ -10,6 +10,7 @@ use crate::{Error, Result};
 use super::assistant_autonomy::classify_autonomy_for_message;
 use super::im_writeback::{spawn_im_writeback_notify, ImWritebackEvent};
 use super::MessageDispatcher;
+use super::BusEvent;
 
 pub fn classify_autonomy(content: &str) -> AutonomyLevel {
     let lower = content.to_lowercase();
@@ -68,28 +69,92 @@ pub fn classify_autonomy(content: &str) -> AutonomyLevel {
 
 pub fn user_mentions_assistant(content: &str) -> bool {
     let lower = content.to_lowercase();
-    ["@助理", "@hex", " hex", "助理", "assistant"].iter().any(|k| lower.contains(k))
+    ["@助理", "@hex", " hex", "助理", "assistant"]
+        .iter()
+        .any(|k| lower.contains(k))
 }
 
-fn needs_human_confirm(detected: AutonomyLevel, max: AutonomyLevel) -> bool {
+/// 是否超出代理人可拍板范围（仅用于备忘录/推送分级，不阻断群内专家）。
+fn exceeds_proxy_autonomy(detected: AutonomyLevel, max: AutonomyLevel) -> bool {
     detected == AutonomyLevel::L4
         || detected == AutonomyLevel::L3
         || detected.rank() > max.rank()
 }
 
-pub fn build_delegate_prompt(group: &Group, user_msg: &Message, confirm: bool) -> String {
-    let mode_hint = if confirm {
-        "本条须用户确认：请以「【待你确认】」开头，列出建议与风险，不要替用户做最终决定。"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupAssistantPhase {
+    /// 用户刚发言、专家尚未接话（轻量回应）。
+    OnUserMessage,
+    /// 专家/任务流已产出后，代理人综合决策（主路径）。
+    AfterExperts,
+}
+
+pub fn build_delegate_prompt(
+    group: &Group,
+    user_msg: &Message,
+    phase: GroupAssistantPhase,
+    expert_summary: &str,
+    owner_attention: bool,
+) -> String {
+    let attention_hint = if owner_attention {
+        "本条涉及较高风险或超出默认可拍板范围：你仍须在群内给出**代理立场与可执行方向**（让专家继续推进），\
+         勿用「请主人决定」空挡；同时用一句话标明「已记入主人备忘录并推送知悉」。"
     } else {
-        "本条可代用户轻量回应：语气自然，开头可用「我代主人理解：」；勿做不可逆承诺。"
+        "在授权范围内可直接代主人拍板，给出明确下一步，让专家能继续执行。"
     };
-    format!(
-        "你是群「{}」中用户的代理人（Hex 助理），不是抢话的技术专家。\n\
-         {mode_hint}\n\
-         用户 [{}] 刚说：\n{}\n\
-         请给出一条简短、有帮助的回复。",
-        group.name, user_msg.sender_name, user_msg.content
-    )
+
+    match phase {
+        GroupAssistantPhase::OnUserMessage => format!(
+            "你是群「{}」中用户的代理人（替身），不是抢话的技术专家。\n\
+             {attention_hint}\n\
+             用户 [{}] 刚说：\n{}\n\
+             请一条简短回应：确认收到、代为定调或协调专家，语气自然，可用「我代主人」。",
+            group.name, user_msg.sender_name, user_msg.content
+        ),
+        GroupAssistantPhase::AfterExperts => format!(
+            "你是群「{}」中用户的代理人（替身），不是普通技术专家。\n\
+             {attention_hint}\n\n\
+             用户原话 [{}]：\n{}\n\n\
+             本轮专家/负责人发言摘要：\n{}\n\n\
+             请综合后输出一条群内回复（代主人）：\n\
+             1. 明确立场或下一步指令（能拍板则拍板）\n\
+             2. 如需主人后续确认，仅标注「已同步主人备忘录」勿阻断讨论\n\
+             3. 避免复述全文，聚焦决策与行动",
+            group.name,
+            user_msg.sender_name,
+            user_msg.content,
+            if expert_summary.trim().is_empty() {
+                "（暂无其他专家发言）"
+            } else {
+                expert_summary
+            }
+        ),
+    }
+}
+
+fn summarize_expert_turn(history: &[Message], assistant_id: &str) -> String {
+    let mut lines = Vec::new();
+    for m in history {
+        if m.sender_kind != SenderKind::Friend {
+            continue;
+        }
+        if m.sender_id == assistant_id {
+            continue;
+        }
+        if m.on_behalf_of_user {
+            continue;
+        }
+        let excerpt = truncate_chars(m.content.trim(), 280);
+        if excerpt.is_empty() {
+            continue;
+        }
+        lines.push(format!("- {}：{}", m.sender_name, excerpt));
+    }
+    if lines.len() > 8 {
+        lines.truncate(8);
+        lines.push("…（更多发言见上文）".into());
+    }
+    lines.join("\n")
 }
 
 impl MessageDispatcher {
@@ -99,6 +164,7 @@ impl MessageDispatcher {
         group: &Group,
         user_msg: &Message,
         turn_id: &str,
+        phase: GroupAssistantPhase,
     ) -> Result<()> {
         if user_msg.sender_kind != SenderKind::User {
             return Ok(());
@@ -130,6 +196,15 @@ impl MessageDispatcher {
             _ => return Ok(()),
         };
 
+        let force = user_mentions_assistant(&user_msg.content);
+        if ast.mode == AssistantMode::Delegate
+            && ast.reply_after_experts
+            && !force
+            && phase == GroupAssistantPhase::OnUserMessage
+        {
+            return Ok(());
+        }
+
         let member_configs = self.store.list_group_member_configs(&group.id).await?;
         let experts: Vec<Friend> = load_expert_friends(&self.store, &member_configs).await?;
 
@@ -141,16 +216,7 @@ impl MessageDispatcher {
             &group.name,
         )
         .await;
-        let confirm = needs_human_confirm(detected, ast.max_autonomy);
-        let force = user_mentions_assistant(&user_msg.content);
-
-        if ast.mode == AssistantMode::Delegate
-            && ast.reply_after_experts
-            && !force
-            && !confirm
-        {
-            // 已在专家轮次之后调用；无需额外等待
-        }
+        let owner_attention = exceeds_proxy_autonomy(detected, ast.max_autonomy);
 
         let conv = self
             .store
@@ -160,23 +226,26 @@ impl MessageDispatcher {
 
         let agent = self.agents.get(&friend.id).await?;
         let history = self.store.recent_messages(conv_id, 60).await?;
+        let expert_summary = summarize_expert_turn(&history, &friend.id);
         let mut group_for_ctx = group.clone();
         group_for_ctx.settings.assistant = ast.clone();
         let ctx = ChatContext {
             conversation_id: conv.id.clone(),
+            group_id: Some(group.id.clone()),
             group_settings: Some(group_for_ctx.settings),
             history,
             self_friend: friend.clone(),
             peers: experts,
         };
-        let prompt = build_delegate_prompt(group, user_msg, confirm);
-        let on_behalf = !confirm;
-        let final_status = if confirm {
-            MessageStatus::WaitingHuman
-        } else {
-            MessageStatus::Done
-        };
+        let prompt = build_delegate_prompt(
+            group,
+            user_msg,
+            phase,
+            &expert_summary,
+            owner_attention,
+        );
 
+        // 代理人始终在群内代主人发言且为 done，不占用 waiting_human 阻断专家接话。
         if let Some(reply) = self
             .stream_one_reply_with_options(
                 &conv,
@@ -187,26 +256,42 @@ impl MessageDispatcher {
                 ctx,
                 &prompt,
                 StreamReplyOptions {
-                    on_behalf_of_user: on_behalf,
-                    final_status,
+                    on_behalf_of_user: true,
+                    final_status: MessageStatus::Done,
                 },
             )
             .await?
         {
-            record_group_delegate_memory(&self.store, group, user_msg, &reply, &friend.id).await;
-            if let Some(im_event) = if reply.status == MessageStatus::WaitingHuman {
-                Some(ImWritebackEvent::WaitingHuman)
-            } else if reply.on_behalf_of_user {
-                Some(ImWritebackEvent::DelegatePosted)
-            } else {
-                None
-            } {
+            record_group_delegate_memory(
+                &self.store,
+                group,
+                user_msg,
+                &reply,
+                &friend.id,
+                owner_attention,
+                detected,
+            )
+            .await;
+
+            if owner_attention {
+                notify_owner_attention(
+                    self,
+                    group,
+                    &ast,
+                    &conv.id,
+                    turn_id,
+                    &friend.id,
+                    &reply,
+                    detected,
+                )
+                .await;
+            } else if ast.im_writeback.enabled {
                 spawn_im_writeback_notify(
                     group.clone(),
                     ast.clone(),
                     conv.id.clone(),
                     reply,
-                    im_event,
+                    ImWritebackEvent::DelegatePosted,
                 );
             }
         }
@@ -220,13 +305,21 @@ async fn record_group_delegate_memory(
     user_msg: &Message,
     reply: &Message,
     friend_id: &str,
+    owner_attention: bool,
+    detected: AutonomyLevel,
 ) {
     if reply.content.trim().is_empty() {
         return;
     }
+    let tag = if owner_attention {
+        "[待主人知悉]"
+    } else {
+        "[代理决策]"
+    };
     let summary = format!(
-        "[群:{}] 用户: {}\n助理: {}",
+        "{tag} 群:{} 自主级别检测:{:?}\n用户: {}\n代理人: {}",
         group.name,
+        detected,
         truncate_chars(&user_msg.content, 200),
         truncate_chars(&reply.content, 400),
     );
@@ -236,13 +329,88 @@ async fn record_group_delegate_memory(
             kind: crate::assistant_accumulation::MEMORY_KIND_MEMO.to_string(),
             content: summary,
             source_message_id: Some(reply.id.clone()),
-            weight: 0.55,
-            pinned: false,
+            weight: if owner_attention { 0.75 } else { 0.55 },
+            pinned: owner_attention,
         })
         .await
     {
         tracing::warn!(err = %e, "group delegate memory insert failed");
     }
+}
+
+async fn notify_owner_attention(
+    dispatcher: &MessageDispatcher,
+    group: &Group,
+    ast: &crate::domain::GroupAssistantSettings,
+    conversation_id: &str,
+    _turn_id: &str,
+    assistant_id: &str,
+    reply: &Message,
+    detected: AutonomyLevel,
+) {
+    let title = format!("群「{}」代理人待你知悉", group.name);
+    let body = truncate_chars(&reply.content, 320);
+
+    if ast.notify_owner_proactively {
+        dispatcher.emit(BusEvent::AssistantOwnerNotify {
+            conversation_id: conversation_id.to_string(),
+            group_id: group.id.clone(),
+            group_name: group.name.clone(),
+            title: title.clone(),
+            body: body.clone(),
+            message_id: Some(reply.id.clone()),
+        });
+    }
+
+    let dm_note = format!(
+        "[主人知悉] {title}\n风险级别检测: {:?}\n{body}\n（专家可继续推进，本条仅同步你）",
+        detected
+    );
+    if let Ok(conv) = dispatcher.store.get_or_create_dm(assistant_id).await {
+        if let Ok(msg) = dispatcher
+            .store
+            .insert_message(crate::store::message::NewMessage {
+                conversation_id: &conv.id,
+                turn_id: &reply.turn_id,
+                parent_id: Some(&reply.id),
+                sender_kind: SenderKind::Friend,
+                sender_id: assistant_id,
+                sender_name: "Hex 助理",
+                content: &dm_note,
+                mentions: &[],
+                status: MessageStatus::Done,
+                on_behalf_of_user: false,
+            })
+            .await
+        {
+            dispatcher.emit(BusEvent::MessageCreated {
+                message: msg.clone(),
+            });
+            dispatcher.emit(BusEvent::MessageDone { message: msg });
+        }
+    }
+
+    let todo_title = format!("【待确认】群「{}」代理人提请知悉", group.name);
+    let _ = dispatcher
+        .store
+        .create_assistant_todo(
+            assistant_id,
+            &todo_title,
+            Some(&body),
+            None,
+            None,
+            2,
+            None,
+        )
+        .await;
+
+    spawn_im_writeback_notify(
+        group.clone(),
+        ast.clone(),
+        conversation_id.to_string(),
+        reply.clone(),
+        ImWritebackEvent::WaitingHuman,
+    );
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {

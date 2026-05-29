@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { providerDisplayName } from "../providerDefaults";
 import { validateGroupTaskFlowReadiness } from "../groupReadiness";
 import { useChat } from "../stores/chat";
 import type {
@@ -72,6 +73,7 @@ const defaults: GroupSettings = {
   human_pause_ms: 30000,
   allow_agent_to_agent: true,
   extra_system_prompt: null,
+  cli_workspace: null,
 };
 
 function normalizeSettings(raw: Partial<GroupSettings>): GroupSettings {
@@ -710,7 +712,7 @@ export function GroupEditor({ groupId, onClose }: Props) {
                       <option value="">（未选：LLM judge 无法解析 Provider）</option>
                       {providers.map((p) => (
                         <option key={p.id} value={p.id}>
-                          {p.display_name || p.id}
+                          {providerDisplayName(p.display_name) || p.id}
                         </option>
                       ))}
                     </select>
@@ -1022,6 +1024,23 @@ export function GroupEditor({ groupId, onClose }: Props) {
                   }
                 />
               </div>
+            </div>
+            <div className="mt-3">
+              <label className="label">群共享 CLI 工作目录</label>
+              <input
+                className="input font-mono text-xs"
+                value={settings.cli_workspace ?? ""}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    cli_workspace: e.target.value.trim() || null,
+                  })
+                }
+                placeholder="留空则 data/cli-workspaces/groups/<群ID>（群内所有 Agent 共用）"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                群聊中 Codex / Claude / 工蜂等在本目录协作；私聊仍用各好友自己的工作区。
+              </p>
             </div>
             <div className="mt-3">
               <label className="label">群规 prompt（拼到每位成员人设后）</label>

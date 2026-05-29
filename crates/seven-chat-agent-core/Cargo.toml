@@ -1,0 +1,39 @@
+[package]
+name = "seven-chat-agent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+async-stream.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true
+bytes.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+regex.workspace = true
+lru.workspace = true
+strip-ansi-escapes.workspace = true
+portable-pty.workspace = true
+rand.workspace = true
+seven-chat-agent-cli = { path = "../seven-chat-agent-cli" }
+seven-chat-agent-cli-relay-protocol = { path = "../seven-chat-agent-cli-relay-protocol" }
+worker-bee-cli = { path = "../worker-bee-cli" }
+seven-chat-agent-judge = { workspace = true }
+keyring = { workspace = true, optional = true }
+
+[features]
+default = []
+keychain = ["keyring/sync-secret-service", "keyring/apple-native", "keyring/windows-native"]

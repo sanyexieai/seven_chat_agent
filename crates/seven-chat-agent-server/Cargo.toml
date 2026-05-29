@@ -1,0 +1,37 @@
+[package]
+name = "seven-chat-agent-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "seven_chat_agent_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "seven-chat-agent-server"
+path = "src/main.rs"
+
+[dependencies]
+seven-chat-agent-core = { path = "../seven-chat-agent-core" }
+seven-chat-agent-cli-relay-protocol = { path = "../seven-chat-agent-cli-relay-protocol" }
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http = { workspace = true, features = ["cors", "fs", "trace"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+dotenvy.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+mime_guess = { version = "2", optional = true }
+include_dir = { version = "0.7", optional = true }
+
+[features]
+default = []
+# 把 web/dist 通过 include_dir!() 编译进二进制；桌面壳必开。
+embed-frontend = ["dep:include_dir", "dep:mime_guess"]

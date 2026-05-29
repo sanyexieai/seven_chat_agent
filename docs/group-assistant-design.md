@@ -23,7 +23,7 @@
 | L3 | 须确认 | 发 `waiting_human` 草稿，不标代发 |
 | L4 | 禁止代决 | 仅提示用户自行处理 |
 
-分类实现：`heuristic` | `auto`（LLM 失败回退启发式）| `llm`；Provider 默认 `HONEYCOMB_ASSISTANT_*` 或群内 `classifier_provider_id` / `classifier_model`。
+分类实现：`heuristic` | `auto`（LLM 失败回退启发式）| `llm`；Provider 默认 `SEVEN_CHAT_AGENT_ASSISTANT_*` 或群内 `classifier_provider_id` / `classifier_model`。
 
 ## 3. 数据模型
 
@@ -152,7 +152,7 @@ sequenceDiagram
   "message": { },
   "inbound_hint": {
     "path": "/api/groups/{id}/im/inbound",
-    "header": "X-Honeycomb-Im-Secret",
+    "header": "X-SevenChatAgent-Im-Secret",
     "actions": [{ "action": "approve_delegate", "label": "采纳代发" }]
   }
 }
@@ -162,7 +162,7 @@ sequenceDiagram
 
 `POST /api/groups/:group_id/im/inbound`
 
-- 请求头：`X-Honeycomb-Im-Secret: <inbound_secret>`
+- 请求头：`X-SevenChatAgent-Im-Secret: <inbound_secret>`
 - Body：
 
 ```json

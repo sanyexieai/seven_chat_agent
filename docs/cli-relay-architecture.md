@@ -5,9 +5,9 @@
 ```
 Web（发消息 / 配置好友）
     ↓  WebSocket /ws-api
-服务端（Honeycomb Server）
+服务端（SevenChatAgent Server）
     ↓  配对后 WebSocket /cli-relay
-转发程序（honeycomb-cli-relay，跑在远程电脑）
+转发程序（seven-chat-agent-cli-relay，跑在远程电脑）
     ↓  本机 spawn
 CLI（codex / claude / cursor / worker-bee）
 ```
@@ -21,7 +21,7 @@ CLI（codex / claude / cursor / worker-bee）
 2. 在远程电脑运行：
 
 ```bash
-cargo run -p honeycomb-cli-relay -- \
+cargo run -p seven-chat-agent-cli-relay -- \
   --url ws://<server-host>:8080/cli-relay \
   --pairing-token pair_xxx \
   --name my-laptop
@@ -38,7 +38,7 @@ cargo run -p honeycomb-cli-relay -- \
 }
 ```
 
-## 协议（`honeycomb-cli-relay-protocol`）
+## 协议（`seven-chat-agent-cli-relay-protocol`）
 
 | 方向 | 类型 | 说明 |
 |------|------|------|

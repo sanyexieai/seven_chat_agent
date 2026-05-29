@@ -1,0 +1,15 @@
+[package]
+name = "seven-chat-agent-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unified CLI driver interface for Codex, Cursor, Claude, and Worker Bee"
+
+[dependencies]
+tokio = { workspace = true, features = ["process", "rt-multi-thread", "macros"] }
+seven-chat-agent-cli-protocol = { path = "../seven-chat-agent-cli-protocol" }
+seven-chat-agent-cli-codex = { path = "../seven-chat-agent-cli-codex" }
+seven-chat-agent-cli-claude = { path = "../seven-chat-agent-cli-claude" }
+seven-chat-agent-cli-cursor = { path = "../seven-chat-agent-cli-cursor" }
+seven-chat-agent-cli-worker-bee = { path = "../seven-chat-agent-cli-worker-bee" }
+worker-bee-cli = { path = "../worker-bee-cli" }

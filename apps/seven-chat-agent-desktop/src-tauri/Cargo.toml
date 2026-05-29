@@ -1,0 +1,31 @@
+[package]
+name = "seven-chat-agent-desktop"
+version = "2.0.0"
+edition = "2021"
+description = "Seven Chat Agent desktop shell (Tauri 2)"
+authors = ["sanyexieai"]
+
+[lib]
+name = "seven_chat_agent_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+seven-chat-agent-core = { path = "../../../crates/seven-chat-agent-core" }
+seven-chat-agent-server = { path = "../../../crates/seven-chat-agent-server", features = [
+    "embed-frontend",
+] }
+anyhow = "1"
+dirs = "5"
+
+[features]
+default = []
+custom-protocol = ["tauri/custom-protocol"]

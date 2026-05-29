@@ -101,7 +101,7 @@ export function validateGroupTaskFlowReadiness(
   const providerId = settings.judge.llm.provider_id?.trim();
   if (!providerId) {
     errors.push(
-      "任务流需要 Judge LLM：请在「群 Judge」中选择 Provider（服务端也可通过 HONEYCOMB_JUDGE_PROVIDER 环境变量指定）",
+      "任务流需要 Judge LLM：请在「群 Judge」中选择 Provider（服务端也可通过 SEVEN_CHAT_AGENT_JUDGE_PROVIDER 环境变量指定）",
     );
   } else if (!providers.some((p) => p.id === providerId)) {
     errors.push(

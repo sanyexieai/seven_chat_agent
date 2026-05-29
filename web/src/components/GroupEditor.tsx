@@ -424,7 +424,7 @@ export function GroupEditor({ groupId, onClose }: Props) {
                       />
                       <input
                         className="input text-xs"
-                        placeholder="入站密钥（请求头 X-Honeycomb-Im-Secret）"
+                        placeholder="入站密钥（请求头 X-SevenChatAgent-Im-Secret）"
                         value={
                           settings.assistant?.im_writeback?.inbound_secret ??
                           ""
@@ -557,7 +557,7 @@ export function GroupEditor({ groupId, onClose }: Props) {
 
           <div className="rounded-md border border-amber-200 bg-amber-50/50 p-3">
             <div className="mb-2 text-xs font-semibold text-amber-900">
-              Judge（接话判断）· honeycomb-judge
+              Judge（接话判断）· seven-chat-agent-judge
             </div>
             <p className="mb-3 text-xs text-slate-600">
               <strong>启发式</strong>：用固定规则打分（例如用户发言 →

@@ -778,7 +778,7 @@ function CliRelayConfigPanel({
 
   const wsRelayUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/cli-relay`;
   const relayCmd = pairingToken
-    ? `cargo run -p honeycomb-cli-relay -- --url ${wsRelayUrl} --pairing-token ${pairingToken} --name my-pc`
+    ? `cargo run -p seven-chat-agent-cli-relay -- --url ${wsRelayUrl} --pairing-token ${pairingToken} --name my-pc`
     : null;
 
   return (
@@ -802,7 +802,7 @@ function CliRelayConfigPanel({
       </div>
       <p className="text-xs text-sky-900/90">
         {executionMode === "local"
-          ? "CLI 在 honeycomb-server 所在机器上启动（与改造前相同）。"
+          ? "CLI 在 seven-chat-agent-server 所在机器上启动（与改造前相同）。"
           : "CLI 在已配对的远程电脑上执行；Web 只发指令到服务端，由转发程序在本机调用 codex/claude 等。"}
       </p>
 
@@ -850,7 +850,7 @@ function CliRelayConfigPanel({
             {relays.length === 0 ? (
               <p className="text-xs text-amber-800">
                 暂无在线节点。请先生成配对码并在远程电脑启动{" "}
-                <code>honeycomb-cli-relay</code>。
+                <code>seven-chat-agent-cli-relay</code>。
               </p>
             ) : (
               <select
@@ -1011,7 +1011,7 @@ function ExternalCliAuthFields({
             </>
           ) : (
             <>
-              在 honeycomb-server 本机启动 <code>agent login</code> /{" "}
+              在 seven-chat-agent-server 本机启动 <code>agent login</code> /{" "}
               <code>codex login --device-auth</code> 等，登录态写在服务器用户目录（与 API Key
               二选一或并存）。
             </>
@@ -1323,7 +1323,7 @@ function PtyConfigEditor({
                 });
               }}
             >
-              <option value="oneshot">单次（每轮新起 CLI，拼 honeycomb 历史）</option>
+              <option value="oneshot">单次（每轮新起 CLI，拼聊天历史）</option>
               <option value="resume">续接（CLI 原生会话，不拼历史）</option>
             </select>
             <p className="mt-1 text-xs text-slate-600">{cliSessionHelp(draft.pty.preset)}</p>

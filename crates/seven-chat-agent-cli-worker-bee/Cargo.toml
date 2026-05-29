@@ -1,0 +1,12 @@
+[package]
+name = "seven-chat-agent-cli-worker-bee"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Worker Bee CLI driver implementation for SevenChatAgent"
+
+[dependencies]
+async-trait.workspace = true
+seven-chat-agent-cli-protocol = { path = "../seven-chat-agent-cli-protocol" }
+seven-chat-agent-cli-codex = { path = "../seven-chat-agent-cli-codex" }
+worker-bee-cli = { path = "../worker-bee-cli" }

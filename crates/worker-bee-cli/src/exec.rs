@@ -84,7 +84,7 @@ fn resolve_data_dir(workspace: &PathBuf) -> PathBuf {
 fn resolve_skills_dir(workspace: &PathBuf) -> PathBuf {
     std::env::var("WORKER_BEE_SKILLS_DIR")
         .map(PathBuf::from)
-        .or_else(|_| std::env::var("HONEYCOMB_SKILLS_DIR").map(PathBuf::from))
+        .or_else(|_| std::env::var("SEVEN_CHAT_AGENT_SKILLS_DIR").map(PathBuf::from))
         .unwrap_or_else(|_| {
             let ws = workspace.join("skills");
             if ws.is_dir() {

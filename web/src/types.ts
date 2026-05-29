@@ -46,7 +46,7 @@ export interface ProviderKey {
   status: string;
 }
 
-/** 在线 CLI 转发节点（远程电脑上的 honeycomb-cli-relay） */
+/** 在线 CLI 转发节点（远程电脑上的 seven-chat-agent-cli-relay） */
 export interface CliRelayNode {
   relay_id: string;
   name: string;

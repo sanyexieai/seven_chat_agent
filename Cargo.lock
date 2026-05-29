@@ -941,181 +941,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "honeycomb-cli"
-version = "2.0.0"
-dependencies = [
- "honeycomb-cli-claude",
- "honeycomb-cli-codex",
- "honeycomb-cli-cursor",
- "honeycomb-cli-protocol",
- "honeycomb-cli-worker-bee",
- "tokio",
- "worker-bee-cli",
-]
-
-[[package]]
-name = "honeycomb-cli-claude"
-version = "2.0.0"
-dependencies = [
- "async-trait",
- "honeycomb-cli-protocol",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "honeycomb-cli-codex"
-version = "2.0.0"
-dependencies = [
- "async-trait",
- "honeycomb-cli-protocol",
- "tokio",
- "worker-bee-cli",
-]
-
-[[package]]
-name = "honeycomb-cli-cursor"
-version = "2.0.0"
-dependencies = [
- "async-trait",
- "honeycomb-cli-protocol",
- "tokio",
-]
-
-[[package]]
-name = "honeycomb-cli-protocol"
-version = "2.0.0"
-dependencies = [
- "async-trait",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "honeycomb-cli-relay"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures",
- "honeycomb-cli",
- "honeycomb-cli-protocol",
- "honeycomb-cli-relay-protocol",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "honeycomb-cli-relay-protocol"
-version = "2.0.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "honeycomb-cli-worker-bee"
-version = "2.0.0"
-dependencies = [
- "async-trait",
- "honeycomb-cli-codex",
- "honeycomb-cli-protocol",
- "worker-bee-cli",
-]
-
-[[package]]
-name = "honeycomb-core"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "bytes",
- "chrono",
- "dashmap",
- "eventsource-stream",
- "futures",
- "honeycomb-cli",
- "honeycomb-cli-relay-protocol",
- "honeycomb-judge",
- "keyring",
- "lru",
- "once_cell",
- "parking_lot",
- "portable-pty",
- "rand 0.8.6",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sqlx",
- "strip-ansi-escapes",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "worker-bee-cli",
-]
-
-[[package]]
-name = "honeycomb-judge"
-version = "2.0.0"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "honeycomb-server"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "dotenvy",
- "futures",
- "honeycomb-cli-relay-protocol",
- "honeycomb-core",
- "include_dir",
- "mime_guess",
- "serde",
- "serde_json",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "honeycomb-tui"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "crossterm",
- "futures",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2387,6 +2212,181 @@ dependencies = [
  "cfg-if",
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "seven-chat-agent-cli"
+version = "2.0.0"
+dependencies = [
+ "seven-chat-agent-cli-claude",
+ "seven-chat-agent-cli-codex",
+ "seven-chat-agent-cli-cursor",
+ "seven-chat-agent-cli-protocol",
+ "seven-chat-agent-cli-worker-bee",
+ "tokio",
+ "worker-bee-cli",
+]
+
+[[package]]
+name = "seven-chat-agent-cli-claude"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
+ "seven-chat-agent-cli-protocol",
+ "tokio",
+]
+
+[[package]]
+name = "seven-chat-agent-cli-codex"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "seven-chat-agent-cli-protocol",
+ "tokio",
+ "worker-bee-cli",
+]
+
+[[package]]
+name = "seven-chat-agent-cli-cursor"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "seven-chat-agent-cli-protocol",
+ "tokio",
+]
+
+[[package]]
+name = "seven-chat-agent-cli-protocol"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "seven-chat-agent-cli-relay"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "serde",
+ "serde_json",
+ "seven-chat-agent-cli",
+ "seven-chat-agent-cli-protocol",
+ "seven-chat-agent-cli-relay-protocol",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "seven-chat-agent-cli-relay-protocol"
+version = "2.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "seven-chat-agent-cli-worker-bee"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "seven-chat-agent-cli-codex",
+ "seven-chat-agent-cli-protocol",
+ "worker-bee-cli",
+]
+
+[[package]]
+name = "seven-chat-agent-core"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "eventsource-stream",
+ "futures",
+ "keyring",
+ "lru",
+ "once_cell",
+ "parking_lot",
+ "portable-pty",
+ "rand 0.8.6",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "seven-chat-agent-cli",
+ "seven-chat-agent-cli-relay-protocol",
+ "seven-chat-agent-judge",
+ "sqlx",
+ "strip-ansi-escapes",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "worker-bee-cli",
+]
+
+[[package]]
+name = "seven-chat-agent-judge"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "seven-chat-agent-server"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "dotenvy",
+ "futures",
+ "include_dir",
+ "mime_guess",
+ "serde",
+ "serde_json",
+ "seven-chat-agent-cli-relay-protocol",
+ "seven-chat-agent-core",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "seven-chat-agent-tui"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm",
+ "futures",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

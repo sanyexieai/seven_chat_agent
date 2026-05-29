@@ -1,0 +1,12 @@
+[package]
+name = "seven-chat-agent-cli-claude"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Claude CLI driver implementation for SevenChatAgent"
+
+[dependencies]
+async-trait.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["process"] }
+seven-chat-agent-cli-protocol = { path = "../seven-chat-agent-cli-protocol" }

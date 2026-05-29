@@ -1,0 +1,12 @@
+[package]
+name = "seven-chat-agent-cli-codex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Codex CLI driver implementation for SevenChatAgent"
+
+[dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["process"] }
+seven-chat-agent-cli-protocol = { path = "../seven-chat-agent-cli-protocol" }
+worker-bee-cli = { path = "../worker-bee-cli" }

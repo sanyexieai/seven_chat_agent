@@ -1,22 +1,22 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/honeycomb-cli-relay-protocol",
-    "crates/honeycomb-cli-relay",
-    "crates/honeycomb-cli-protocol",
-    "crates/honeycomb-cli-codex",
-    "crates/honeycomb-cli-claude",
-    "crates/honeycomb-cli-cursor",
-    "crates/honeycomb-cli-worker-bee",
-    "crates/honeycomb-cli",
-    "crates/honeycomb-judge",
-    "crates/honeycomb-core",
-    "crates/honeycomb-server",
-    "crates/honeycomb-tui",
+    "crates/seven-chat-agent-cli-relay-protocol",
+    "crates/seven-chat-agent-cli-relay",
+    "crates/seven-chat-agent-cli-protocol",
+    "crates/seven-chat-agent-cli-codex",
+    "crates/seven-chat-agent-cli-claude",
+    "crates/seven-chat-agent-cli-cursor",
+    "crates/seven-chat-agent-cli-worker-bee",
+    "crates/seven-chat-agent-cli",
+    "crates/seven-chat-agent-judge",
+    "crates/seven-chat-agent-core",
+    "crates/seven-chat-agent-server",
+    "crates/seven-chat-agent-tui",
     "crates/worker-bee-cli",
 ]
 exclude = [
-    "apps/honeycomb-desktop/src-tauri",
+    "apps/seven-chat-agent-desktop/src-tauri",
     "data/cli-workspaces",
 ]
 
@@ -74,14 +74,14 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 url = "2"
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
-honeycomb-cli = { path = "crates/honeycomb-cli" }
-honeycomb-cli-protocol = { path = "crates/honeycomb-cli-protocol" }
-honeycomb-cli-codex = { path = "crates/honeycomb-cli-codex" }
-honeycomb-cli-claude = { path = "crates/honeycomb-cli-claude" }
-honeycomb-cli-cursor = { path = "crates/honeycomb-cli-cursor" }
-honeycomb-cli-worker-bee = { path = "crates/honeycomb-cli-worker-bee" }
-honeycomb-judge = { path = "crates/honeycomb-judge" }
-honeycomb-cli-relay-protocol = { path = "crates/honeycomb-cli-relay-protocol" }
+seven-chat-agent-cli = { path = "crates/seven-chat-agent-cli" }
+seven-chat-agent-cli-protocol = { path = "crates/seven-chat-agent-cli-protocol" }
+seven-chat-agent-cli-codex = { path = "crates/seven-chat-agent-cli-codex" }
+seven-chat-agent-cli-claude = { path = "crates/seven-chat-agent-cli-claude" }
+seven-chat-agent-cli-cursor = { path = "crates/seven-chat-agent-cli-cursor" }
+seven-chat-agent-cli-worker-bee = { path = "crates/seven-chat-agent-cli-worker-bee" }
+seven-chat-agent-judge = { path = "crates/seven-chat-agent-judge" }
+seven-chat-agent-cli-relay-protocol = { path = "crates/seven-chat-agent-cli-relay-protocol" }
 
 [profile.release]
 opt-level = 3

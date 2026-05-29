@@ -1,0 +1,12 @@
+[package]
+name = "seven-chat-agent-judge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SevenChatAgent 群聊接话判断（启发式 / LLM），与 core 解耦"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }

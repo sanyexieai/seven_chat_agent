@@ -610,14 +610,28 @@ async fn handle_method(
             let content = params
                 .get("content")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "content required".to_string())?;
+                .unwrap_or("")
+                .to_string();
+            let attachments: Vec<seven_chat_agent_core::domain::MessageAttachment> =
+                params
+                    .get("attachments")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
             let conv = core
                 .store
                 .get_or_create_dm(friend_id)
                 .await
                 .map_err(|e| e.to_string())?;
+            let data_dir =
+                std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+            seven_chat_agent_core::attachment::validate_attachments(
+                &data_dir,
+                &conv.id,
+                &attachments,
+            )
+            .map_err(|e| e.to_string())?;
             core.dispatcher
-                .send_user_message(&conv.id, content)
+                .send_user_message_with_attachments(&conv.id, &content, &attachments)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "ok": true, "conversation_id": conv.id }))
@@ -642,9 +656,19 @@ async fn handle_method(
             let content = params
                 .get("content")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "content required".to_string())?;
+                .unwrap_or("")
+                .to_string();
+            let attachments: Vec<seven_chat_agent_core::domain::MessageAttachment> =
+                params
+                    .get("attachments")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+            let data_dir =
+                std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+            seven_chat_agent_core::attachment::validate_attachments(&data_dir, id, &attachments)
+                .map_err(|e| e.to_string())?;
             core.dispatcher
-                .send_user_message(id, content)
+                .send_user_message_with_attachments(id, &content, &attachments)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "ok": true, "conversation_id": id }))

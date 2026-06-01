@@ -1,3 +1,4 @@
+pub mod attachment;
 pub mod env;
 pub mod assistant_accumulation;
 pub mod llm_json;
@@ -484,6 +485,7 @@ impl SevenChatAgent {
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
                 workspace_id: None,
+                attachments: &[],
             })
             .await?;
 

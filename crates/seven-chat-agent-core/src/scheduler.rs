@@ -262,6 +262,7 @@ mod tests {
             tokens_out: None,
             on_behalf_of_user: false,
             workspace_id: None,
+            attachments: vec![],
             created_at: chrono::Utc::now(),
         };
         let candidates = vec![

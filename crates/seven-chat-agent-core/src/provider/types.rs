@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    /// OpenAI 兼容：字符串或 `[{type,text}|{type,image_url}]` 数组。
+    pub content: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -12,23 +14,33 @@ impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system".into(),
-            content: content.into(),
+            content: Value::String(content.into()),
             name: None,
         }
     }
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".into(),
-            content: content.into(),
+            content: Value::String(content.into()),
+            name: None,
+        }
+    }
+    pub fn user_value(content: Value) -> Self {
+        Self {
+            role: "user".into(),
+            content,
             name: None,
         }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".into(),
-            content: content.into(),
+            content: Value::String(content.into()),
             name: None,
         }
+    }
+    pub fn text(&self) -> String {
+        super::chat_content::chat_content_to_text(&self.content)
     }
 }
 

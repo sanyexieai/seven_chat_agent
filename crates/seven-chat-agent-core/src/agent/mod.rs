@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{CliBlockDelta, Friend, GroupSettings, Message};
+use crate::domain::{CliBlockDelta, Friend, GroupSettings, Message, MessageAttachment};
 use crate::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +54,8 @@ pub struct ChatContext {
     pub history: Vec<Message>,
     pub self_friend: Friend,
     pub peers: Vec<Friend>,
+    /// 当前轮用户消息的附件（用于多模态）。
+    pub user_attachments: Vec<MessageAttachment>,
 }
 
 impl ChatContext {

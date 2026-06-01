@@ -11,6 +11,7 @@ use futures::stream::{BoxStream, StreamExt};
 use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment, ProviderUsageInfo};
+use crate::attachment::build_chat_content;
 use crate::domain::{AssistantBackendConfig, BackendKind, Friend, Message, SenderKind};
 use crate::provider::types::{ChatMessage, ChatRequest, ProviderEvent};
 use crate::provider::ProviderRegistry;
@@ -133,7 +134,16 @@ impl AssistantAgent {
         s
     }
 
+    fn vision_enabled(&self) -> bool {
+        self.providers
+            .get(&self.cfg.provider_id)
+            .map(|p| p.capabilities().vision)
+            .unwrap_or(false)
+    }
+
     fn build_messages(&self, ctx: &ChatContext, system: String, prompt: &str) -> Vec<ChatMessage> {
+        let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+        let vision = self.vision_enabled();
         let mut msgs = vec![ChatMessage::system(system)];
         let take = ctx.history.len();
         for (idx, m) in ctx.history.iter().enumerate() {
@@ -151,11 +161,22 @@ impl AssistantAgent {
                 }
                 SenderKind::System => "system",
             };
-            let content = match m.sender_kind {
+            let text = match m.sender_kind {
                 SenderKind::Friend if m.sender_id != self.friend.id => {
                     format!("[{}]: {}", m.sender_name, m.content)
                 }
                 _ => m.content.clone(),
+            };
+            let content = if m.attachments.is_empty() {
+                serde_json::Value::String(text)
+            } else {
+                build_chat_content(
+                    &data_dir,
+                    &ctx.conversation_id,
+                    &text,
+                    &m.attachments,
+                    vision,
+                )
             };
             msgs.push(ChatMessage {
                 role: role.into(),
@@ -163,7 +184,14 @@ impl AssistantAgent {
                 name: None,
             });
         }
-        msgs.push(ChatMessage::user(prompt.to_string()));
+        let final_content = build_chat_content(
+            &data_dir,
+            &ctx.conversation_id,
+            prompt,
+            &ctx.user_attachments,
+            vision,
+        );
+        msgs.push(ChatMessage::user_value(final_content));
         msgs
     }
 

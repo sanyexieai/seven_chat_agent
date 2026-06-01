@@ -18,6 +18,8 @@ use crate::domain::{
 use worker_bee_cli::{apply_cli_block_delta, cli_blocks_to_plain};
 use crate::scheduler::{CandidateInfo, ScheduleDecision, SpeakerScheduler};
 use crate::store::memory::NewMemory;
+use crate::attachment::{content_with_attachments, validate_attachments};
+use crate::domain::MessageAttachment;
 use crate::store::message::NewMessage;
 use crate::store::SqliteStore;
 use crate::{Error, Result};
@@ -194,8 +196,31 @@ impl MessageDispatcher {
         conversation_id: &str,
         content: &str,
     ) -> Result<Message> {
-        self.send_message_from(conversation_id, SenderKind::User, "user", "我", content)
+        self.send_user_message_with_attachments(conversation_id, content, &[])
             .await
+    }
+
+    pub async fn send_user_message_with_attachments(
+        &self,
+        conversation_id: &str,
+        content: &str,
+        attachments: &[MessageAttachment],
+    ) -> Result<Message> {
+        let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+        validate_attachments(&data_dir, conversation_id, attachments)?;
+        let body = content_with_attachments(content, attachments);
+        if body.trim().is_empty() && attachments.is_empty() {
+            return Err(crate::Error::bad_request("消息不能为空"));
+        }
+        self.send_message_from_with_attachments(
+            conversation_id,
+            SenderKind::User,
+            "user",
+            "我",
+            &body,
+            attachments,
+        )
+        .await
     }
 
     pub async fn send_human_message(
@@ -227,6 +252,26 @@ impl MessageDispatcher {
         sender_name: &str,
         content: &str,
     ) -> Result<Message> {
+        self.send_message_from_with_attachments(
+            conversation_id,
+            sender_kind,
+            sender_id,
+            sender_name,
+            content,
+            &[],
+        )
+        .await
+    }
+
+    async fn send_message_from_with_attachments(
+        &self,
+        conversation_id: &str,
+        sender_kind: SenderKind,
+        sender_id: &str,
+        sender_name: &str,
+        content: &str,
+        attachments: &[MessageAttachment],
+    ) -> Result<Message> {
         let conv = self
             .store
             .get_conversation(conversation_id)
@@ -247,6 +292,7 @@ impl MessageDispatcher {
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
                 workspace_id: None,
+                attachments,
             })
             .await?;
         if sender_kind == SenderKind::User {
@@ -391,6 +437,7 @@ impl MessageDispatcher {
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
                 workspace_id: None,
+                attachments: &[],
             })
             .await?;
         self.emit(BusEvent::MessageCreated { message: reply.clone() });
@@ -419,6 +466,7 @@ impl MessageDispatcher {
             history,
             self_friend: friend.clone(),
             peers: vec![],
+            user_attachments: user_msg.attachments.clone(),
         };
         self.stream_one_reply(&conv, &user_msg, &turn_id, &friend, agent, ctx, &user_msg.content, 0)
             .await?;
@@ -606,6 +654,7 @@ impl MessageDispatcher {
                     history,
                     self_friend: friend.clone(),
                     peers,
+                    user_attachments: trigger.attachments.clone(),
                 };
                 if d.delay_ms > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(d.delay_ms)).await;
@@ -780,6 +829,7 @@ impl MessageDispatcher {
                 status: MessageStatus::Streaming,
                 on_behalf_of_user: opts.on_behalf_of_user,
                 workspace_id: None,
+                attachments: &[],
             })
             .await?;
         self.emit(BusEvent::MessageCreated {

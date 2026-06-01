@@ -48,7 +48,7 @@ impl CliInferenceBackend {
 pub(crate) fn messages_to_prompt(messages: &[ChatMessage]) -> String {
     let mut out = String::new();
     for m in messages {
-        out.push_str(&format!("[{}]\n{}\n\n", m.role, m.content));
+        out.push_str(&format!("[{}]\n{}\n\n", m.role, m.text()));
     }
     out
 }

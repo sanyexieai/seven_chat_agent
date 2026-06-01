@@ -108,11 +108,15 @@ impl MemoryService {
     pub fn build_messages(
         &self,
         friend: &Friend,
+        ctx: &crate::agent::ChatContext,
         system: String,
-        history: &[Message],
         prompt: &str,
+        vision: bool,
     ) -> Vec<crate::provider::types::ChatMessage> {
+        use crate::attachment::build_chat_content;
         use crate::provider::types::ChatMessage;
+        let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+        let history = &ctx.history;
         let mut msgs = vec![ChatMessage::system(system)];
         let take = history.len();
         for (idx, m) in history.iter().enumerate() {
@@ -130,11 +134,22 @@ impl MemoryService {
                 }
                 SenderKind::System => "system",
             };
-            let content = match m.sender_kind {
+            let text = match m.sender_kind {
                 SenderKind::Friend if m.sender_id != friend.id => {
                     format!("[{}]: {}", m.sender_name, m.content)
                 }
                 _ => m.content.clone(),
+            };
+            let content = if m.attachments.is_empty() {
+                serde_json::Value::String(text)
+            } else {
+                build_chat_content(
+                    &data_dir,
+                    &ctx.conversation_id,
+                    &text,
+                    &m.attachments,
+                    vision,
+                )
             };
             msgs.push(ChatMessage {
                 role: role.into(),
@@ -142,7 +157,14 @@ impl MemoryService {
                 name: None,
             });
         }
-        msgs.push(ChatMessage::user(prompt.to_string()));
+        let final_content = build_chat_content(
+            &data_dir,
+            &ctx.conversation_id,
+            prompt,
+            &ctx.user_attachments,
+            vision,
+        );
+        msgs.push(ChatMessage::user_value(final_content));
         msgs
     }
 

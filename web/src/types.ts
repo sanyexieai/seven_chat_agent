@@ -114,6 +114,14 @@ export interface Conversation {
   created_at: string;
 }
 
+export interface MessageAttachment {
+  id: string;
+  filename: string;
+  mime_type: string;
+  size: number;
+  url: string;
+}
+
 export interface Message {
   id: string;
   conversation_id: string;
@@ -126,6 +134,7 @@ export interface Message {
   on_behalf_of_user?: boolean;
   content: string;
   content_blocks?: CliBlock[] | null;
+  attachments?: MessageAttachment[];
   mentions: string[];
   status: MessageStatus;
   seen_by: string[];

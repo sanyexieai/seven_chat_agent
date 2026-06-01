@@ -1,4 +1,6 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { api } from "../api/client";
+import type { MessageAttachment } from "../types";
 import {
   configuredJudgeModeLabel,
   judgeSourceLabel,
@@ -27,9 +29,11 @@ export function ChatWindow() {
     taskFlow,
   } = useChat();
   const [draft, setDraft] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
   const sendLock = useRef(false);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const header = useMemo(() => {
     if (!target) return null;
@@ -81,17 +85,47 @@ export function ChatWindow() {
     );
   }
 
+  function onPickFiles(e: ChangeEvent<HTMLInputElement>) {
+    const list = e.target.files;
+    if (!list?.length) return;
+    setPendingFiles((prev) => [...prev, ...Array.from(list)]);
+    e.target.value = "";
+  }
+
+  async function resolveConversationId(): Promise<string | null> {
+    if (conversation?.id) return conversation.id;
+    if (target?.kind !== "friend") return null;
+    const opened = await api.openDm(target.id);
+    useChat.setState({
+      conversation: opened.conversation,
+      messages: opened.messages,
+    });
+    return opened.conversation.id;
+  }
+
   async function onSend(e?: React.FormEvent) {
     e?.preventDefault();
     const content = draft.trim();
-    if (!content || sending || sendLock.current) return;
+    if ((!content && pendingFiles.length === 0) || sending || sendLock.current) {
+      return;
+    }
     sendLock.current = true;
     setSending(true);
+    const files = [...pendingFiles];
     setDraft("");
+    setPendingFiles([]);
     try {
-      await sendMessage(content);
+      let attachments: MessageAttachment[] = [];
+      if (files.length > 0) {
+        const convId = await resolveConversationId();
+        if (!convId) throw new Error("无法获取会话");
+        attachments = await api.uploadConversationAttachments(convId, files);
+      }
+      await sendMessage(content, attachments);
     } catch (err) {
       console.error(err);
+      setPendingFiles(files);
+      if (content) setDraft(content);
     } finally {
       sendLock.current = false;
       setSending(false);
@@ -259,9 +293,49 @@ export function ChatWindow() {
           <ChatWorkspaceSwitcher friendId={target.id} placement="above-input" />
         )}
       <form
-        className="flex items-end gap-2 border-t border-slate-200 bg-white px-4 py-3"
+        className="flex flex-col gap-2 border-t border-slate-200 bg-white px-4 py-3"
         onSubmit={onSend}
       >
+        {pendingFiles.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {pendingFiles.map((f, i) => (
+              <span
+                key={`${f.name}-${i}`}
+                className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-700"
+              >
+                {f.type.startsWith("image/") ? "🖼" : "📎"} {f.name}
+                <button
+                  type="button"
+                  className="ml-1 text-slate-400 hover:text-slate-700"
+                  onClick={() =>
+                    setPendingFiles((prev) => prev.filter((_, j) => j !== i))
+                  }
+                  aria-label="移除"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          accept="image/*,.txt,.md,.pdf,.json,.csv"
+          onChange={onPickFiles}
+        />
+        <button
+          type="button"
+          className="btn h-10 shrink-0 px-3 text-slate-600"
+          title="上传图片或文件"
+          disabled={sending}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          📎
+        </button>
         <textarea
           rows={2}
           value={draft}
@@ -275,9 +349,13 @@ export function ChatWindow() {
             }
           }}
         />
-        <button className="btn-primary h-10 px-5" disabled={sending}>
+        <button
+          className="btn-primary h-10 px-5"
+          disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
+        >
           {sending ? "..." : "发送"}
         </button>
+        </div>
       </form>
     </section>
   );

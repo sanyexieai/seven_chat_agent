@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use crate::domain::Provider;
 use crate::provider::openai_compat::{KeyMaterial, KeyResolver};
+use crate::provider::chat_content::chat_content_to_text;
 use crate::provider::types::{ChatMessage, ChatRequest, ProviderEvent, ProviderUsage};
 use crate::provider::ModelProvider;
 use crate::store::SecretVault;
@@ -199,13 +200,13 @@ fn build_contents(msgs: Vec<ChatMessage>) -> (Option<String>, Vec<Value>) {
     let mut contents = Vec::new();
     for m in msgs {
         if m.role == "system" {
-            system_parts.push(m.content);
+            system_parts.push(chat_content_to_text(&m.content));
             continue;
         }
         let role = if m.role == "assistant" { "model" } else { "user" };
         contents.push(json!({
             "role": role,
-            "parts": [ { "text": m.content } ]
+            "parts": [ { "text": chat_content_to_text(&m.content) } ]
         }));
     }
     let system = if system_parts.is_empty() {

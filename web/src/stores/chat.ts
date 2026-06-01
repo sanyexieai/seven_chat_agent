@@ -13,6 +13,7 @@ import type {
   Friend,
   GroupBundle,
   Message,
+  MessageAttachment,
   Provider,
   ProviderKey,
 } from "../types";
@@ -85,7 +86,10 @@ interface ChatState {
   reloadProviders: () => Promise<void>;
   selectFriend: (id: string) => Promise<void>;
   selectGroup: (id: string) => Promise<void>;
-  sendMessage: (content: string) => Promise<void>;
+  sendMessage: (
+    content: string,
+    attachments?: MessageAttachment[],
+  ) => Promise<void>;
 }
 
 export const useChat = create<ChatState>((set, get) => ({
@@ -177,15 +181,15 @@ export const useChat = create<ChatState>((set, get) => ({
       messages: conv.messages,
     });
   },
-  async sendMessage(content) {
+  async sendMessage(content, attachments = []) {
     const t = get().target;
     if (!t) return;
     if (t.kind === "friend") {
-      await api.sendDm(t.id, content);
+      await api.sendDm(t.id, content, attachments);
     } else {
       const conv = get().conversation;
       if (!conv) return;
-      await api.sendToConversation(conv.id, content);
+      await api.sendToConversation(conv.id, content, attachments);
     }
   },
 }));

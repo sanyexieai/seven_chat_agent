@@ -5,6 +5,7 @@ import { splitMessageContent } from "../messageContent";
 import type { Message } from "../types";
 import { Avatar } from "./Avatar";
 import { CliMessageView } from "./CliMessageView";
+import { MessageAttachments } from "./MessageAttachments";
 import { Collapsible } from "./Collapsible";
 import { renderCliText } from "./cli/drivers";
 
@@ -84,8 +85,12 @@ export function MessageBubble({
             />
           ) : message.status === "streaming" ? (
             <span className="text-slate-400">…</span>
-          ) : (
-            ""
+          ) : null}
+          {message.attachments && message.attachments.length > 0 && (
+            <MessageAttachments
+              attachments={message.attachments}
+              variant={isUser ? "user" : "assistant"}
+            />
           )}
         </div>
         {showDelegateActions && (

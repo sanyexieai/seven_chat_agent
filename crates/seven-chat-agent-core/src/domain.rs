@@ -763,7 +763,21 @@ pub struct Message {
     pub tokens_out: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// 用户上传的附件（图片、文档等）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachment>,
     pub created_at: DateTime<Utc>,
+}
+
+/// 聊天消息附带的文件元数据（实体文件在 data/uploads 下）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageAttachment {
+    pub id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size: u64,
+    /// 相对 API 路径，如 `/api/uploads/{conversation_id}/{id}`。
+    pub url: String,
 }
 
 /// 任务型群聊编排：竞选负责人 → 负责人执行（替代「接一句闲聊」）。

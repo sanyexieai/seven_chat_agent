@@ -28,6 +28,8 @@ lru.workspace = true
 strip-ansi-escapes.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
+base64 = "0.22"
+mime_guess = "2"
 seven-chat-agent-cli = { path = "../seven-chat-agent-cli" }
 seven-chat-agent-cli-relay-protocol = { path = "../seven-chat-agent-cli-relay-protocol" }
 worker-bee-cli = { path = "../worker-bee-cli" }

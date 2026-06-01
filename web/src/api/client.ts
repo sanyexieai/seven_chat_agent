@@ -39,6 +39,7 @@ import type {
   GroupMemberConfig,
   GroupSettings,
   Message,
+  MessageAttachment,
   Provider,
   ProviderKey,
 } from "../types";
@@ -249,7 +250,8 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (pathname.startsWith("/conversations/dm/") && method === "POST") {
     return wsInvoke<T>("sendDm", {
       friend_id: pathname.split("/").at(-1),
-      content: body?.content,
+      content: body?.content ?? "",
+      attachments: body?.attachments ?? [],
     });
   }
   if (pathname.startsWith("/conversations/") && pathname.endsWith("/messages")) {
@@ -260,7 +262,8 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (pathname.startsWith("/conversations/") && pathname.endsWith("/send")) {
     return wsInvoke<T>("sendToConversation", {
       conversation_id: pathname.split("/")[2],
-      content: body?.content,
+      content: body?.content ?? "",
+      attachments: body?.attachments ?? [],
     });
   }
   if (/^\/conversations\/[^/]+\/messages\/[^/]+\/delegate$/.test(pathname)) {
@@ -536,20 +539,47 @@ export const api = {
     jsonFetch<{ conversation: Conversation; messages: Message[] }>(
       `/conversations/dm/${friendId}`,
     ),
-  sendDm: (friendId: string, content: string) =>
+  sendDm: (
+    friendId: string,
+    content: string,
+    attachments: MessageAttachment[] = [],
+  ) =>
     jsonFetch<{ ok: boolean; conversation_id: string }>(
       `/conversations/dm/${friendId}`,
       {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, attachments }),
       },
     ),
+  uploadConversationAttachments: async (
+    conversationId: string,
+    files: File[],
+  ): Promise<MessageAttachment[]> => {
+    const fd = new FormData();
+    for (const f of files) {
+      fd.append("files", f);
+    }
+    const res = await fetch(`/api/conversations/${conversationId}/attachments`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as { error?: string }).error || res.statusText);
+    }
+    const data = (await res.json()) as { attachments: MessageAttachment[] };
+    return data.attachments;
+  },
   listConversationMessages: (id: string) =>
     jsonFetch<{ messages: Message[] }>(`/conversations/${id}/messages`),
-  sendToConversation: (id: string, content: string) =>
+  sendToConversation: (
+    id: string,
+    content: string,
+    attachments: MessageAttachment[] = [],
+  ) =>
     jsonFetch<{ ok: boolean }>(`/conversations/${id}/send`, {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, attachments }),
     }),
   resolveDelegate: (
     conversationId: string,

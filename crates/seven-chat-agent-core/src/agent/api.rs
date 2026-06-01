@@ -5,6 +5,7 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment, ProviderUsageInfo};
+use crate::attachment::build_chat_content;
 use crate::domain::{ApiBackendConfig, ApiModelRef, Friend, Message, SenderKind};
 use crate::provider::types::{ChatMessage, ChatRequest, ProviderEvent};
 use crate::provider::ProviderRegistry;
@@ -50,9 +51,28 @@ impl ApiAgent {
         s
     }
 
+    fn vision_enabled(&self) -> bool {
+        let cfg = match self.config() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let chain = build_chain(&cfg);
+        chain
+            .first()
+            .and_then(|t| self.providers.get(&t.provider_id))
+            .map(|p| p.capabilities().vision)
+            .unwrap_or(false)
+    }
+
     fn build_messages(&self, ctx: &ChatContext, prompt: &str) -> Vec<ChatMessage> {
+        let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+        let vision = self.vision_enabled();
         let mut messages = vec![ChatMessage::system(self.build_system_prompt(ctx))];
-        for m in &ctx.history {
+        let take = ctx.history.len();
+        for (idx, m) in ctx.history.iter().enumerate() {
+            if take > 0 && idx + 1 == take {
+                break;
+            }
             let role = match m.sender_kind {
                 SenderKind::User => "user",
                 SenderKind::Friend => {
@@ -64,11 +84,22 @@ impl ApiAgent {
                 }
                 SenderKind::System => "system",
             };
-            let content = match m.sender_kind {
+            let text = match m.sender_kind {
                 SenderKind::Friend if m.sender_id != self.friend.id => {
                     format!("[{}]: {}", m.sender_name, m.content)
                 }
                 _ => m.content.clone(),
+            };
+            let content = if m.attachments.is_empty() {
+                serde_json::Value::String(text)
+            } else {
+                build_chat_content(
+                    &data_dir,
+                    &ctx.conversation_id,
+                    &text,
+                    &m.attachments,
+                    vision,
+                )
             };
             messages.push(ChatMessage {
                 role: role.into(),
@@ -76,7 +107,14 @@ impl ApiAgent {
                 name: None,
             });
         }
-        messages.push(ChatMessage::user(prompt.to_string()));
+        let final_content = build_chat_content(
+            &data_dir,
+            &ctx.conversation_id,
+            prompt,
+            &ctx.user_attachments,
+            vision,
+        );
+        messages.push(ChatMessage::user_value(final_content));
         messages
     }
 }

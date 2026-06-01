@@ -73,7 +73,15 @@ impl AgentRuntime {
             mcp_servers: profile.mcp_servers.clone(),
         };
 
-        let mut messages = self.memory.build_messages(friend, system, &ctx.history, &prompt);
+        let vision = match &profile.inference {
+            super::config::InferenceBackend::WorkerBee(w) => self
+                .providers
+                .get(&w.provider.provider_id)
+                .map(|p| p.capabilities().vision)
+                .unwrap_or(false),
+            super::config::InferenceBackend::ExternalCli(_) => false,
+        };
+        let mut messages = self.memory.build_messages(friend, &ctx, system, &prompt, vision);
         let think = ThinkBackend::from_profile(friend, profile);
 
         let providers = self.providers.clone();

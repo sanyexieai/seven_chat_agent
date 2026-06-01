@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::domain::Provider;
 use crate::provider::openai_compat::KeyResolver;
+use crate::provider::chat_content::chat_content_to_text;
 use crate::provider::types::{ChatMessage, ChatRequest, ProviderEvent, ProviderUsage};
 use crate::provider::ModelProvider;
 use crate::store::SecretVault;
@@ -69,6 +70,16 @@ impl ModelProvider for AnthropicProvider {
             .ok_or_else(|| Error::provider("anthropic api key missing"))?;
 
         let (system, user_messages) = split_system(req.messages);
+        let user_messages: Vec<ChatMessage> = user_messages
+            .into_iter()
+            .map(|mut m| {
+                if !m.content.is_string() {
+                    m.content =
+                        serde_json::Value::String(chat_content_to_text(&m.content));
+                }
+                m
+            })
+            .collect();
         let mut body = serde_json::json!({
             "model": req.model,
             "messages": user_messages,
@@ -203,7 +214,7 @@ fn split_system(msgs: Vec<ChatMessage>) -> (Option<String>, Vec<ChatMessage>) {
     let mut rest = Vec::new();
     for m in msgs {
         if m.role == "system" {
-            system_parts.push(m.content);
+            system_parts.push(chat_content_to_text(&m.content));
         } else {
             rest.push(m);
         }

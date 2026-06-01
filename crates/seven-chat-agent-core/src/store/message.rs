@@ -1,7 +1,7 @@
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::domain::{CliBlock, Message, MessageStatus, SenderKind};
+use crate::domain::{CliBlock, Message, MessageAttachment, MessageStatus, SenderKind};
 
 fn strip_delegate_confirm_prefix(s: &str) -> String {
     let t = s.trim();
@@ -34,6 +34,7 @@ struct MessageRow {
     tokens_out: Option<i64>,
     on_behalf_of: i64,
     workspace_id: Option<String>,
+    attachments: Option<String>,
     created_at: String,
 }
 
@@ -66,12 +67,17 @@ impl MessageRow {
             tokens_in: self.tokens_in,
             tokens_out: self.tokens_out,
             workspace_id: self.workspace_id,
+            attachments: self
+                .attachments
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default(),
             created_at: parse_dt(&self.created_at),
         })
     }
 }
 
-const MESSAGE_SELECT: &str = "id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, workspace_id, created_at";
+const MESSAGE_SELECT: &str = "id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, workspace_id, attachments, created_at";
 
 #[derive(Debug)]
 pub struct NewMessage<'a> {
@@ -86,6 +92,7 @@ pub struct NewMessage<'a> {
     pub status: MessageStatus,
     pub on_behalf_of_user: bool,
     pub workspace_id: Option<&'a str>,
+    pub attachments: &'a [MessageAttachment],
 }
 
 impl SqliteStore {
@@ -93,6 +100,11 @@ impl SqliteStore {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let mentions = serde_json::to_string(m.mentions)?;
+        let attachments_json = if m.attachments.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(m.attachments)?)
+        };
         let workspace_id = if let Some(w) = m.workspace_id.filter(|s| !s.is_empty()) {
             Some(w.to_string())
         } else {
@@ -101,8 +113,8 @@ impl SqliteStore {
         };
         sqlx::query(
             r#"INSERT INTO messages
-                (id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, on_behalf_of, workspace_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)"#,
+                (id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, on_behalf_of, workspace_id, attachments, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?)"#,
         )
         .bind(&id)
         .bind(m.conversation_id)
@@ -116,6 +128,7 @@ impl SqliteStore {
         .bind(m.status.as_str())
         .bind(if m.on_behalf_of_user { 1 } else { 0 })
         .bind(&workspace_id)
+        .bind(&attachments_json)
         .bind(&now)
         .execute(self.pool())
         .await?;
@@ -263,7 +276,7 @@ impl SqliteStore {
 
     pub async fn search_messages(&self, query: &str, limit: i64) -> Result<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT m.id, m.conversation_id, m.turn_id, m.parent_id, m.sender_kind, m.sender_id, m.sender_name, m.content, m.content_blocks, m.mentions, m.status, m.seen_by, m.model_used, m.tokens_in, m.tokens_out, m.on_behalf_of, m.workspace_id, m.created_at FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ? ORDER BY m.created_at DESC LIMIT ?",
+            "SELECT m.id, m.conversation_id, m.turn_id, m.parent_id, m.sender_kind, m.sender_id, m.sender_name, m.content, m.content_blocks, m.mentions, m.status, m.seen_by, m.model_used, m.tokens_in, m.tokens_out, m.on_behalf_of, m.workspace_id, m.attachments, m.created_at FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ? ORDER BY m.created_at DESC LIMIT ?",
         )
         .bind(query)
         .bind(limit)

@@ -236,6 +236,7 @@ impl MessageDispatcher {
             history,
             self_friend: friend.clone(),
             peers: experts,
+            user_attachments: user_msg.attachments.clone(),
         };
         let prompt = build_delegate_prompt(
             group,
@@ -395,6 +396,7 @@ async fn notify_owner_attention(
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
                 workspace_id: None,
+                attachments: &[],
             })
             .await
         {

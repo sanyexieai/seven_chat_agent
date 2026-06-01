@@ -9,6 +9,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::Provider;
+use crate::provider::chat_content::chat_content_to_text;
 use crate::provider::types::{ChatMessage, ChatRequest, ProviderEvent, ProviderUsage};
 use crate::provider::ModelProvider;
 use crate::store::SecretVault;
@@ -132,7 +133,7 @@ impl ModelProvider for OpenAiCompatProvider {
                 .choices
                 .first()
                 .and_then(|c| c.message.as_ref())
-                .map(|m| m.content.clone())
+                .map(|m| chat_content_to_text(&m.content))
                 .unwrap_or_default();
             let usage = ProviderUsage {
                 prompt_tokens: usage.prompt_tokens.unwrap_or(0),

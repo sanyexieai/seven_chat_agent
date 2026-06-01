@@ -5,6 +5,7 @@ pub mod ollama;
 pub mod openai_compat;
 pub mod rate_limit;
 pub mod registry;
+pub mod chat_content;
 pub mod types;
 
 pub use registry::{ProviderHandle, ProviderRegistry};

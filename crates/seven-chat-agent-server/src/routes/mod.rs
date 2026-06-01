@@ -21,6 +21,7 @@ use serde::Deserialize;
 
 use crate::state::AppState;
 
+pub mod attachments;
 pub mod errors;
 
 use errors::ApiError;
@@ -86,6 +87,14 @@ pub fn api_router() -> Router<AppState> {
             get(open_dm).post(send_message),
         )
         .route("/conversations/:id/send", post(send_to_conversation))
+        .route(
+            "/conversations/:id/attachments",
+            post(attachments::upload_conversation_attachments),
+        )
+        .route(
+            "/uploads/:conv_id/:file_id",
+            get(attachments::get_upload),
+        )
         .route(
             "/conversations/:conv_id/messages/:msg_id/delegate",
             post(resolve_delegate_message),
@@ -673,22 +682,24 @@ async fn open_dm(
     })))
 }
 
-#[derive(Debug, Deserialize)]
-struct SendBody {
-    content: String,
-}
-
 async fn send_message(
     State(s): State<AppState>,
     Path(friend_id): Path<String>,
-    Json(body): Json<SendBody>,
+    Json(body): Json<attachments::SendWithAttachments>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let conv = s.core.store.get_or_create_dm(&friend_id).await?;
+    let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+    attachments::validate_send_attachments(&data_dir, &conv.id, &body.attachments)?;
     let core = s.core.clone();
     let conv_id = conv.id.clone();
     let content = body.content.clone();
+    let attachments = body.attachments.clone();
     tokio::spawn(async move {
-        if let Err(e) = core.dispatcher.send_user_message(&conv_id, &content).await {
+        if let Err(e) = core
+            .dispatcher
+            .send_user_message_with_attachments(&conv_id, &content, &attachments)
+            .await
+        {
             tracing::error!(err = %e, "send_user_message failed");
         }
     });
@@ -698,13 +709,20 @@ async fn send_message(
 async fn send_to_conversation(
     State(s): State<AppState>,
     Path(id): Path<String>,
-    Json(body): Json<SendBody>,
+    Json(body): Json<attachments::SendWithAttachments>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+    attachments::validate_send_attachments(&data_dir, &id, &body.attachments)?;
     let core = s.core.clone();
     let conv_id = id.clone();
     let content = body.content.clone();
+    let attachments = body.attachments.clone();
     tokio::spawn(async move {
-        if let Err(e) = core.dispatcher.send_user_message(&conv_id, &content).await {
+        if let Err(e) = core
+            .dispatcher
+            .send_user_message_with_attachments(&conv_id, &content, &attachments)
+            .await
+        {
             tracing::error!(err = %e, "send_user_message failed");
         }
     });

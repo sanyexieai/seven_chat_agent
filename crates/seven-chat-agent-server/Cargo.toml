@@ -28,10 +28,10 @@ tracing-subscriber.workspace = true
 futures.workspace = true
 uuid.workspace = true
 chrono.workspace = true
-mime_guess = { version = "2", optional = true }
+mime_guess = "2"
 include_dir = { version = "0.7", optional = true }
 
 [features]
 default = []
 # 把 web/dist 通过 include_dir!() 编译进二进制；桌面壳必开。
-embed-frontend = ["dep:include_dir", "dep:mime_guess"]
+embed-frontend = ["dep:include_dir"]

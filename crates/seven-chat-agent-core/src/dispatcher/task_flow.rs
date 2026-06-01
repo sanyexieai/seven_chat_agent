@@ -177,6 +177,7 @@ impl MessageDispatcher {
             history,
             self_friend: leader.clone(),
             peers: agents.iter().filter(|m| m.id != leader.id).cloned().collect(),
+            user_attachments: user_msg.attachments.clone(),
         };
         let plan_block = if plan_text.is_empty() {
             "（无单独计划稿，请边计划边执行）".to_string()
@@ -229,6 +230,7 @@ impl MessageDispatcher {
                     history,
                     self_friend: friend.clone(),
                     peers,
+                    user_attachments: user_msg.attachments.clone(),
                 };
                 let others = peer_names
                     .iter()
@@ -436,6 +438,7 @@ impl MessageDispatcher {
             history,
             self_friend: leader.clone(),
             peers: agents.iter().filter(|m| m.id != leader.id).cloned().collect(),
+            user_attachments: user_msg.attachments.clone(),
         };
         let plan_prompt = format!(
             "你是负责人「{}」。任命/选举理由：{}\n\n用户任务：\n{}\n\n竞选摘要：\n{}\n\n\
@@ -475,6 +478,7 @@ impl MessageDispatcher {
                     history,
                     self_friend: member.clone(),
                     peers: vec![leader.clone()],
+                    user_attachments: user_msg.attachments.clone(),
                 };
                 let prompt = format!(
                     "负责人「{}」发布了计划：\n{}\n\n你是「{}」。请用 1–3 句话评议：是否同意、需补充什么、是否愿意配合（不要抢执行权）。",
@@ -522,6 +526,7 @@ impl MessageDispatcher {
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
                 workspace_id: None,
+                attachments: &[],
             })
             .await?;
         self.emit(BusEvent::MessageCreated { message: msg });

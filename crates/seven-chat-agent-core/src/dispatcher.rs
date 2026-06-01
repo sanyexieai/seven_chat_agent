@@ -985,6 +985,20 @@ impl MessageDispatcher {
             return;
         }
 
+        if conv.kind == ConvKind::Dm && conv.target_id == assistant_id {
+            tracing::debug!("skip observe: builtin assistant dm (use extract/reflect)");
+            return;
+        }
+
+        let body = msg.content.trim();
+        match crate::memory_record_policy::evaluate_observe_message(body, &global) {
+            crate::memory_record_policy::RecordDecision::Skip(reason) => {
+                tracing::debug!(reason, "skip observe memory");
+                return;
+            }
+            crate::memory_record_policy::RecordDecision::Record => {}
+        }
+
         let scope = match conv.kind {
             ConvKind::Dm => {
                 let friend_name = self
@@ -1010,12 +1024,24 @@ impl MessageDispatcher {
             }
         };
 
+        let dedupe_secs = global.observe_dedupe_secs.max(1) as i64;
+        if self
+            .store
+            .observe_recent_duplicate(&assistant_id, &scope, body, dedupe_secs)
+            .await
+            .unwrap_or(false)
+        {
+            tracing::debug!(scope = %scope, "skip observe memory: duplicate");
+            return;
+        }
+
         let max_chars = global.record_max_chars.max(80) as usize;
         let summary = format!(
             "[默认观察/{scope}] 用户:{}\n内容:{}",
             msg.sender_name,
-            truncate_chars(&msg.content, max_chars)
+            truncate_chars(body, max_chars)
         );
+        let scope_key = crate::memory_tier::scope_for_observe(conv);
         if let Err(err) = self
             .store
             .insert_memory(NewMemory {
@@ -1025,6 +1051,14 @@ impl MessageDispatcher {
                 source_message_id: Some(msg.id.clone()),
                 weight: global.record_weight.clamp(0.05, 1.0),
                 pinned: false,
+                tier: crate::memory_tier::TIER_RAW.to_string(),
+                scope: scope_key.scope,
+                scope_ref: scope_key.scope_ref,
+                importance: 0,
+                status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+                title: None,
+                summary: None,
+                expires_at: None,
             })
             .await
         {

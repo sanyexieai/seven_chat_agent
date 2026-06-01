@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use seven_chat_agent_core::domain::{
     AssistantGlobalSettings, AssistantTodoStatus, Provider, ProviderCapabilities, ProviderPrice,
@@ -68,8 +68,20 @@ pub fn api_router() -> Router<AppState> {
             "/assistant/global-settings/consolidate",
             post(consolidate_assistant_global_memories),
         )
+        .route("/assistant/tenant", get(get_assistant_tenant))
         .route("/assistant/:friend_id/memories", get(list_memories).post(add_memory))
-        .route("/assistant/:friend_id/memories/:memory_id", delete(delete_memory))
+        .route(
+            "/assistant/:friend_id/memories/stats",
+            get(assistant_memory_stats),
+        )
+        .route(
+            "/assistant/:friend_id/memories/recall-preview",
+            get(assistant_memory_recall_preview),
+        )
+        .route(
+            "/assistant/:friend_id/memories/:memory_id",
+            delete(delete_memory).patch(patch_memory_handler),
+        )
         .route("/assistant/:friend_id/skills", get(list_skills))
         .route("/assistant/:friend_id/reflections", get(list_reflections))
         .route(
@@ -521,6 +533,11 @@ struct MemoryQuery {
     kind: Option<String>,
     /// `memo` | `knowledge` — 助理面板分区
     category: Option<String>,
+    /// `raw` | `curated`
+    tier: Option<String>,
+    /// `active` | `archived`
+    status: Option<String>,
+    scope: Option<String>,
     limit: Option<i64>,
 }
 
@@ -539,12 +556,23 @@ async fn upsert_assistant_global_settings(
     Ok(Json(serde_json::json!({ "settings": settings })))
 }
 
+async fn get_assistant_tenant(State(s): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    Ok(Json(serde_json::json!({
+        "tenant_id": s.core.store.tenant_id(),
+    })))
+}
+
 async fn consolidate_assistant_global_memories(
     State(s): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core.store.consolidate_assistant_memories().await?;
+    let report = s.core.run_memory_maintenance().await?;
+    s.core.store.reset_assistant_observe_streak().await?;
     let settings = s.core.store.get_assistant_global_settings().await?;
-    Ok(Json(serde_json::json!({ "ok": true, "settings": settings })))
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "settings": settings,
+        "report": report,
+    })))
 }
 
 async fn list_memories(
@@ -553,17 +581,17 @@ async fn list_memories(
     axum::extract::Query(q): axum::extract::Query<MemoryQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = q.limit.unwrap_or(100);
-    let memories = if q.category.is_some() {
-        s.core
-            .store
-            .list_memories_by_category(&friend_id, q.category.as_deref(), limit)
-            .await?
-    } else {
-        s.core
-            .store
-            .list_memories(&friend_id, q.kind.as_deref(), limit)
-            .await?
+    let filter = seven_chat_agent_core::store::memory::ListMemoryFilter {
+        tier: q.tier,
+        status: q.status,
+        scope: q.scope,
+        category: q.category,
     };
+    let memories = s
+        .core
+        .store
+        .list_memories_filtered(&friend_id, filter, limit)
+        .await?;
     Ok(Json(serde_json::json!({ "memories": memories })))
 }
 
@@ -583,6 +611,87 @@ async fn delete_memory(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     s.core.store.delete_memory(&memory_id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchMemoryBody {
+    kind: Option<String>,
+    content: Option<String>,
+    weight: Option<f64>,
+    pinned: Option<bool>,
+    tier: Option<String>,
+    scope: Option<String>,
+    scope_ref: Option<String>,
+    importance: Option<i32>,
+    status: Option<String>,
+    title: Option<String>,
+    summary: Option<String>,
+    /// 保存时把原始记忆提升为整理层
+    #[serde(default)]
+    promote_to_curated: bool,
+}
+
+async fn patch_memory_handler(
+    State(s): State<AppState>,
+    Path((_friend_id, memory_id)): Path<(String, String)>,
+    Json(body): Json<PatchMemoryBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let scope_ref = body.scope_ref.as_deref().map(Some);
+    let memory = s
+        .core
+        .store
+        .update_memory(
+            &memory_id,
+            body.kind.as_deref(),
+            body.content.as_deref(),
+            body.weight,
+            body.pinned,
+            body.tier.as_deref(),
+            body.scope.as_deref(),
+            scope_ref,
+            body.importance,
+            body.status.as_deref(),
+            body.title.as_deref().map(Some),
+            body.summary.as_deref().map(Some),
+            body.promote_to_curated,
+        )
+        .await?;
+    Ok(Json(serde_json::json!({ "memory": memory })))
+}
+
+async fn assistant_memory_stats(
+    State(s): State<AppState>,
+    Path(friend_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let stats = s.core.store.memory_stats(&friend_id).await?;
+    Ok(Json(serde_json::json!({ "stats": stats })))
+}
+
+#[derive(Debug, Deserialize)]
+struct RecallPreviewQuery {
+    prompt: Option<String>,
+    limit: Option<i64>,
+    conversation_id: Option<String>,
+    friend_id: Option<String>,
+}
+
+async fn assistant_memory_recall_preview(
+    State(s): State<AppState>,
+    Path(friend_id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<RecallPreviewQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let prompt = q.prompt.unwrap_or_default();
+    let limit = q.limit.unwrap_or(8);
+    let ctx = seven_chat_agent_core::memory_tier::RecallContext {
+        conversation_id: q.conversation_id,
+        friend_id: q.friend_id,
+    };
+    let memories = s
+        .core
+        .store
+        .recall_memories_for_turn(&friend_id, &prompt, limit, false, &ctx)
+        .await?;
+    Ok(Json(serde_json::json!({ "memories": memories, "prompt": prompt })))
 }
 
 async fn list_skills(

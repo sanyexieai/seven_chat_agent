@@ -67,15 +67,44 @@ impl AssistantAgent {
     async fn build_system_prompt(&self, ctx: &ChatContext, prompt: &str) -> String {
         let mut s = self.friend.system_prompt.clone();
 
+        let recall_ctx = crate::memory_tier::recall_context_from_chat(ctx);
+        let global = self
+            .store
+            .get_assistant_global_settings()
+            .await
+            .unwrap_or_default();
+        let vector = if global.embedding_enabled {
+            Some(crate::store::memory::RecallVectorOpts {
+                providers: &self.providers,
+                settings: &global,
+                assistant_id: &self.friend.id,
+            })
+        } else {
+            None
+        };
         let memories = self
             .store
-            .search_memories(&self.friend.id, prompt, self.cfg.memory_top_k as i64)
+            .recall_memories_for_turn_with_vector(
+                &self.friend.id,
+                prompt,
+                self.cfg.memory_top_k as i64,
+                true,
+                &recall_ctx,
+                vector,
+            )
             .await
             .unwrap_or_default();
         if !memories.is_empty() {
-            s.push_str("\n\n[长期记忆 Top-K]");
+            s.push_str("\n\n[助理整理记忆 · 仅 curated 层]");
             for m in &memories {
-                s.push_str(&format!("\n- ({} | w={:.1}) {}", m.kind, m.weight, m.content));
+                s.push_str("\n- ");
+                s.push_str(&crate::memory_tier::prompt_line(
+                    &m.scope,
+                    &m.kind,
+                    m.importance,
+                    m.summary.as_deref(),
+                    &m.content,
+                ));
             }
         }
 
@@ -167,9 +196,10 @@ impl AssistantAgent {
 
     async fn extract_memories(&self, prompt: &str, response: &str) -> Result<()> {
         let msgs = vec![
-            ChatMessage::system(
-                "你是一个用于知识沉淀的助手。从助理帮助用户解决问题的对话中，抽出可长期复用的知识点。只输出 JSON 数组，每项含 kind（固定填 knowledge）、content、weight(0~1)。不要输出多余文字。",
-            ),
+            ChatMessage::system(&format!(
+                "你是一个用于知识沉淀的助手。只输出 JSON 数组，每项含 kind(knowledge)、content、weight(0~1)、scope(global|user|friend|conversation|ephemeral)、scope_ref（user 偏好用 \"{}\"）、importance(0-3)、title、summary。无新事实则 []。",
+                self.store.tenant_id()
+            )),
             ChatMessage::user(format!(
                 "用户消息：\n{prompt}\n\n助理回应：\n{response}\n\n请抽出最多 4 条结构化记忆。"
             )),
@@ -197,15 +227,46 @@ impl AssistantAgent {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.5)
                     .clamp(0.0, 1.0);
+                let scope = item
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(crate::memory_tier::SCOPE_GLOBAL);
+                let scope_ref = item
+                    .get("scope_ref")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let importance = item
+                    .get("importance")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(crate::memory_tier::importance_from_weight(weight) as i64)
+                    as i32;
+                let title = item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let content_for_summary = content.clone();
+                let summary = item
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| Some(crate::memory_tier::make_summary(&content_for_summary, 240)));
                 let _ = self
                     .store
                     .insert_memory(crate::store::memory::NewMemory {
                         owner_friend_id: self.friend.id.clone(),
                         kind,
-                        content,
+                        content: content.clone(),
                         source_message_id: None,
                         weight,
                         pinned: false,
+                        tier: crate::memory_tier::TIER_CURATED.to_string(),
+                        scope: scope.to_string(),
+                        scope_ref,
+                        importance,
+                        status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+                        title,
+                        summary,
+                        expires_at: None,
                     })
                     .await;
             }
@@ -249,15 +310,24 @@ impl AssistantAgent {
             if lesson.is_empty() {
                 continue;
             }
+            let content = lesson.to_string();
             let _ = self
                 .store
                 .insert_memory(crate::store::memory::NewMemory {
                     owner_friend_id: self.friend.id.clone(),
                     kind: crate::assistant_accumulation::MEMORY_KIND_KNOWLEDGE.to_string(),
-                    content: lesson.to_string(),
+                    content: content.clone(),
                     source_message_id: None,
                     weight: 0.65,
                     pinned: false,
+                    tier: crate::memory_tier::TIER_CURATED.to_string(),
+                    scope: crate::memory_tier::SCOPE_GLOBAL.to_string(),
+                    scope_ref: None,
+                    importance: 2,
+                    status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+                    title: None,
+                    summary: Some(crate::memory_tier::make_summary(&content, 200)),
+                    expires_at: None,
                 })
                 .await;
         }
@@ -313,6 +383,7 @@ impl Agent for AssistantAgent {
             .last()
             .map(|m| m.turn_id.clone())
             .unwrap_or_else(|| "unknown".into());
+        let conversation_id = ctx.conversation_id.clone();
 
         let s = stream! {
             let mut full = String::new();
@@ -351,7 +422,15 @@ impl Agent for AssistantAgent {
                     .ok()
                     .flatten()
                     .is_some_and(|id| id == friend_id);
-                if is_builtin && global.observe_enabled {
+                if is_builtin
+                    && global.observe_enabled
+                    && crate::memory_record_policy::evaluate_assist_memo(
+                        &prompt_for_post,
+                        &full,
+                        &global,
+                    )
+                    .should_record()
+                {
                     let summary = format!(
                         "[协助记录]\n用户：{}\n助理：{}",
                         crate::assistant_accumulation::truncate_chars(&prompt_for_post, 280),
@@ -365,6 +444,14 @@ impl Agent for AssistantAgent {
                             source_message_id: None,
                             weight: 0.5,
                             pinned: false,
+                            tier: crate::memory_tier::TIER_RAW.to_string(),
+                            scope: crate::memory_tier::SCOPE_CONVERSATION.to_string(),
+                            scope_ref: Some(conversation_id.clone()),
+                            importance: 0,
+                            status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+                            title: None,
+                            summary: None,
+                            expires_at: None,
                         })
                         .await;
                 }

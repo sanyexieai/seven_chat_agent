@@ -41,9 +41,10 @@ impl AgentRuntime {
             .group_settings
             .as_ref()
             .and_then(|g| g.extra_system_prompt.clone());
+        let recall_ctx = crate::memory_tier::recall_context_from_chat(ctx);
         let mut system = self
             .memory
-            .build_system_prompt(friend, profile, &prompt, extra.as_deref())
+            .build_system_prompt(friend, profile, &prompt, extra.as_deref(), &recall_ctx)
             .await?;
 
         let delegate_cli = profile.delegate_cli.as_ref().map(|c| c.preset.as_str());
@@ -84,6 +85,7 @@ impl AgentRuntime {
             .last()
             .map(|m| m.turn_id.clone())
             .unwrap_or_else(|| "unknown".into());
+        let conversation_id = ctx.conversation_id.clone();
         let prompt_post = prompt.clone();
         let max_rounds = profile.max_tool_rounds;
 
@@ -158,6 +160,7 @@ impl AgentRuntime {
                 memory
                     .post_turn(
                         &fid,
+                        &conversation_id,
                         &turn_id,
                         &prompt_post,
                         &full,

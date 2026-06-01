@@ -27,6 +27,7 @@ pub use vault::SecretVault;
 pub struct SqliteStore {
     pool: SqlitePool,
     pub vault: SecretVault,
+    tenant_id: String,
 }
 
 impl SqliteStore {
@@ -50,8 +51,42 @@ impl SqliteStore {
             .await?;
 
         let vault = SecretVault::new();
+        let tenant_id = std::env::var("SEVEN_CHAT_AGENT_TENANT_ID")
+            .unwrap_or_else(|_| "default".to_string());
+        let tenant_id = tenant_id.trim();
+        let tenant_id = if tenant_id.is_empty() {
+            "default".to_string()
+        } else {
+            tenant_id.to_string()
+        };
 
-        Ok(Self { pool, vault })
+        Ok(Self {
+            pool,
+            vault,
+            tenant_id,
+        })
+    }
+
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+
+    /// 确保当前租户存在，并将 legacy `global` 设置行复制到租户 id。
+    pub async fn ensure_tenant(&self) -> Result<()> {
+        let tid = self.tenant_id();
+        sqlx::query("INSERT OR IGNORE INTO tenants (id, name) VALUES (?, ?)")
+            .bind(tid)
+            .bind(tid)
+            .execute(self.pool())
+            .await?;
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO assistant_global_settings (id, settings, updated_at)
+               SELECT ?, settings, updated_at FROM assistant_global_settings WHERE id = 'global'"#,
+        )
+        .bind(tid)
+        .execute(self.pool())
+        .await?;
+        Ok(())
     }
 
     pub fn pool(&self) -> &SqlitePool {

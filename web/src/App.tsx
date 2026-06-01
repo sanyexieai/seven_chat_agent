@@ -8,6 +8,19 @@ import { SettingsDrawer } from "./components/SettingsDrawer";
 import { Sidebar } from "./components/Sidebar";
 import { useChat } from "./stores/chat";
 
+function openAssistantChat(
+  assistantId: string,
+  prompt: string,
+  closePanel: () => void,
+) {
+  closePanel();
+  void (async () => {
+    const { selectFriend, sendMessage } = useChat.getState();
+    await selectFriend(assistantId);
+    await sendMessage(prompt);
+  })();
+}
+
 export default function App() {
   const { ready, init, friends } = useChat();
   const [editingFriend, setEditingFriend] = useState<
@@ -70,6 +83,10 @@ export default function App() {
         <AssistantPanel
           friendId={assistantFriendId}
           onClose={() => setAssistantFriendId(null)}
+          onAssistChat={(prompt) => {
+            const id = assistantFriendId;
+            openAssistantChat(id, prompt, () => setAssistantFriendId(null));
+          }}
         />
       )}
       <HumanInvitePanel

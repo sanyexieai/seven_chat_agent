@@ -473,12 +473,40 @@ pub struct AssistantGlobalSettings {
     pub record_max_chars: u32,
     #[serde(default = "default_record_weight")]
     pub record_weight: f64,
+    /// 观察/协助备忘：低于该字符数不写（过滤寒暄、空消息）。
+    #[serde(default = "default_record_min_chars")]
+    pub record_min_chars: u32,
+    /// 过滤「你好/谢谢」等低信息量短句。
+    #[serde(default = "default_true")]
+    pub record_skip_low_signal: bool,
+    /// 与助理私聊是否仍写「协助记录」流水账（默认关，靠提取/反思沉淀）。
+    #[serde(default)]
+    pub record_assist_memo: bool,
+    /// 同一会话 scope 内，多少秒内相似观察不重复写入。
+    #[serde(default = "default_observe_dedupe_secs")]
+    pub observe_dedupe_secs: u32,
     /// 观察后是否周期性整理记忆。
     #[serde(default = "default_true")]
     pub auto_consolidate: bool,
     /// 每累计 N 条观察记忆触发一次整理。
     #[serde(default = "default_consolidate_every_n")]
     pub consolidate_every_n: u32,
+    /// 定时/阈值触发时用 LLM 将 raw 合并为 curated。
+    #[serde(default = "default_true")]
+    pub auto_ingest_raw: bool,
+    /// 单次 ingest 最多处理的 raw 条数。
+    #[serde(default = "default_ingest_raw_batch_size")]
+    pub ingest_raw_batch_size: u32,
+    /// curated 层向量召回（需 OpenAI 兼容 embeddings API）。
+    #[serde(default)]
+    pub embedding_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
+    /// ephemeral 作用域默认 TTL（小时）。
+    #[serde(default = "default_ephemeral_ttl_hours")]
+    pub ephemeral_ttl_hours: u32,
     /// 回合结束后反思 + 知识沉淀（reflections）。
     #[serde(default = "default_true")]
     pub evolution_enabled: bool,
@@ -524,8 +552,24 @@ fn default_record_weight() -> f64 {
     0.45
 }
 
+fn default_record_min_chars() -> u32 {
+    20
+}
+
+fn default_observe_dedupe_secs() -> u32 {
+    120
+}
+
 fn default_consolidate_every_n() -> u32 {
-    1
+    10
+}
+
+fn default_ingest_raw_batch_size() -> u32 {
+    25
+}
+
+fn default_ephemeral_ttl_hours() -> u32 {
+    168
 }
 
 fn default_proactive_batch() -> u32 {
@@ -540,8 +584,18 @@ impl Default for AssistantGlobalSettings {
             observe_group: true,
             record_max_chars: default_record_max_chars(),
             record_weight: default_record_weight(),
+            record_min_chars: default_record_min_chars(),
+            record_skip_low_signal: true,
+            record_assist_memo: false,
+            observe_dedupe_secs: default_observe_dedupe_secs(),
             auto_consolidate: true,
             consolidate_every_n: default_consolidate_every_n(),
+            auto_ingest_raw: true,
+            ingest_raw_batch_size: default_ingest_raw_batch_size(),
+            embedding_enabled: false,
+            embedding_provider_id: None,
+            embedding_model: None,
+            ephemeral_ttl_hours: default_ephemeral_ttl_hours(),
             evolution_enabled: true,
             auto_extract_memories: true,
             proactive_enabled: true,

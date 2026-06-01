@@ -461,8 +461,12 @@ async fn handle_method(
             Ok(serde_json::json!({ "settings": settings }))
         }
         "consolidateAssistantMemories" => {
+            let report = core
+                .run_memory_maintenance()
+                .await
+                .map_err(|e| e.to_string())?;
             core.store
-                .consolidate_assistant_memories()
+                .reset_assistant_observe_streak()
                 .await
                 .map_err(|e| e.to_string())?;
             let settings = core
@@ -470,21 +474,119 @@ async fn handle_method(
                 .get_assistant_global_settings()
                 .await
                 .map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({ "ok": true, "settings": settings }))
+            Ok(serde_json::json!({ "ok": true, "settings": settings, "report": report }))
         }
         "listAssistantMemories" => {
             let friend_id = params
                 .get("friend_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "friend_id required".to_string())?;
-            let category = params.get("category").and_then(|v| v.as_str());
             let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(100);
+            let filter = seven_chat_agent_core::store::memory::ListMemoryFilter {
+                tier: params
+                    .get("tier")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                status: params
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                scope: params
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                category: params
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            };
             let memories = core
                 .store
-                .list_memories_by_category(friend_id, category, limit)
+                .list_memories_filtered(friend_id, filter, limit)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "memories": memories }))
+        }
+        "getAssistantMemoryStats" => {
+            let friend_id = params
+                .get("friend_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "friend_id required".to_string())?;
+            let stats = core
+                .store
+                .memory_stats(friend_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "stats": stats }))
+        }
+        "previewAssistantMemoryRecall" => {
+            let friend_id = params
+                .get("friend_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "friend_id required".to_string())?;
+            let prompt = params
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(8);
+            let ctx = seven_chat_agent_core::memory_tier::RecallContext {
+                conversation_id: params
+                    .get("conversation_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                friend_id: params
+                    .get("friend_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            };
+            let memories = core
+                .store
+                .recall_memories_for_turn(friend_id, &prompt, limit, false, &ctx)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "memories": memories, "prompt": prompt }))
+        }
+        "patchAssistantMemory" => {
+            let memory_id = params
+                .get("memory_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "memory_id required".to_string())?;
+            let kind = params.get("kind").and_then(|v| v.as_str());
+            let content = params.get("content").and_then(|v| v.as_str());
+            let weight = params.get("weight").and_then(|v| v.as_f64());
+            let pinned = params.get("pinned").and_then(|v| v.as_bool());
+            let tier = params.get("tier").and_then(|v| v.as_str());
+            let scope = params.get("scope").and_then(|v| v.as_str());
+            let scope_ref = params.get("scope_ref").and_then(|v| v.as_str());
+            let importance = params.get("importance").and_then(|v| v.as_i64()).map(|v| v as i32);
+            let status = params.get("status").and_then(|v| v.as_str());
+            let title = params.get("title").and_then(|v| v.as_str());
+            let summary = params.get("summary").and_then(|v| v.as_str());
+            let promote = params
+                .get("promote_to_curated")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let memory = core
+                .store
+                .update_memory(
+                    memory_id,
+                    kind,
+                    content,
+                    weight,
+                    pinned,
+                    tier,
+                    scope,
+                    scope_ref.map(Some),
+                    importance,
+                    status,
+                    title.map(Some),
+                    summary.map(Some),
+                    promote,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "memory": memory }))
         }
         "listAssistantSkills" => {
             let friend_id = params

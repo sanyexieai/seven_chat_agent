@@ -27,6 +27,7 @@ impl MemoryService {
         profile: &RuntimeProfile,
         prompt: &str,
         extra_group: Option<&str>,
+        recall_ctx: &crate::memory_tier::RecallContext,
     ) -> Result<String> {
         use super::config::InferenceBackend;
         let mut s = friend.system_prompt.clone();
@@ -61,13 +62,26 @@ impl MemoryService {
 
         let memories = self
             .store
-            .search_memories(&friend.id, prompt, profile.memory_top_k as i64)
+            .recall_memories_for_turn(
+                &friend.id,
+                prompt,
+                profile.memory_top_k as i64,
+                true,
+                recall_ctx,
+            )
             .await
             .unwrap_or_default();
         if !memories.is_empty() {
-            s.push_str("\n\n[长期记忆 Top-K]");
+            s.push_str("\n\n[助理整理记忆 · 仅 curated 层]");
             for m in &memories {
-                s.push_str(&format!("\n- ({} | w={:.1}) {}", m.kind, m.weight, m.content));
+                s.push_str("\n- ");
+                s.push_str(&crate::memory_tier::prompt_line(
+                    &m.scope,
+                    &m.kind,
+                    m.importance,
+                    m.summary.as_deref(),
+                    &m.content,
+                ));
             }
         }
 
@@ -135,6 +149,7 @@ impl MemoryService {
     pub async fn post_turn(
         &self,
         friend_id: &str,
+        conversation_id: &str,
         turn_id: &str,
         prompt: &str,
         response: &str,
@@ -162,7 +177,11 @@ impl MemoryService {
             global = updated;
         }
 
-        if is_builtin && global.observe_enabled {
+        if is_builtin
+            && global.observe_enabled
+            && crate::memory_record_policy::evaluate_assist_memo(prompt, response, &global)
+                .should_record()
+        {
             let summary = format!(
                 "[协助记录]\n用户：{}\n助理：{}",
                 crate::assistant_accumulation::truncate_chars(prompt, 280),
@@ -177,6 +196,14 @@ impl MemoryService {
                     source_message_id: None,
                     weight: 0.5,
                     pinned: false,
+                    tier: crate::memory_tier::TIER_RAW.to_string(),
+                    scope: crate::memory_tier::SCOPE_CONVERSATION.to_string(),
+                    scope_ref: Some(conversation_id.to_string()),
+                    importance: 0,
+                    status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+                    title: None,
+                    summary: None,
+                    expires_at: None,
                 })
                 .await
             {
@@ -277,11 +304,12 @@ impl MemoryService {
         let mut req = crate::provider::types::ChatRequest::new(
             model,
             vec![
-                ChatMessage::system(
-                    "从助理帮助用户的对话中抽取可复用知识。只输出 JSON 数组，每项 kind 固定为 knowledge，含 content、weight(0~1)。",
-                ),
+                ChatMessage::system(&format!(
+                    "从助理帮助用户的对话中抽取可复用知识。只输出 JSON 数组，每项含 kind(knowledge)、content、weight(0~1)、scope(global|user|friend|conversation|ephemeral)、scope_ref(可选id；user 偏好请用 \"{}\"）、importance(0-3)、title、summary。若无稳定可复用新事实，输出 []。",
+                    self.store.tenant_id()
+                )),
                 ChatMessage::user(format!(
-                    "用户：\n{prompt}\n\n助理：\n{response}\n\n最多 4 条。"
+                    "用户：\n{prompt}\n\n助理：\n{response}\n\n最多 4 条；无新事实则 []。"
                 )),
             ],
         );
@@ -295,7 +323,7 @@ impl MemoryService {
                 raw.push_str(&t);
             }
         }
-        let json = extract_json_array(&raw).unwrap_or(raw);
+        let json = crate::llm_json::extract_json_array(&raw).unwrap_or(raw);
         let parsed: serde_json::Value = match serde_json::from_str(&json) {
             Ok(v) => v,
             Err(_) => return Ok(()),
@@ -318,15 +346,45 @@ impl MemoryService {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.5)
                     .clamp(0.0, 1.0);
+                let scope = item
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(crate::memory_tier::SCOPE_GLOBAL);
+                let scope_ref = item
+                    .get("scope_ref")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let importance = item
+                    .get("importance")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(crate::memory_tier::importance_from_weight(weight) as i64)
+                    as i32;
+                let title = item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let summary = item
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| Some(crate::memory_tier::make_summary(&content, 240)));
                 let _ = self
                     .store
                     .insert_memory(NewMemory {
                         owner_friend_id: friend_id.to_string(),
                         kind,
-                        content,
+                        content: content.clone(),
                         source_message_id: None,
                         weight,
                         pinned: false,
+                        tier: crate::memory_tier::TIER_CURATED.to_string(),
+                        scope: scope.to_string(),
+                        scope_ref,
+                        importance,
+                        status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+                        title,
+                        summary,
+                        expires_at: None,
                     })
                     .await;
             }
@@ -370,7 +428,7 @@ impl MemoryService {
                 raw.push_str(&t);
             }
         }
-        let json = extract_json_object(&raw).unwrap_or(raw);
+        let json = crate::llm_json::extract_json_object(&raw).unwrap_or(raw);
         let v: serde_json::Value = match serde_json::from_str(&json) {
             Ok(v) => v,
             Err(_) => return Ok(()),
@@ -398,38 +456,29 @@ impl MemoryService {
             if lesson.is_empty() {
                 continue;
             }
-            let _ = self
-                .store
-                .insert_memory(NewMemory {
-                    owner_friend_id: friend_id.to_string(),
-                    kind: crate::assistant_accumulation::MEMORY_KIND_KNOWLEDGE.to_string(),
-                    content: lesson.to_string(),
-                    source_message_id: None,
-                    weight: 0.65,
-                    pinned: false,
-                })
-                .await;
+                let content = lesson.to_string();
+                let _ = self
+                    .store
+                    .insert_memory(NewMemory {
+                        owner_friend_id: friend_id.to_string(),
+                        kind: crate::assistant_accumulation::MEMORY_KIND_KNOWLEDGE.to_string(),
+                        content: content.clone(),
+                        source_message_id: None,
+                        weight: 0.65,
+                        pinned: false,
+                        tier: crate::memory_tier::TIER_CURATED.to_string(),
+                        scope: crate::memory_tier::SCOPE_GLOBAL.to_string(),
+                        scope_ref: None,
+                        importance: 2,
+                        status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+                        title: None,
+                        summary: Some(crate::memory_tier::make_summary(&content, 200)),
+                        expires_at: None,
+                    })
+                    .await;
         }
         Ok(())
     }
-}
-
-fn extract_json_array(s: &str) -> Option<String> {
-    let start = s.find('[')?;
-    let mut depth = 0i32;
-    for (i, c) in s[start..].char_indices() {
-        match c {
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(s[start..start + i + 1].to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 fn extract_json_object(s: &str) -> Option<String> {

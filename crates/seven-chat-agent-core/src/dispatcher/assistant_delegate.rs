@@ -316,21 +316,34 @@ async fn record_group_delegate_memory(
     } else {
         "[代理决策]"
     };
-    let summary = format!(
+    let content = format!(
         "{tag} 群:{} 自主级别检测:{:?}\n用户: {}\n代理人: {}",
         group.name,
         detected,
         truncate_chars(&user_msg.content, 200),
         truncate_chars(&reply.content, 400),
     );
+    let short = crate::memory_tier::make_summary(&content, 200);
     if let Err(e) = store
         .insert_memory(crate::store::memory::NewMemory {
             owner_friend_id: friend_id.to_string(),
             kind: crate::assistant_accumulation::MEMORY_KIND_MEMO.to_string(),
-            content: summary,
+            content,
             source_message_id: Some(reply.id.clone()),
             weight: if owner_attention { 0.75 } else { 0.55 },
             pinned: owner_attention,
+            tier: if owner_attention {
+                crate::memory_tier::TIER_CURATED.to_string()
+            } else {
+                crate::memory_tier::TIER_RAW.to_string()
+            },
+            scope: crate::memory_tier::SCOPE_CONVERSATION.to_string(),
+            scope_ref: None,
+            importance: if owner_attention { 2 } else { 1 },
+            status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+            title: None,
+            summary: Some(short),
+            expires_at: None,
         })
         .await
     {

@@ -94,7 +94,7 @@ export function Sidebar({
                             e.stopPropagation();
                             onOpenAssistant(f.id);
                           }}
-                          title="记忆 / 技能 / 反思"
+                          title="全站记忆 / 技能 / 策略"
                         >
                           面板
                         </button>

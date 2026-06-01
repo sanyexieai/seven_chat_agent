@@ -53,6 +53,27 @@ impl From<AssistantQueueJobRow> for AssistantQueueJob {
 }
 
 impl SqliteStore {
+    /// 同 kind 已有 pending 任务时不重复入队（避免 consolidate_every_n=1 时风暴）。
+    pub async fn enqueue_assistant_job_deduped(
+        &self,
+        kind: &str,
+        payload: Option<&str>,
+        delay_seconds: i64,
+        max_attempts: i64,
+    ) -> Result<()> {
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(kind)
+        .fetch_one(self.pool())
+        .await?;
+        if pending > 0 {
+            return Ok(());
+        }
+        self.enqueue_assistant_job(kind, payload, delay_seconds, max_attempts)
+            .await
+    }
+
     pub async fn enqueue_assistant_job(
         &self,
         kind: &str,

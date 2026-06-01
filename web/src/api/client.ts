@@ -22,6 +22,7 @@ export interface CliOAuthSnapshot {
 import type {
   AssistantGlobalSettings,
   AssistantMemory,
+  AssistantMemoryStats,
   AssistantPolicyTemplate,
   AssistantReflection,
   AssistantQueueJob,
@@ -208,10 +209,28 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (pathname === "/assistant/global-settings/consolidate") {
     return wsInvoke<T>("consolidateAssistantMemories");
   }
+  if (/^\/assistant\/[^/]+\/memories\/stats$/.test(pathname) && method === "GET") {
+    return wsInvoke<T>("getAssistantMemoryStats", {
+      friend_id: pathname.split("/")[2],
+    });
+  }
+  if (
+    /^\/assistant\/[^/]+\/memories\/recall-preview$/.test(pathname) &&
+    method === "GET"
+  ) {
+    return wsInvoke<T>("previewAssistantMemoryRecall", {
+      friend_id: pathname.split("/")[2],
+      prompt: params.get("prompt") || "",
+      limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+    });
+  }
   if (/^\/assistant\/[^/]+\/memories$/.test(pathname) && method === "GET") {
     return wsInvoke<T>("listAssistantMemories", {
       friend_id: pathname.split("/")[2],
       category: params.get("category") || undefined,
+      tier: params.get("tier") || undefined,
+      status: params.get("status") || undefined,
+      scope: params.get("scope") || undefined,
       limit: params.get("limit") ? Number(params.get("limit")) : undefined,
     });
   }
@@ -221,10 +240,22 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
       body,
     });
   }
-  if (/^\/assistant\/[^/]+\/memories\/[^/]+$/.test(pathname) && method === "DELETE") {
+  if (
+    /^\/assistant\/[^/]+\/memories\/[^/]+$/.test(pathname) &&
+    method === "DELETE"
+  ) {
     return wsInvoke<T>("deleteAssistantMemory", {
       friend_id: pathname.split("/")[2],
       memory_id: pathname.split("/")[4],
+    });
+  }
+  if (
+    /^\/assistant\/[^/]+\/memories\/[^/]+$/.test(pathname) &&
+    method === "PATCH"
+  ) {
+    return wsInvoke<T>("patchAssistantMemory", {
+      memory_id: pathname.split("/")[4],
+      ...body,
     });
   }
   if (/^\/assistant\/[^/]+\/skills$/.test(pathname)) {
@@ -402,11 +433,24 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
-  consolidateAssistantMemories: () =>
-    jsonFetch<{ ok: boolean; settings: AssistantGlobalSettings }>(
-      "/assistant/global-settings/consolidate",
-      { method: "POST" },
-    ),
+  /** 记忆维护可能调用 LLM，走 HTTP 避免 ws-api 长任务无响应 */
+  consolidateAssistantMemories: async () => {
+    const res = await fetch("/api/assistant/global-settings/consolidate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        text || `记忆维护失败 HTTP ${res.status}`,
+      );
+    }
+    return res.json() as Promise<{
+      ok: boolean;
+      settings: AssistantGlobalSettings;
+      report?: import("../types").MemoryMaintenanceReport;
+    }>;
+  },
   listAssistantPolicyTemplates: () =>
     jsonFetch<{ templates: AssistantPolicyTemplate[] }>(
       "/assistant-policy-templates",
@@ -436,10 +480,19 @@ export const api = {
     }),
   listAssistantMemories: (
     friendId: string,
-    opts?: { category?: "memo" | "knowledge"; limit?: number },
+    opts?: {
+      category?: "memo" | "knowledge";
+      tier?: "raw" | "curated";
+      status?: "active" | "archived";
+      scope?: string;
+      limit?: number;
+    },
   ) => {
     const params = new URLSearchParams();
     if (opts?.category) params.set("category", opts.category);
+    if (opts?.tier) params.set("tier", opts.tier);
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.scope) params.set("scope", opts.scope);
     if (opts?.limit != null) params.set("limit", String(opts.limit));
     const q = params.toString();
     return jsonFetch<{ memories: AssistantMemory[] }>(
@@ -453,6 +506,13 @@ export const api = {
       content: string;
       weight: number;
       pinned?: boolean;
+      tier?: string;
+      scope?: string;
+      scope_ref?: string;
+      importance?: number;
+      status?: string;
+      title?: string;
+      summary?: string;
     },
   ) =>
     jsonFetch<{ memory: AssistantMemory }>(
@@ -470,6 +530,44 @@ export const api = {
     jsonFetch<{ ok: boolean }>(
       `/assistant/${friendId}/memories/${memoryId}`,
       { method: "DELETE" },
+    ),
+  getAssistantMemoryStats: (friendId: string) =>
+    jsonFetch<{ stats: AssistantMemoryStats }>(
+      `/assistant/${friendId}/memories/stats`,
+    ),
+  previewAssistantMemoryRecall: (
+    friendId: string,
+    opts?: { prompt?: string; limit?: number },
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.prompt != null) params.set("prompt", opts.prompt);
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    const q = params.toString();
+    return jsonFetch<{ memories: AssistantMemory[]; prompt: string }>(
+      `/assistant/${friendId}/memories/recall-preview${q ? `?${q}` : ""}`,
+    );
+  },
+  patchAssistantMemory: (
+    friendId: string,
+    memoryId: string,
+    body: {
+      kind?: string;
+      content?: string;
+      weight?: number;
+      pinned?: boolean;
+      tier?: string;
+      scope?: string;
+      scope_ref?: string | null;
+      importance?: number;
+      status?: string;
+      title?: string | null;
+      summary?: string | null;
+      promote_to_curated?: boolean;
+    },
+  ) =>
+    jsonFetch<{ memory: AssistantMemory }>(
+      `/assistant/${friendId}/memories/${memoryId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
     ),
   listAssistantSkills: (friendId: string) =>
     jsonFetch<{ skills: AssistantSkill[] }>(`/assistant/${friendId}/skills`),

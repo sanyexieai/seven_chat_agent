@@ -170,8 +170,18 @@ export interface AssistantGlobalSettings {
   observe_group: boolean;
   record_max_chars: number;
   record_weight: number;
+  record_min_chars: number;
+  record_skip_low_signal: boolean;
+  record_assist_memo: boolean;
+  observe_dedupe_secs: number;
   auto_consolidate: boolean;
   consolidate_every_n: number;
+  auto_ingest_raw?: boolean;
+  ingest_raw_batch_size?: number;
+  embedding_enabled?: boolean;
+  embedding_provider_id?: string | null;
+  embedding_model?: string | null;
+  ephemeral_ttl_hours?: number;
   evolution_enabled: boolean;
   auto_extract_memories: boolean;
   proactive_enabled: boolean;
@@ -302,6 +312,48 @@ export interface AssistantMemory {
   last_used_at: string | null;
   decay_score: number;
   created_at: string;
+  tier: string;
+  scope: string;
+  scope_ref: string | null;
+  importance: number;
+  status: string;
+  title: string | null;
+  summary: string | null;
+  tenant_id?: string;
+  expires_at?: string | null;
+}
+
+export interface MemoryIngestReport {
+  raw_considered: number;
+  raw_skipped_noise?: number;
+  curated_created: number;
+  raw_archived: number;
+  llm_parse_failed?: boolean;
+}
+
+export interface CuratedOrganizeReport {
+  curated_considered: number;
+  updated: number;
+  deleted: number;
+}
+
+export interface MemoryMaintenanceReport {
+  expired_deleted: number;
+  ingest: MemoryIngestReport;
+  curated_organize?: CuratedOrganizeReport;
+  embeddings_updated: number;
+}
+
+export interface AssistantMemoryStats {
+  total: number;
+  curated_active: number;
+  raw_active: number;
+  raw_archived: number;
+  memo_count: number;
+  knowledge_count: number;
+  pinned_count: number;
+  observe_count: number;
+  assist_count: number;
 }
 
 export interface AssistantSkill {

@@ -2,13 +2,33 @@ use chrono::Utc;
 
 use crate::domain::AssistantGlobalSettings;
 use crate::store::{parse_dt, SqliteStore};
-use crate::{Error, Result};
-
-const GLOBAL_ROW_ID: &str = "global";
+use crate::Result;
 
 impl SqliteStore {
+    fn settings_row_id(&self) -> &str {
+        self.tenant_id()
+    }
+
     pub async fn ensure_assistant_global_settings(&self) -> Result<()> {
-        let _ = self.get_assistant_global_settings().await?;
+        let row_id = self.settings_row_id();
+        let exists: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM assistant_global_settings WHERE id = ?",
+        )
+        .bind(row_id)
+        .fetch_optional(self.pool())
+        .await?;
+        if exists.is_none() {
+            let now = Utc::now().to_rfc3339();
+            let json = serde_json::to_string(&AssistantGlobalSettings::default())?;
+            sqlx::query(
+                "INSERT INTO assistant_global_settings (id, settings, updated_at) VALUES (?, ?, ?)",
+            )
+            .bind(row_id)
+            .bind(&json)
+            .bind(&now)
+            .execute(self.pool())
+            .await?;
+        }
         Ok(())
     }
 }
@@ -24,7 +44,7 @@ impl SqliteStore {
         let row: Option<GlobalRow> = sqlx::query_as(
             "SELECT settings, updated_at FROM assistant_global_settings WHERE id = ?",
         )
-        .bind(GLOBAL_ROW_ID)
+        .bind(self.settings_row_id())
         .fetch_optional(self.pool())
         .await?;
 
@@ -56,7 +76,7 @@ impl SqliteStore {
                    settings = excluded.settings,
                    updated_at = excluded.updated_at"#,
         )
-        .bind(GLOBAL_ROW_ID)
+        .bind(self.settings_row_id())
         .bind(&json)
         .bind(&now)
         .execute(self.pool())
@@ -65,10 +85,10 @@ impl SqliteStore {
         self.get_assistant_global_settings().await
     }
 
-    /// 观察写入后递增计数，达到阈值时整理记忆并归零计数。
+    /// 观察写入后递增计数，达到阈值时入队记忆维护并归零计数。
     pub async fn touch_observe_consolidate(
         &self,
-        assistant_id: &str,
+        _assistant_id: &str,
         settings: &AssistantGlobalSettings,
     ) -> Result<()> {
         if !settings.auto_consolidate {
@@ -78,8 +98,10 @@ impl SqliteStore {
         let mut current = self.get_assistant_global_settings().await?;
         current.observe_streak = current.observe_streak.saturating_add(1);
         if current.observe_streak >= every {
-            self.consolidate_memories(assistant_id).await?;
             current.observe_streak = 0;
+            let _ = self
+                .enqueue_assistant_job_deduped("consolidate_memory", None, 8, 3)
+                .await;
         }
         current.updated_at = None;
         let now = Utc::now().to_rfc3339();
@@ -89,18 +111,13 @@ impl SqliteStore {
         )
         .bind(&json)
         .bind(&now)
-        .bind(GLOBAL_ROW_ID)
+        .bind(self.settings_row_id())
         .execute(self.pool())
         .await?;
         Ok(())
     }
 
-    pub async fn consolidate_assistant_memories(&self) -> Result<()> {
-        let assistant_id = self
-            .builtin_assistant_id()
-            .await?
-            .ok_or_else(|| Error::not_found("builtin assistant"))?;
-        self.consolidate_memories(&assistant_id).await?;
+    pub async fn reset_assistant_observe_streak(&self) -> Result<()> {
         let mut settings = self.get_assistant_global_settings().await?;
         settings.observe_streak = 0;
         settings.updated_at = None;
@@ -111,7 +128,24 @@ impl SqliteStore {
         )
         .bind(&json)
         .bind(&now)
-        .bind(GLOBAL_ROW_ID)
+        .bind(self.settings_row_id())
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    pub async fn consolidate_assistant_memories(&self) -> Result<()> {
+        let mut settings = self.get_assistant_global_settings().await?;
+        settings.observe_streak = 0;
+        settings.updated_at = None;
+        let now = Utc::now().to_rfc3339();
+        let json = serde_json::to_string(&settings)?;
+        sqlx::query(
+            "UPDATE assistant_global_settings SET settings = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&json)
+        .bind(&now)
+        .bind(self.settings_row_id())
         .execute(self.pool())
         .await?;
         Ok(())
@@ -133,7 +167,7 @@ impl SqliteStore {
         )
         .bind(&json)
         .bind(&now)
-        .bind(GLOBAL_ROW_ID)
+        .bind(self.settings_row_id())
         .execute(self.pool())
         .await?;
         self.get_assistant_global_settings().await

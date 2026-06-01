@@ -1,5 +1,11 @@
 pub mod env;
 pub mod assistant_accumulation;
+pub mod llm_json;
+pub mod memory_embedding;
+pub mod memory_ingest;
+pub mod memory_maintenance;
+pub mod memory_record_policy;
+pub mod memory_tier;
 pub mod assistant_intent;
 pub mod assistant_task_planner;
 pub mod agent;
@@ -60,6 +66,7 @@ impl SevenChatAgent {
         store.seed_builtins().await?;
         store.migrate_ensure_group_assistants().await?;
         store.seed_assistant_policy_templates().await?;
+        store.ensure_tenant().await?;
         store.ensure_assistant_global_settings().await?;
         let _ = store.repair_recurring_todos().await;
 
@@ -374,6 +381,14 @@ impl SevenChatAgent {
                     source_message_id: None,
                     weight: 0.35,
                     pinned: false,
+                    tier: crate::memory_tier::TIER_RAW.to_string(),
+                    scope: crate::memory_tier::SCOPE_GLOBAL.to_string(),
+                    scope_ref: None,
+                    importance: 0,
+                    status: crate::memory_tier::STATUS_ACTIVE.to_string(),
+                    title: None,
+                    summary: None,
+                    expires_at: None,
                 })
                 .await;
             self.store.update_assistant_todo_status(&t.id, status).await?;
@@ -395,11 +410,28 @@ impl SevenChatAgent {
         Ok(())
     }
 
+    pub async fn run_memory_maintenance(
+        &self,
+    ) -> Result<crate::memory_maintenance::MemoryMaintenanceReport> {
+        crate::memory_maintenance::run_memory_maintenance(&self.store, &self.providers).await
+    }
+
     async fn run_assistant_consolidate(&self) -> Result<()> {
-        let Some(assistant_id) = self.store.builtin_assistant_id().await? else {
-            return Ok(());
-        };
-        self.store.consolidate_memories(&assistant_id).await?;
+        let report = self.run_memory_maintenance().await?;
+        tracing::info!(
+            expired = report.expired_deleted,
+            raw_considered = report.ingest.raw_considered,
+            raw_noise = report.ingest.raw_skipped_noise,
+            curated_created = report.ingest.curated_created,
+            raw_archived = report.ingest.raw_archived,
+            ingest_parse_failed = report.ingest.llm_parse_failed,
+            curated_considered = report.curated_organize.curated_considered,
+            curated_updated = report.curated_organize.updated,
+            curated_deleted = report.curated_organize.deleted,
+            embeddings = report.embeddings_updated,
+            "memory maintenance done"
+        );
+        let _ = self.store.reset_assistant_observe_streak().await;
         let _ = self
             .enqueue_assistant_task_after(AssistantQueueTask::ConsolidateMemory, 135)
             .await;

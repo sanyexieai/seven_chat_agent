@@ -11,6 +11,8 @@ pub mod message;
 pub mod provider;
 pub mod skill;
 pub mod vault;
+pub mod workspace;
+pub mod cli_session;
 
 use std::path::Path;
 use std::str::FromStr;

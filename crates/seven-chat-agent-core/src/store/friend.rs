@@ -20,6 +20,7 @@ pub struct FriendRow {
     pub judge_provider_ref: Option<String>,
     pub enabled: i64,
     pub is_builtin: i64,
+    pub active_workspace_id: Option<String>,
     pub created_at: String,
 }
 
@@ -43,10 +44,13 @@ impl FriendRow {
             judge_provider_ref: self.judge_provider_ref,
             enabled: self.enabled != 0,
             is_builtin: self.is_builtin != 0,
+            active_workspace_id: self.active_workspace_id,
             created_at: parse_dt(&self.created_at),
         })
     }
 }
+
+const FRIEND_SELECT: &str = "id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, judge_provider_ref, enabled, is_builtin, active_workspace_id, created_at";
 
 #[derive(Debug, serde::Deserialize)]
 pub struct UpsertFriend {
@@ -69,18 +73,18 @@ fn default_true() -> bool {
 
 impl SqliteStore {
     pub async fn list_friends(&self) -> Result<Vec<Friend>> {
-        let rows = sqlx::query_as::<_, FriendRow>(
-            "SELECT id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, judge_provider_ref, enabled, is_builtin, created_at FROM friends ORDER BY is_builtin DESC, created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, FriendRow>(&format!(
+            "SELECT {FRIEND_SELECT} FROM friends ORDER BY is_builtin DESC, created_at ASC"
+        ))
         .fetch_all(self.pool())
         .await?;
         rows.into_iter().map(|r| r.into_friend()).collect()
     }
 
     pub async fn get_friend(&self, id: &str) -> Result<Option<Friend>> {
-        let row = sqlx::query_as::<_, FriendRow>(
-            "SELECT id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, judge_provider_ref, enabled, is_builtin, created_at FROM friends WHERE id = ?",
-        )
+        let row = sqlx::query_as::<_, FriendRow>(&format!(
+            "SELECT {FRIEND_SELECT} FROM friends WHERE id = ?"
+        ))
         .bind(id)
         .fetch_optional(self.pool())
         .await?;
@@ -194,6 +198,10 @@ impl SqliteStore {
             .await?;
         }
 
+        if req.backend_kind != BackendKind::Human {
+            self.ensure_friend_workspaces(&id).await?;
+        }
+
         self.get_friend(&id)
             .await?
             .ok_or_else(|| Error::not_found("friend after upsert"))
@@ -244,9 +252,22 @@ impl SqliteStore {
             .get_friend(friend_id)
             .await?
             .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
-        let mut cfg: PtyBackendConfig =
+        let sid = session_id.filter(|s| !s.trim().is_empty());
+        let cfg: PtyBackendConfig =
             serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
-        cfg.cli_session_id = session_id.filter(|s| !s.trim().is_empty());
+        let tool = crate::cli_tool::tool_for_preset(cfg.preset.as_deref());
+        if let (Some(tool), Some(ws)) = (
+            tool,
+            self.get_active_workspace(friend_id)
+                .await?
+                .or(self.default_workspace_for_friend(friend_id).await?),
+        ) {
+            let _ = self
+                .patch_cli_session_native_id(&ws.id, tool, sid.clone())
+                .await;
+        }
+        let mut cfg: PtyBackendConfig = cfg;
+        cfg.cli_session_id = sid;
         let backend_config = serde_json::to_string(&serde_json::to_value(&cfg)?)?;
         sqlx::query("UPDATE friends SET backend_config = ? WHERE id = ?")
             .bind(&backend_config)

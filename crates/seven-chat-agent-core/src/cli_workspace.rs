@@ -65,6 +65,10 @@ pub fn ensure_workspace(path: &Path, init_git: bool) -> Result<()> {
 
 /// 将路径规范为绝对路径。`codex exec -C` 若收到相对路径会相对**进程 cwd** 解析，
 /// 与 seven-chat-agent-server 启动目录不一致时会 `No such file or directory (os error 2)`。
+pub fn absolutize_path(path: &Path) -> Result<PathBuf> {
+    absolutize(path)
+}
+
 fn absolutize(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         return path.canonicalize().map_err(Error::Io);

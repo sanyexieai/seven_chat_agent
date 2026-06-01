@@ -246,6 +246,7 @@ impl MessageDispatcher {
                 mentions: &[],
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
+                workspace_id: None,
             })
             .await?;
         if sender_kind == SenderKind::User {
@@ -389,6 +390,7 @@ impl MessageDispatcher {
                 mentions: &[],
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
+                workspace_id: None,
             })
             .await?;
         self.emit(BusEvent::MessageCreated { message: reply.clone() });
@@ -777,6 +779,7 @@ impl MessageDispatcher {
                 mentions: &[],
                 status: MessageStatus::Streaming,
                 on_behalf_of_user: opts.on_behalf_of_user,
+                workspace_id: None,
             })
             .await?;
         self.emit(BusEvent::MessageCreated {
@@ -1059,6 +1062,7 @@ impl MessageDispatcher {
                 title: None,
                 summary: None,
                 expires_at: None,
+                workspace_id: None,
             })
             .await
         {

@@ -67,7 +67,42 @@ export interface Friend {
   judge_provider_ref: string | null;
   enabled: boolean;
   is_builtin: boolean;
+  active_workspace_id?: string | null;
   created_at: string;
+}
+
+export interface CliSession {
+  id: string;
+  tenant_id: string;
+  workspace_id: string;
+  tool: string;
+  native_session_id?: string | null;
+  label?: string | null;
+  source_path?: string | null;
+  is_active: boolean;
+  last_used_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CliImportReport {
+  scanned: number;
+  matched: number;
+  imported: number;
+  memories_created: number;
+}
+
+export interface Workspace {
+  id: string;
+  tenant_id: string;
+  owner_friend_id: string;
+  name: string;
+  path: string;
+  is_default: boolean;
+  cli_session_mode?: string | null;
+  cli_session_id?: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Conversation {
@@ -97,6 +132,7 @@ export interface Message {
   model_used: string | null;
   tokens_in: number | null;
   tokens_out: number | null;
+  workspace_id?: string | null;
   created_at: string;
 }
 

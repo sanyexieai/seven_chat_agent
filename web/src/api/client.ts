@@ -32,6 +32,9 @@ import type {
   CliRelayNode,
   Conversation,
   Friend,
+  Workspace,
+  CliSession,
+  CliImportReport,
   GroupBundle,
   GroupMemberConfig,
   GroupSettings,
@@ -141,6 +144,74 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (/^\/friends\/[^/]+\/cli_auth\/logout$/.test(pathname)) {
     return wsInvoke<T>("logoutFriendCli", { id: pathname.split("/")[2] });
+  }
+  if (/^\/friends\/[^/]+\/workspaces$/.test(pathname) && method === "GET") {
+    return wsInvoke<T>("listFriendWorkspaces", { friend_id: pathname.split("/")[2] });
+  }
+  if (/^\/friends\/[^/]+\/workspaces$/.test(pathname) && method === "POST") {
+    return wsInvoke<T>("createFriendWorkspace", {
+      friend_id: pathname.split("/")[2],
+      ...body,
+    });
+  }
+  if (/^\/friends\/[^/]+\/workspaces\/[^/]+\/activate$/.test(pathname)) {
+    const seg = pathname.split("/");
+    return wsInvoke<T>("activateFriendWorkspace", {
+      friend_id: seg[2],
+      workspace_id: seg[4],
+    });
+  }
+  if (/^\/friends\/[^/]+\/workspaces\/[^/]+$/.test(pathname) && method === "DELETE") {
+    const seg = pathname.split("/");
+    return wsInvoke<T>("deleteFriendWorkspace", {
+      friend_id: seg[2],
+      workspace_id: seg[4],
+    });
+  }
+  if (/^\/friends\/[^/]+\/workspaces\/[^/]+\/cli-sessions$/.test(pathname) && method === "GET") {
+    const seg = pathname.split("/");
+    return wsInvoke<T>("listWorkspaceCliSessions", {
+      friend_id: seg[2],
+      workspace_id: seg[4],
+    });
+  }
+  if (
+    /^\/friends\/[^/]+\/workspaces\/[^/]+\/cli-sessions\/[^/]+\/activate$/.test(pathname) &&
+    method === "POST"
+  ) {
+    const seg = pathname.split("/");
+    return wsInvoke<T>("activateWorkspaceCliSession", {
+      friend_id: seg[2],
+      workspace_id: seg[4],
+      session_id: seg[6],
+    });
+  }
+  if (/^\/friends\/[^/]+\/workspaces\/[^/]+\/import-codex$/.test(pathname) && method === "POST") {
+    const seg = pathname.split("/");
+    return wsInvoke<T>("importWorkspaceCodexSessions", {
+      friend_id: seg[2],
+      workspace_id: seg[4],
+      tool: "codex",
+      ingest_memories: body?.ingest_memories ?? true,
+    });
+  }
+  if (/^\/friends\/[^/]+\/workspaces\/[^/]+\/import-claude$/.test(pathname) && method === "POST") {
+    const seg = pathname.split("/");
+    return wsInvoke<T>("importWorkspaceCliSessions", {
+      friend_id: seg[2],
+      workspace_id: seg[4],
+      tool: "claude",
+      ingest_memories: body?.ingest_memories ?? true,
+    });
+  }
+  if (/^\/friends\/[^/]+\/workspaces\/[^/]+\/import-cursor$/.test(pathname) && method === "POST") {
+    const seg = pathname.split("/");
+    return wsInvoke<T>("importWorkspaceCliSessions", {
+      friend_id: seg[2],
+      workspace_id: seg[4],
+      tool: "cursor",
+      ingest_memories: body?.ingest_memories ?? true,
+    });
   }
   if (pathname === "/assistant-policy-templates" && method === "GET") {
     return wsInvoke<T>("listAssistantPolicyTemplates");
@@ -353,6 +424,77 @@ export const api = {
     }),
   deleteFriend: (id: string) =>
     jsonFetch<{ ok: boolean }>(`/friends/${id}`, { method: "DELETE" }),
+  listFriendWorkspaces: (friendId: string) =>
+    jsonFetch<{ workspaces: Workspace[]; active_workspace_id: string | null }>(
+      `/friends/${friendId}/workspaces`,
+    ),
+  createFriendWorkspace: (
+    friendId: string,
+    body: { name: string; path?: string },
+  ) =>
+    jsonFetch<{ workspace: Workspace }>(`/friends/${friendId}/workspaces`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  activateFriendWorkspace: (friendId: string, workspaceId: string) =>
+    jsonFetch<{ ok: boolean; active_workspace_id: string | null }>(
+      `/friends/${friendId}/workspaces/${workspaceId}/activate`,
+      { method: "POST" },
+    ),
+  deleteFriendWorkspace: (friendId: string, workspaceId: string) =>
+    jsonFetch<{ ok: boolean }>(
+      `/friends/${friendId}/workspaces/${workspaceId}`,
+      { method: "DELETE" },
+    ),
+  listWorkspaceCliSessions: (friendId: string, workspaceId: string) =>
+    jsonFetch<{ cli_sessions: CliSession[] }>(
+      `/friends/${friendId}/workspaces/${workspaceId}/cli-sessions`,
+    ),
+  activateWorkspaceCliSession: (
+    friendId: string,
+    workspaceId: string,
+    sessionId: string,
+  ) =>
+    jsonFetch<{ ok: boolean }>(
+      `/friends/${friendId}/workspaces/${workspaceId}/cli-sessions/${sessionId}/activate`,
+      { method: "POST" },
+    ),
+  importWorkspaceCodexSessions: (
+    friendId: string,
+    workspaceId: string,
+    opts?: { ingest_memories?: boolean },
+  ) =>
+    jsonFetch<{ report: CliImportReport; cli_sessions: CliSession[] }>(
+      `/friends/${friendId}/workspaces/${workspaceId}/import-codex`,
+      {
+        method: "POST",
+        body: JSON.stringify(opts ?? { ingest_memories: true }),
+      },
+    ),
+  importWorkspaceClaudeSessions: (
+    friendId: string,
+    workspaceId: string,
+    opts?: { ingest_memories?: boolean },
+  ) =>
+    jsonFetch<{ report: CliImportReport; cli_sessions: CliSession[] }>(
+      `/friends/${friendId}/workspaces/${workspaceId}/import-claude`,
+      {
+        method: "POST",
+        body: JSON.stringify(opts ?? { ingest_memories: true }),
+      },
+    ),
+  importWorkspaceCursorSessions: (
+    friendId: string,
+    workspaceId: string,
+    opts?: { ingest_memories?: boolean },
+  ) =>
+    jsonFetch<{ report: CliImportReport; cli_sessions: CliSession[] }>(
+      `/friends/${friendId}/workspaces/${workspaceId}/import-cursor`,
+      {
+        method: "POST",
+        body: JSON.stringify(opts ?? { ingest_memories: true }),
+      },
+    ),
   listProviders: () => jsonFetch<{ providers: Provider[] }>("/providers"),
   upsertProvider: (body: {
     id: string;

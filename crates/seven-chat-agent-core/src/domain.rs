@@ -43,7 +43,41 @@ pub struct Friend {
     pub judge_provider_ref: Option<String>,
     pub enabled: bool,
     pub is_builtin: bool,
+    /// 当前选中的 CLI / 记忆工作区。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace_id: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// 好友下的独立工作目录（多项目 / 多 Codex·Claude 会话）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Workspace {
+    pub id: String,
+    pub tenant_id: String,
+    pub owner_friend_id: String,
+    pub name: String,
+    pub path: String,
+    pub is_default: bool,
+    pub cli_session_mode: Option<String>,
+    pub cli_session_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 工作区下的原生 CLI 会话（Codex thread / Claude session 等）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliSession {
+    pub id: String,
+    pub tenant_id: String,
+    pub workspace_id: String,
+    pub tool: String,
+    pub native_session_id: Option<String>,
+    pub label: Option<String>,
+    pub source_path: Option<String>,
+    pub is_active: bool,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -727,6 +761,8 @@ pub struct Message {
     pub model_used: Option<String>,
     pub tokens_in: Option<i64>,
     pub tokens_out: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

@@ -260,6 +260,8 @@ mod tests {
             model_used: None,
             tokens_in: None,
             tokens_out: None,
+            on_behalf_of_user: false,
+            workspace_id: None,
             created_at: chrono::Utc::now(),
         };
         let candidates = vec![

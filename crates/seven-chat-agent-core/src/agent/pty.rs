@@ -440,12 +440,30 @@ async fn load_pty_session_state(
     friend_id: &str,
     fallback_adapter: &PtyAdapter,
 ) -> Result<(PtyBackendConfig, PtyAdapter)> {
+    let _ = store.ensure_friend_workspaces(friend_id).await;
     let friend = store
         .get_friend(friend_id)
         .await?
         .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
-    let cfg: PtyBackendConfig = serde_json::from_value(friend.backend_config.clone())
+    let mut cfg: PtyBackendConfig = serde_json::from_value(friend.backend_config.clone())
         .map_err(|e| Error::Config(format!("invalid pty backend_config: {e}")))?;
+    if let Ok(Some(ws)) = store.get_active_workspace(friend_id).await {
+        let tool = crate::cli_tool::tool_for_preset(cfg.preset.as_deref());
+        let sess = if let Some(tool) = tool {
+            store
+                .get_active_cli_session(&ws.id, tool)
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        crate::store::cli_session::apply_workspace_and_cli_session(
+            &mut cfg,
+            &ws,
+            sess.as_ref(),
+        );
+    }
     let mut adapter =
         PtyAdapter::from_config_for_friend(&cfg, friend_id).unwrap_or_else(|_| fallback_adapter.clone());
     if is_external_cli_preset(&cfg)

@@ -11,6 +11,7 @@ use seven_chat_agent_core::group_validate::{
 use seven_chat_agent_core::store::friend::UpsertFriend;
 use seven_chat_agent_core::store::group::UpsertGroup;
 use seven_chat_agent_core::store::memory::NewMemory;
+use seven_chat_agent_core::store::workspace::CreateWorkspace;
 use seven_chat_agent_core::store::provider::UpsertProviderKey;
 
 #[derive(Debug, Deserialize)]
@@ -141,6 +142,212 @@ async fn handle_method(
             let friend = core.store.upsert_friend(req).await.map_err(|e| e.to_string())?;
             core.agents.invalidate(&friend.id);
             Ok(serde_json::json!({ "friend": friend }))
+        }
+        "listFriendWorkspaces" => {
+            let id = params
+                .get("id")
+                .or_else(|| params.get("friend_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "id required".to_string())?;
+            core.store
+                .ensure_friend_workspaces(id)
+                .await
+                .map_err(|e| e.to_string())?;
+            let workspaces = core
+                .store
+                .list_workspaces_for_friend(id)
+                .await
+                .map_err(|e| e.to_string())?;
+            let friend = core
+                .store
+                .get_friend(id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "friend not found".to_string())?;
+            Ok(serde_json::json!({
+                "workspaces": workspaces,
+                "active_workspace_id": friend.active_workspace_id,
+            }))
+        }
+        "createFriendWorkspace" => {
+            let id = params
+                .get("id")
+                .or_else(|| params.get("friend_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "id required".to_string())?;
+            let req = CreateWorkspace {
+                name: params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("新工作区")
+                    .to_string(),
+                path: params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            };
+            let ws = core
+                .store
+                .create_workspace(id, req)
+                .await
+                .map_err(|e| e.to_string())?;
+            core.agents.invalidate(id);
+            Ok(serde_json::json!({ "workspace": ws }))
+        }
+        "activateFriendWorkspace" => {
+            let id = params
+                .get("id")
+                .or_else(|| params.get("friend_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "id required".to_string())?;
+            let ws_id = params
+                .get("workspace_id")
+                .or_else(|| params.get("ws_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "workspace_id required".to_string())?;
+            core.store
+                .set_active_workspace(id, ws_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            core.agents.invalidate(id);
+            let friend = core
+                .store
+                .get_friend(id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "friend not found".to_string())?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "active_workspace_id": friend.active_workspace_id,
+            }))
+        }
+        "listWorkspaceCliSessions" => {
+            let friend_id = params
+                .get("friend_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "friend_id required".to_string())?;
+            let ws_id = params
+                .get("workspace_id")
+                .or_else(|| params.get("ws_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "workspace_id required".to_string())?;
+            let ws = core
+                .store
+                .get_workspace(ws_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "workspace not found".to_string())?;
+            if ws.owner_friend_id != friend_id {
+                return Err("workspace not found".to_string());
+            }
+            let cli_sessions = core
+                .store
+                .list_cli_sessions(ws_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "cli_sessions": cli_sessions }))
+        }
+        "activateWorkspaceCliSession" => {
+            let friend_id = params
+                .get("friend_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "friend_id required".to_string())?;
+            let ws_id = params
+                .get("workspace_id")
+                .or_else(|| params.get("ws_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "workspace_id required".to_string())?;
+            let session_id = params
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "session_id required".to_string())?;
+            let ws = core
+                .store
+                .get_workspace(ws_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "workspace not found".to_string())?;
+            if ws.owner_friend_id != friend_id {
+                return Err("workspace not found".to_string());
+            }
+            core.store
+                .set_active_cli_session(ws_id, session_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            core.agents.invalidate(friend_id);
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "importWorkspaceCodexSessions" | "importWorkspaceCliSessions" => {
+            let friend_id = params
+                .get("friend_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "friend_id required".to_string())?;
+            let ws_id = params
+                .get("workspace_id")
+                .or_else(|| params.get("ws_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "workspace_id required".to_string())?;
+            let tool = params
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("codex");
+            let ingest = params
+                .get("ingest_memories")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let ws = core
+                .store
+                .get_workspace(ws_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "workspace not found".to_string())?;
+            if ws.owner_friend_id != friend_id {
+                return Err("workspace not found".to_string());
+            }
+            let report = match tool {
+                "codex" => core
+                    .store
+                    .import_codex_sessions_for_workspace(ws_id, ingest)
+                    .await
+                    .map_err(|e| e.to_string())?,
+                "claude" => core
+                    .store
+                    .import_claude_sessions_for_workspace(ws_id, ingest)
+                    .await
+                    .map_err(|e| e.to_string())?,
+                "cursor" => core
+                    .store
+                    .import_cursor_sessions_for_workspace(ws_id, ingest)
+                    .await
+                    .map_err(|e| e.to_string())?,
+                _ => return Err(format!("unknown tool: {tool}")),
+            };
+            core.agents.invalidate(friend_id);
+            let cli_sessions = core
+                .store
+                .list_cli_sessions(ws_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "report": report, "tool": tool, "cli_sessions": cli_sessions }))
+        }
+        "deleteFriendWorkspace" => {
+            let ws_id = params
+                .get("workspace_id")
+                .or_else(|| params.get("ws_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "workspace_id required".to_string())?;
+            let ws = core
+                .store
+                .get_workspace(ws_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "workspace not found".to_string())?;
+            core.store
+                .delete_workspace(ws_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            core.agents.invalidate(&ws.owner_friend_id);
+            Ok(serde_json::json!({ "ok": true }))
         }
         "deleteFriend" => {
             let id = params
@@ -530,6 +737,16 @@ async fn handle_method(
                 .unwrap_or("")
                 .to_string();
             let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(8);
+            let workspace_id = if let Some(w) = params.get("workspace_id").and_then(|v| v.as_str()) {
+                Some(w.to_string())
+            } else {
+                core.store
+                    .get_active_workspace(friend_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|w| w.id)
+            };
             let ctx = seven_chat_agent_core::memory_tier::RecallContext {
                 conversation_id: params
                     .get("conversation_id")
@@ -539,6 +756,7 @@ async fn handle_method(
                     .get("friend_id")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                workspace_id,
             };
             let memories = core
                 .store

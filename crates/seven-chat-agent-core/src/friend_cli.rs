@@ -187,6 +187,11 @@ pub async fn ensure_cursor_chat_session(
             crate::Error::agent("agent create-chat 未返回 chat id".to_string())
         })?;
     store.patch_friend_cli_session_id(friend_id, Some(id.clone())).await?;
+    if let Ok(Some(ws)) = store.get_active_workspace(friend_id).await {
+        let _ = store
+            .patch_cli_session_native_id(&ws.id, crate::cli_tool::TOOL_CURSOR, Some(id.clone()))
+            .await;
+    }
     cfg.cli_session_id = Some(id);
     Ok(())
 }

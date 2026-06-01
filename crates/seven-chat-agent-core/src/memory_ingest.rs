@@ -212,6 +212,7 @@ pub async fn ingest_raw_memories(
                 title,
                 summary,
                 expires_at,
+                workspace_id: None,
             })
             .await?;
         report.curated_created += 1;

@@ -13,7 +13,7 @@ use crate::provider::ProviderRegistry;
 use crate::store::{parse_dt, SqliteStore};
 use crate::{Error, Result};
 
-const MEMORY_SELECT: &str = "id, owner_friend_id, kind, content, source_message_id, weight, pinned, last_used_at, decay_score, created_at, tier, scope, scope_ref, importance, status, title, summary, tenant_id, expires_at";
+const MEMORY_SELECT: &str = "id, owner_friend_id, kind, content, source_message_id, weight, pinned, last_used_at, decay_score, created_at, tier, scope, scope_ref, importance, status, title, summary, tenant_id, expires_at, workspace_id";
 
 /// 可选向量召回（需 embedding API）。
 pub struct RecallVectorOpts<'a> {
@@ -43,6 +43,8 @@ pub struct Memory {
     pub summary: Option<String>,
     pub tenant_id: String,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -66,6 +68,7 @@ struct MemoryRow {
     summary: Option<String>,
     tenant_id: String,
     expires_at: Option<String>,
+    workspace_id: Option<String>,
 }
 
 impl From<MemoryRow> for Memory {
@@ -90,6 +93,7 @@ impl From<MemoryRow> for Memory {
             summary: r.summary,
             tenant_id: r.tenant_id,
             expires_at: r.expires_at.as_deref().map(parse_dt),
+            workspace_id: r.workspace_id,
         }
     }
 }
@@ -129,6 +133,8 @@ pub struct NewMemory {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 fn default_tier_curated() -> String {
@@ -184,12 +190,21 @@ impl SqliteStore {
             None
         };
         let expires_at_str = expires_at.map(|t| t.to_rfc3339());
+        let workspace_id = if let Some(w) = m.workspace_id.clone() {
+            Some(w)
+        } else if m.scope == memory_tier::SCOPE_GLOBAL || m.scope == memory_tier::SCOPE_USER {
+            None
+        } else {
+            self.get_active_workspace(&m.owner_friend_id)
+                .await?
+                .map(|w| w.id)
+        };
         sqlx::query(
             r#"INSERT INTO memories (
                 id, owner_friend_id, kind, content, source_message_id, weight, pinned,
                 decay_score, created_at, tier, scope, scope_ref, importance, status,
-                title, summary, tenant_id, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                title, summary, tenant_id, expires_at, workspace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(&id)
         .bind(&m.owner_friend_id)
@@ -208,6 +223,7 @@ impl SqliteStore {
         .bind(&summary)
         .bind(self.tenant_id())
         .bind(&expires_at_str)
+        .bind(&workspace_id)
         .execute(self.pool())
         .await?;
         self.get_memory(&id)
@@ -395,6 +411,14 @@ impl SqliteStore {
         ctx: &RecallContext,
         limit: i64,
     ) -> Result<Vec<Memory>> {
+        let conv = ctx.conversation_id.as_deref().unwrap_or("");
+        let friend = ctx.friend_id.as_deref().unwrap_or("");
+        let ws = ctx.workspace_id.as_deref().unwrap_or("");
+        let ws_filter = if ctx.workspace_id.is_some() {
+            " AND (workspace_id IS NULL OR workspace_id = ?)"
+        } else {
+            ""
+        };
         let sql = format!(
             r#"
             SELECT {MEMORY_SELECT} FROM memories
@@ -408,16 +432,15 @@ impl SqliteStore {
                 OR (scope = 'user' AND (scope_ref IS NULL OR scope_ref = ?))
                 OR (scope = 'friend' AND (scope_ref IS NULL OR scope_ref = ?))
                 OR (scope = 'conversation' AND scope_ref = ?)
+                OR (scope = 'workspace' AND scope_ref = ?)
                 OR (scope = 'ephemeral' AND scope_ref = ?)
-              )
+              ){ws_filter}
             ORDER BY importance DESC, pinned DESC, weight DESC, created_at DESC
             LIMIT ?
             "#,
         );
-        let conv = ctx.conversation_id.as_deref().unwrap_or("");
-        let friend = ctx.friend_id.as_deref().unwrap_or("");
         let now = Utc::now().to_rfc3339();
-        let rows: Vec<MemoryRow> = sqlx::query_as(&sql)
+        let mut q = sqlx::query_as::<_, MemoryRow>(&sql)
             .bind(self.tenant_id())
             .bind(owner)
             .bind(TIER_CURATED)
@@ -426,10 +449,12 @@ impl SqliteStore {
             .bind(self.tenant_id())
             .bind(friend)
             .bind(conv)
-            .bind(conv)
-            .bind(limit)
-            .fetch_all(self.pool())
-            .await?;
+            .bind(ws)
+            .bind(conv);
+        if ctx.workspace_id.is_some() {
+            q = q.bind(ws);
+        }
+        let rows: Vec<MemoryRow> = q.bind(limit).fetch_all(self.pool()).await?;
         Ok(rows.into_iter().map(Memory::from).collect())
     }
 
@@ -446,11 +471,17 @@ impl SqliteStore {
         }
         let conv = ctx.conversation_id.as_deref().unwrap_or("");
         let friend = ctx.friend_id.as_deref().unwrap_or("");
+        let ws = ctx.workspace_id.as_deref().unwrap_or("");
+        let ws_filter = if ctx.workspace_id.is_some() {
+            " AND (m.workspace_id IS NULL OR m.workspace_id = ?)"
+        } else {
+            ""
+        };
         let sql = format!(
             r#"
             SELECT m.id, m.owner_friend_id, m.kind, m.content, m.source_message_id, m.weight, m.pinned,
                    m.last_used_at, m.decay_score, m.created_at, m.tier, m.scope, m.scope_ref, m.importance,
-                   m.status, m.title, m.summary, m.tenant_id, m.expires_at
+                   m.status, m.title, m.summary, m.tenant_id, m.expires_at, m.workspace_id
             FROM memories_fts f
             JOIN memories m ON m.rowid = f.rowid
             WHERE memories_fts MATCH ?
@@ -464,14 +495,15 @@ impl SqliteStore {
                 OR (m.scope = 'user' AND (m.scope_ref IS NULL OR m.scope_ref = ?))
                 OR (m.scope = 'friend' AND (m.scope_ref IS NULL OR m.scope_ref = ?))
                 OR (m.scope = 'conversation' AND m.scope_ref = ?)
+                OR (m.scope = 'workspace' AND m.scope_ref = ?)
                 OR (m.scope = 'ephemeral' AND m.scope_ref = ?)
-              )
+              ){ws_filter}
             ORDER BY m.importance DESC, m.pinned DESC, m.weight DESC, m.created_at DESC
             LIMIT ?
             "#,
         );
         let now = Utc::now().to_rfc3339();
-        let rows: Vec<MemoryRow> = sqlx::query_as(&sql)
+        let mut qry = sqlx::query_as::<_, MemoryRow>(&sql)
             .bind(&q)
             .bind(self.tenant_id())
             .bind(owner)
@@ -481,10 +513,12 @@ impl SqliteStore {
             .bind(self.tenant_id())
             .bind(friend)
             .bind(conv)
-            .bind(conv)
-            .bind(limit)
-            .fetch_all(self.pool())
-            .await?;
+            .bind(ws)
+            .bind(conv);
+        if ctx.workspace_id.is_some() {
+            qry = qry.bind(ws);
+        }
+        let rows: Vec<MemoryRow> = qry.bind(limit).fetch_all(self.pool()).await?;
         Ok(rows.into_iter().map(Memory::from).collect())
     }
 

@@ -344,6 +344,7 @@ async fn record_group_delegate_memory(
             title: None,
             summary: Some(short),
             expires_at: None,
+            workspace_id: None,
         })
         .await
     {
@@ -393,6 +394,7 @@ async fn notify_owner_attention(
                 mentions: &[],
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
+                workspace_id: None,
             })
             .await
         {

@@ -204,6 +204,7 @@ impl MemoryService {
                     title: None,
                     summary: None,
                     expires_at: None,
+                    workspace_id: None,
                 })
                 .await
             {
@@ -385,6 +386,7 @@ impl MemoryService {
                         title,
                         summary,
                         expires_at: None,
+                        workspace_id: None,
                     })
                     .await;
             }
@@ -474,6 +476,7 @@ impl MemoryService {
                         title: None,
                         summary: Some(crate::memory_tier::make_summary(&content, 200)),
                         expires_at: None,
+                        workspace_id: None,
                     })
                     .await;
         }

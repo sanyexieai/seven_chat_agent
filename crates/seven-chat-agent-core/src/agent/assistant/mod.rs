@@ -267,6 +267,7 @@ impl AssistantAgent {
                         title,
                         summary,
                         expires_at: None,
+                        workspace_id: None,
                     })
                     .await;
             }
@@ -328,6 +329,7 @@ impl AssistantAgent {
                     title: None,
                     summary: Some(crate::memory_tier::make_summary(&content, 200)),
                     expires_at: None,
+                    workspace_id: None,
                 })
                 .await;
         }
@@ -452,6 +454,7 @@ impl Agent for AssistantAgent {
                             title: None,
                             summary: None,
                             expires_at: None,
+                            workspace_id: None,
                         })
                         .await;
                 }

@@ -1,7 +1,7 @@
 //! 记忆分级模型（参考 Claude Projects / mem0 分层上下文、OpenViking 归档可查思路）。
 //!
 //! - **tier**: `raw` 原始快照（可查、可归档，默认不进提示词）| `curated` 助理整理后可召回
-//! - **scope**: `global` | `user` | `friend` | `conversation` | `ephemeral`
+//! - **scope**: `global` | `user` | `friend` | `conversation` | `workspace` | `ephemeral`
 //! - **importance**: 0 临时 … 3 关键
 //! - **status**: `active` | `archived`
 
@@ -14,6 +14,7 @@ pub const SCOPE_GLOBAL: &str = "global";
 pub const SCOPE_USER: &str = "user";
 pub const SCOPE_FRIEND: &str = "friend";
 pub const SCOPE_CONVERSATION: &str = "conversation";
+pub const SCOPE_WORKSPACE: &str = "workspace";
 pub const SCOPE_EPHEMERAL: &str = "ephemeral";
 
 pub const STATUS_ACTIVE: &str = "active";
@@ -29,12 +30,14 @@ pub struct MemoryScopeKey {
 pub struct RecallContext {
     pub conversation_id: Option<String>,
     pub friend_id: Option<String>,
+    pub workspace_id: Option<String>,
 }
 
 pub fn recall_context_from_chat(ctx: &crate::agent::ChatContext) -> RecallContext {
     RecallContext {
         conversation_id: Some(ctx.conversation_id.clone()),
         friend_id: ctx.peers.first().map(|p| p.id.clone()),
+        workspace_id: ctx.self_friend.active_workspace_id.clone(),
     }
 }
 
@@ -44,10 +47,12 @@ impl RecallContext {
             ConvKind::Dm => Self {
                 conversation_id: Some(conv.id.clone()),
                 friend_id: Some(conv.target_id.clone()),
+                workspace_id: None,
             },
             ConvKind::Group => Self {
                 conversation_id: Some(conv.id.clone()),
                 friend_id: None,
+                workspace_id: None,
             },
         }
     }
@@ -89,6 +94,7 @@ pub fn scope_label(scope: &str) -> &'static str {
         SCOPE_USER => "用户",
         SCOPE_FRIEND => "好友",
         SCOPE_CONVERSATION => "会话",
+        SCOPE_WORKSPACE => "工作区",
         SCOPE_EPHEMERAL => "临时",
         _ => "未知",
     }

@@ -15,6 +15,7 @@ use seven_chat_agent_core::group_validate::{
 use seven_chat_agent_core::store::group::UpsertGroup;
 use seven_chat_agent_core::{AssistantQueueTask, SevenChatAgent};
 use seven_chat_agent_core::store::memory::NewMemory;
+use seven_chat_agent_core::store::workspace::{CreateWorkspace, UpdateWorkspace};
 use seven_chat_agent_core::store::provider::UpsertProviderKey;
 use serde::Deserialize;
 
@@ -33,6 +34,35 @@ pub fn api_router() -> Router<AppState> {
         .route("/friends/:id/cli_auth/oauth/start", post(friend_cli_oauth_start))
         .route("/friends/:id/cli_auth/oauth/cancel", post(friend_cli_oauth_cancel))
         .route("/friends/:id/cli_auth/logout", post(friend_cli_logout))
+        .route("/friends/:id/workspaces", get(list_friend_workspaces).post(create_friend_workspace))
+        .route(
+            "/friends/:id/workspaces/:ws_id",
+            patch(update_friend_workspace).delete(delete_friend_workspace),
+        )
+        .route(
+            "/friends/:id/workspaces/:ws_id/activate",
+            post(activate_friend_workspace),
+        )
+        .route(
+            "/friends/:id/workspaces/:ws_id/cli-sessions",
+            get(list_workspace_cli_sessions),
+        )
+        .route(
+            "/friends/:id/workspaces/:ws_id/cli-sessions/:session_id/activate",
+            post(activate_workspace_cli_session),
+        )
+        .route(
+            "/friends/:id/workspaces/:ws_id/import-codex",
+            post(import_workspace_codex_sessions),
+        )
+        .route(
+            "/friends/:id/workspaces/:ws_id/import-claude",
+            post(import_workspace_claude_sessions),
+        )
+        .route(
+            "/friends/:id/workspaces/:ws_id/import-cursor",
+            post(import_workspace_cursor_sessions),
+        )
         .route("/groups", get(list_groups).post(upsert_group))
         .route("/groups/:id", get(get_group))
         .route("/groups/:id/im/inbound", post(group_im_inbound))
@@ -175,6 +205,179 @@ async fn delete_friend(
     s.core.store.delete_friend(&id).await?;
     s.core.agents.invalidate(&id);
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn list_friend_workspaces(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    s.core.store.ensure_friend_workspaces(&id).await?;
+    let workspaces = s.core.store.list_workspaces_for_friend(&id).await?;
+    let friend = s
+        .core
+        .store
+        .get_friend(&id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(serde_json::json!({
+        "workspaces": workspaces,
+        "active_workspace_id": friend.active_workspace_id,
+    })))
+}
+
+async fn create_friend_workspace(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateWorkspace>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ws = s.core.store.create_workspace(&id, req).await?;
+    s.core.agents.invalidate(&id);
+    Ok(Json(serde_json::json!({ "workspace": ws })))
+}
+
+async fn update_friend_workspace(
+    State(s): State<AppState>,
+    Path((id, ws_id)): Path<(String, String)>,
+    Json(req): Json<UpdateWorkspace>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let ws = ws.ok_or(ApiError::NotFound)?;
+    if ws.owner_friend_id != id {
+        return Err(ApiError::NotFound);
+    }
+    let ws = s.core.store.update_workspace(&ws_id, req).await?;
+    s.core.agents.invalidate(&id);
+    Ok(Json(serde_json::json!({ "workspace": ws })))
+}
+
+async fn delete_friend_workspace(
+    State(s): State<AppState>,
+    Path((id, ws_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let ws = ws.ok_or(ApiError::NotFound)?;
+    if ws.owner_friend_id != id {
+        return Err(ApiError::NotFound);
+    }
+    s.core.store.delete_workspace(&ws_id).await?;
+    s.core.agents.invalidate(&id);
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn list_workspace_cli_sessions(
+    State(s): State<AppState>,
+    Path((id, ws_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let ws = ws.ok_or(ApiError::NotFound)?;
+    if ws.owner_friend_id != id {
+        return Err(ApiError::NotFound);
+    }
+    let sessions = s.core.store.list_cli_sessions(&ws_id).await?;
+    Ok(Json(serde_json::json!({ "cli_sessions": sessions })))
+}
+
+async fn activate_workspace_cli_session(
+    State(s): State<AppState>,
+    Path((id, ws_id, session_id)): Path<(String, String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let ws = ws.ok_or(ApiError::NotFound)?;
+    if ws.owner_friend_id != id {
+        return Err(ApiError::NotFound);
+    }
+    s.core
+        .store
+        .set_active_cli_session(&ws_id, &session_id)
+        .await?;
+    s.core.agents.invalidate(&id);
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportCliBody {
+    #[serde(default = "default_true")]
+    ingest_memories: bool,
+}
+
+async fn import_workspace_codex_sessions(
+    State(s): State<AppState>,
+    Path((id, ws_id)): Path<(String, String)>,
+    Json(body): Json<ImportCliBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    import_workspace_cli(State(s), id, ws_id, "codex", body.ingest_memories).await
+}
+
+async fn import_workspace_claude_sessions(
+    State(s): State<AppState>,
+    Path((id, ws_id)): Path<(String, String)>,
+    Json(body): Json<ImportCliBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    import_workspace_cli(State(s), id, ws_id, "claude", body.ingest_memories).await
+}
+
+async fn import_workspace_cursor_sessions(
+    State(s): State<AppState>,
+    Path((id, ws_id)): Path<(String, String)>,
+    Json(body): Json<ImportCliBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    import_workspace_cli(State(s), id, ws_id, "cursor", body.ingest_memories).await
+}
+
+async fn import_workspace_cli(
+    s: State<AppState>,
+    friend_id: String,
+    ws_id: String,
+    tool: &str,
+    ingest_memories: bool,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let ws = ws.ok_or(ApiError::NotFound)?;
+    if ws.owner_friend_id != friend_id {
+        return Err(ApiError::NotFound);
+    }
+    let report = match tool {
+        "codex" => {
+            s.core
+                .store
+                .import_codex_sessions_for_workspace(&ws_id, ingest_memories)
+                .await?
+        }
+        "claude" => {
+            s.core
+                .store
+                .import_claude_sessions_for_workspace(&ws_id, ingest_memories)
+                .await?
+        }
+        "cursor" => {
+            s.core
+                .store
+                .import_cursor_sessions_for_workspace(&ws_id, ingest_memories)
+                .await?
+        }
+        _ => return Err(ApiError::BadRequest("unknown import tool".into())),
+    };
+    s.core.agents.invalidate(&friend_id);
+    let sessions = s.core.store.list_cli_sessions(&ws_id).await?;
+    Ok(Json(serde_json::json!({ "report": report, "tool": tool, "cli_sessions": sessions })))
+}
+
+async fn activate_friend_workspace(
+    State(s): State<AppState>,
+    Path((id, ws_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    s.core.store.set_active_workspace(&id, &ws_id).await?;
+    s.core.agents.invalidate(&id);
+    let friend = s
+        .core
+        .store
+        .get_friend(&id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "active_workspace_id": friend.active_workspace_id,
+    })))
 }
 
 async fn list_groups(State(s): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
@@ -673,6 +876,7 @@ struct RecallPreviewQuery {
     limit: Option<i64>,
     conversation_id: Option<String>,
     friend_id: Option<String>,
+    workspace_id: Option<String>,
 }
 
 async fn assistant_memory_recall_preview(
@@ -682,9 +886,19 @@ async fn assistant_memory_recall_preview(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let prompt = q.prompt.unwrap_or_default();
     let limit = q.limit.unwrap_or(8);
+    let workspace_id = if let Some(w) = q.workspace_id {
+        Some(w)
+    } else {
+        s.core
+            .store
+            .get_active_workspace(&friend_id)
+            .await?
+            .map(|w| w.id)
+    };
     let ctx = seven_chat_agent_core::memory_tier::RecallContext {
         conversation_id: q.conversation_id,
         friend_id: q.friend_id,
+        workspace_id,
     };
     let memories = s
         .core

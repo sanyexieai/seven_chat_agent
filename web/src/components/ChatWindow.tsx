@@ -11,6 +11,7 @@ import { MessageTimeDivider } from "./MessageTimeDivider";
 import { shouldShowMessageTime } from "../messageTime";
 import { TaskFlowPanel } from "./TaskFlowPanel";
 import { Avatar } from "./Avatar";
+import { ChatWorkspaceSwitcher } from "./ChatWorkspaceSwitcher";
 
 export function ChatWindow() {
   const {
@@ -253,6 +254,10 @@ export function ChatWindow() {
         })}
         <div ref={endRef} />
       </div>
+      {target.kind === "friend" &&
+        friends.find((f) => f.id === target.id)?.backend_kind === "pty" && (
+          <ChatWorkspaceSwitcher friendId={target.id} placement="above-input" />
+        )}
       <form
         className="flex items-end gap-2 border-t border-slate-200 bg-white px-4 py-3"
         onSubmit={onSend}

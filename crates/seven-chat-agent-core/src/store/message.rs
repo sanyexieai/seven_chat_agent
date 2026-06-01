@@ -33,6 +33,7 @@ struct MessageRow {
     tokens_in: Option<i64>,
     tokens_out: Option<i64>,
     on_behalf_of: i64,
+    workspace_id: Option<String>,
     created_at: String,
 }
 
@@ -64,10 +65,13 @@ impl MessageRow {
             model_used: self.model_used,
             tokens_in: self.tokens_in,
             tokens_out: self.tokens_out,
+            workspace_id: self.workspace_id,
             created_at: parse_dt(&self.created_at),
         })
     }
 }
+
+const MESSAGE_SELECT: &str = "id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, workspace_id, created_at";
 
 #[derive(Debug)]
 pub struct NewMessage<'a> {
@@ -81,6 +85,7 @@ pub struct NewMessage<'a> {
     pub mentions: &'a [String],
     pub status: MessageStatus,
     pub on_behalf_of_user: bool,
+    pub workspace_id: Option<&'a str>,
 }
 
 impl SqliteStore {
@@ -88,10 +93,16 @@ impl SqliteStore {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let mentions = serde_json::to_string(m.mentions)?;
+        let workspace_id = if let Some(w) = m.workspace_id.filter(|s| !s.is_empty()) {
+            Some(w.to_string())
+        } else {
+            self.workspace_id_for_dm_conversation(m.conversation_id)
+                .await?
+        };
         sqlx::query(
             r#"INSERT INTO messages
-                (id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, on_behalf_of, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
+                (id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, mentions, status, seen_by, on_behalf_of, workspace_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)"#,
         )
         .bind(&id)
         .bind(m.conversation_id)
@@ -104,6 +115,7 @@ impl SqliteStore {
         .bind(&mentions)
         .bind(m.status.as_str())
         .bind(if m.on_behalf_of_user { 1 } else { 0 })
+        .bind(&workspace_id)
         .bind(&now)
         .execute(self.pool())
         .await?;
@@ -210,9 +222,9 @@ impl SqliteStore {
     }
 
     pub async fn get_message(&self, id: &str) -> Result<Option<Message>> {
-        let row = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, created_at FROM messages WHERE id = ?",
-        )
+        let row = sqlx::query_as::<_, MessageRow>(&format!(
+            "SELECT {MESSAGE_SELECT} FROM messages WHERE id = ?"
+        ))
         .bind(id)
         .fetch_optional(self.pool())
         .await?;
@@ -224,9 +236,9 @@ impl SqliteStore {
         conversation_id: &str,
         limit: i64,
     ) -> Result<Vec<Message>> {
-        let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
-        )
+        let rows = sqlx::query_as::<_, MessageRow>(&format!(
+            "SELECT {MESSAGE_SELECT} FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?"
+        ))
         .bind(conversation_id)
         .bind(limit)
         .fetch_all(self.pool())
@@ -239,9 +251,9 @@ impl SqliteStore {
         conversation_id: &str,
         limit: i64,
     ) -> Result<Vec<Message>> {
-        let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT * FROM (SELECT id, conversation_id, turn_id, parent_id, sender_kind, sender_id, sender_name, content, content_blocks, mentions, status, seen_by, model_used, tokens_in, tokens_out, on_behalf_of, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, MessageRow>(&format!(
+            "SELECT * FROM (SELECT {MESSAGE_SELECT} FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC"
+        ))
         .bind(conversation_id)
         .bind(limit)
         .fetch_all(self.pool())
@@ -251,7 +263,7 @@ impl SqliteStore {
 
     pub async fn search_messages(&self, query: &str, limit: i64) -> Result<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(
-            "SELECT m.id, m.conversation_id, m.turn_id, m.parent_id, m.sender_kind, m.sender_id, m.sender_name, m.content, m.content_blocks, m.mentions, m.status, m.seen_by, m.model_used, m.tokens_in, m.tokens_out, m.created_at FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ? ORDER BY m.created_at DESC LIMIT ?",
+            "SELECT m.id, m.conversation_id, m.turn_id, m.parent_id, m.sender_kind, m.sender_id, m.sender_name, m.content, m.content_blocks, m.mentions, m.status, m.seen_by, m.model_used, m.tokens_in, m.tokens_out, m.on_behalf_of, m.workspace_id, m.created_at FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ? ORDER BY m.created_at DESC LIMIT ?",
         )
         .bind(query)
         .bind(limit)

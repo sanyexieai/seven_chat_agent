@@ -12,6 +12,8 @@ pub mod agent;
 pub use seven_chat_agent_cli;
 pub mod cli_auth;
 pub mod cli_relay;
+pub mod cli_tool;
+pub mod cli_transcript;
 pub mod cli_workspace;
 pub mod friend_cli;
 pub mod runtime;
@@ -68,6 +70,8 @@ impl SevenChatAgent {
         store.seed_assistant_policy_templates().await?;
         store.ensure_tenant().await?;
         store.ensure_assistant_global_settings().await?;
+        store.migrate_all_friend_workspaces().await?;
+        store.migrate_legacy_workspace_cli_sessions().await?;
         let _ = store.repair_recurring_todos().await;
 
         let providers = Arc::new(ProviderRegistry::new(store.clone()).await?);
@@ -389,6 +393,7 @@ impl SevenChatAgent {
                     title: None,
                     summary: None,
                     expires_at: None,
+                    workspace_id: None,
                 })
                 .await;
             self.store.update_assistant_todo_status(&t.id, status).await?;
@@ -478,6 +483,7 @@ impl SevenChatAgent {
                 mentions: &[],
                 status: MessageStatus::Done,
                 on_behalf_of_user: false,
+                workspace_id: None,
             })
             .await?;
 

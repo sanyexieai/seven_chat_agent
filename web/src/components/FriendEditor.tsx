@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type CliAuthStatus } from "../api/client";
+import { FriendWorkspacesSection } from "./FriendWorkspacesSection";
 import { providerDisplayName } from "../providerDefaults";
 import { useChat } from "../stores/chat";
 import type {
@@ -187,6 +188,7 @@ export function FriendEditor({ friendId, onClose }: Props) {
           </div>
           {draft.backend_kind === "pty" && (
             <PtyConfigEditor
+              friendId={friendId}
               draft={draft}
               setDraft={setDraft}
               providers={providers}
@@ -1151,6 +1153,7 @@ function parseCodexSandboxMode(
 }
 
 function PtyConfigEditor({
+  friendId,
   draft,
   setDraft,
   providers,
@@ -1158,6 +1161,7 @@ function PtyConfigEditor({
   providerBaseUrl,
   onProviderBaseUrlChange,
 }: {
+  friendId: string | null;
   draft: FriendDraft;
   setDraft: (d: FriendDraft) => void;
   providers: Provider[];
@@ -1384,15 +1388,23 @@ function PtyConfigEditor({
           </div>
         </div>
       )}
+      {friendId ? (
+        <FriendWorkspacesSection friendId={friendId} />
+      ) : (
+        <p className="text-xs text-slate-500">
+          保存好友后可在此管理多个工作区；首个默认目录为{" "}
+          <code>data/cli-workspaces/&lt;好友ID&gt;</code>。
+        </p>
+      )}
       <div>
-        <label className="label">工作目录</label>
+        <label className="label">工作目录（兼容 / 覆盖默认工作区）</label>
         <input
           className="input font-mono text-xs"
           value={draft.pty.cwd}
           onChange={(e) =>
             setDraft({ ...draft, pty: { ...draft.pty, cwd: e.target.value } })
           }
-          placeholder="留空则自动：私聊 data/cli-workspaces/&lt;好友ID&gt;；群聊请在群设置里配置共享目录"
+          placeholder="留空则使用当前选中的工作区路径；群聊请在群设置里配置共享目录"
         />
       </div>
       {isCustom ? (

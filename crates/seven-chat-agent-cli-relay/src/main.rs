@@ -1,6 +1,7 @@
 //! 在远程电脑上运行的 CLI 转发程序：连接服务端 WebSocket，接收 RunJob 并在本机调用 CLI。
 
 mod executor;
+mod output;
 mod workspace;
 
 use anyhow::{Context, Result};

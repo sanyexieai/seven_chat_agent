@@ -24,3 +24,4 @@ url = { workspace = true }
 seven-chat-agent-cli = { workspace = true }
 seven-chat-agent-cli-protocol = { workspace = true }
 seven-chat-agent-cli-relay-protocol = { path = "../seven-chat-agent-cli-relay-protocol" }
+worker-bee-cli = { path = "../worker-bee-cli" }

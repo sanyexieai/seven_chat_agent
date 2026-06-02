@@ -2341,6 +2341,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "worker-bee-cli",
 ]
 
 [[package]]

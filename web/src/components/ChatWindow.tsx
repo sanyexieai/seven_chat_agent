@@ -329,7 +329,7 @@ export function ChatWindow() {
         />
         <button
           type="button"
-          className="btn h-10 shrink-0 px-3 text-slate-600"
+          className="btn h-10 w-10 shrink-0 px-0 text-slate-600"
           title="上传图片或文件"
           disabled={sending}
           onClick={() => fileInputRef.current?.click()}
@@ -341,7 +341,7 @@ export function ChatWindow() {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="说点什么... (Enter 发送, Shift+Enter 换行)"
-          className="input resize-none"
+          className="input min-h-10 min-w-0 flex-1 resize-none !w-auto"
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -350,7 +350,8 @@ export function ChatWindow() {
           }}
         />
         <button
-          className="btn-primary h-10 px-5"
+          type="submit"
+          className="btn-primary h-10 shrink-0 whitespace-nowrap px-5"
           disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
         >
           {sending ? "..." : "发送"}

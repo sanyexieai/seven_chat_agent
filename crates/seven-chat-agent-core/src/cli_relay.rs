@@ -38,6 +38,7 @@ pub struct RelayJobSpec {
 #[derive(Debug, Clone)]
 pub struct RelayJobResult {
     pub text: String,
+    pub cli_deltas: Vec<worker_bee_cli::CliBlockDelta>,
     pub exit_code: Option<i32>,
 }
 
@@ -51,6 +52,7 @@ struct ActiveRelay {
 
 struct PendingJob {
     accumulated: String,
+    cli_deltas: Vec<worker_bee_cli::CliBlockDelta>,
     result_tx: oneshot::Sender<Result<RelayJobResult, String>>,
 }
 
@@ -169,6 +171,7 @@ impl RelayHub {
             job_id.clone(),
             PendingJob {
                 accumulated: String::new(),
+                cli_deltas: Vec::new(),
                 result_tx,
             },
         );
@@ -202,6 +205,7 @@ impl RelayHub {
     pub fn on_job_output(&self, job_id: &str, msg: &RelayMessage) {
         let RelayMessage::JobOutput {
             text_delta,
+            cli_delta,
             done,
             exit_code,
             error,
@@ -218,12 +222,18 @@ impl RelayHub {
         if let Some(delta) = text_delta {
             pending.accumulated.push_str(delta);
         }
+        if let Some(v) = cli_delta {
+            if let Ok(parsed) = serde_json::from_value::<worker_bee_cli::CliBlockDelta>(v.clone()) {
+                pending.cli_deltas.push(parsed);
+            }
+        }
 
         if !*done {
             return;
         }
 
         let accumulated = pending.accumulated.clone();
+        let cli_deltas = pending.cli_deltas.clone();
         drop(pending);
 
         let Some((_, pending)) = self.jobs.remove(job_id) else {
@@ -237,6 +247,7 @@ impl RelayHub {
 
         let _ = pending.result_tx.send(Ok(RelayJobResult {
             text: accumulated,
+            cli_deltas,
             exit_code: *exit_code,
         }));
     }

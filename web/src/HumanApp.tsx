@@ -182,7 +182,7 @@ export function HumanApp({ code }: Props) {
           value={draft}
           onChange={(e) => onChangeDraft(e.target.value)}
           placeholder="作为这位真人好友说点什么..."
-          className="input resize-none"
+          className="input min-h-10 min-w-0 flex-1 resize-none !w-auto"
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -190,7 +190,11 @@ export function HumanApp({ code }: Props) {
             }
           }}
         />
-        <button className="btn-primary h-10 px-5" disabled={busy}>
+        <button
+          type="submit"
+          className="btn-primary h-10 shrink-0 whitespace-nowrap px-5"
+          disabled={busy}
+        >
           {busy ? "..." : "发送"}
         </button>
       </form>

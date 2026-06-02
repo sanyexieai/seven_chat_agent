@@ -50,6 +50,9 @@ pub enum RelayMessage {
         job_id: String,
         #[serde(default)]
         text_delta: Option<String>,
+        /// Codex `--json` 结构化增量（与 `worker_bee_cli::CliBlockDelta` 同形）
+        #[serde(default)]
+        cli_delta: Option<serde_json::Value>,
         #[serde(default)]
         done: bool,
         #[serde(default)]

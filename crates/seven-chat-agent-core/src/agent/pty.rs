@@ -373,6 +373,9 @@ impl Agent for PtyAgent {
                 match cli_relay.run_job(&relay_id, spec, timeout).await {
                     Ok(result) => {
                         raw_buf.lock().await.extend_from_slice(result.text.as_bytes());
+                        for delta in result.cli_deltas {
+                            yield AgentEvent::CliDelta(delta);
+                        }
                         if !result.text.is_empty() {
                             yield AgentEvent::Token(result.text);
                         }

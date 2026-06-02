@@ -1,9 +1,13 @@
 use anyhow::{Context, Result};
-use seven_chat_agent_cli::{ensure_executable, exec_argv, CliLaunchConfig};
+use seven_chat_agent_cli::{ensure_executable, exec_argv, uses_codex_jsonl_stream, CliLaunchConfig};
 use seven_chat_agent_cli_relay_protocol::RelayMessage;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
+use worker_bee_cli::CodexExecJsonlBlockParser;
 
+use crate::output::{
+    ensure_codex_exec_cd, is_codex_exec_fatal_stderr, push_codex_line, push_plain_text,
+};
 use crate::workspace;
 
 pub async fn run_job_collect(
@@ -35,6 +39,7 @@ pub async fn run_job_collect(
             vec![RelayMessage::JobOutput {
                 job_id: job_id.to_string(),
                 text_delta: None,
+                cli_delta: None,
                 done: true,
                 exit_code: Some(1),
                 error: Some(e.to_string()),
@@ -77,6 +82,11 @@ async fn run_job_inner(
     let cmd = ensure_executable(preset, &launch).context("resolve cli executable")?;
     launch.cmd = cmd.clone();
     let mut args = exec_argv(preset, &launch, cwd_ref);
+    if uses_codex_jsonl_stream(preset) {
+        if let Some(c) = cwd_ref {
+            ensure_codex_exec_cd(&mut args, c);
+        }
+    }
     args.push(prompt.to_string());
 
     let mut child = Command::new(&cmd);
@@ -98,6 +108,8 @@ async fn run_job_inner(
     child.stdout(std::process::Stdio::piped());
     child.stderr(std::process::Stdio::piped());
 
+    let jsonl = uses_codex_jsonl_stream(preset) && args.iter().any(|a| a == "--json");
+
     let mut child = child
         .spawn()
         .with_context(|| format!("spawn cli {cmd} (cwd={cwd_ref:?}, args={args:?})"))?;
@@ -106,38 +118,50 @@ async fn run_job_inner(
     let mut lines = BufReader::new(stdout).lines();
 
     let mut out = Vec::new();
+    let mut codex_parser = CodexExecJsonlBlockParser::default();
+
     while let Some(line) = lines.next_line().await? {
         if line.is_empty() {
             continue;
         }
-        out.push(
-            RelayMessage::JobOutput {
-                job_id: job_id.to_string(),
-                text_delta: Some(format!("{line}\n")),
-                done: false,
-                exit_code: None,
-                error: None,
-            }
-            .to_json()?,
-        );
+        if jsonl {
+            push_codex_line(job_id, &mut codex_parser, line.trim(), &mut out)?;
+        } else {
+            push_plain_text(job_id, &format!("{line}\n"), &mut out)?;
+        }
     }
 
     let status = child.wait().await?;
-    if !status.success() {
-        let mut err_detail = format!("cli exited with {:?}", status.code());
-        if let Some(mut stderr) = stderr {
-            let mut buf = String::new();
-            if stderr.read_to_string(&mut buf).await.is_ok() {
-                let t = buf.trim();
-                if !t.is_empty() {
-                    err_detail = format!("{err_detail}: {t}");
+    if let Some(mut stderr) = stderr {
+        let mut buf = String::new();
+        if stderr.read_to_string(&mut buf).await.is_ok() {
+            let trimmed = buf.trim();
+            if !trimmed.is_empty() {
+                if jsonl {
+                    if is_codex_exec_fatal_stderr(trimmed) {
+                        push_plain_text(
+                            job_id,
+                            &format!(
+                                "\n（Codex CLI 报错：{}）\n",
+                                trimmed.lines().next().unwrap_or(trimmed)
+                            ),
+                            &mut out,
+                        )?;
+                    }
+                } else {
+                    push_plain_text(job_id, &format!("\n[stderr] {trimmed}\n"), &mut out)?;
                 }
             }
         }
+    }
+
+    if !status.success() {
+        let err_detail = format!("cli exited with {:?}", status.code());
         out.push(
             RelayMessage::JobOutput {
                 job_id: job_id.to_string(),
                 text_delta: None,
+                cli_delta: None,
                 done: true,
                 exit_code: status.code(),
                 error: Some(err_detail),
@@ -150,6 +174,7 @@ async fn run_job_inner(
         RelayMessage::JobOutput {
             job_id: job_id.to_string(),
             text_delta: None,
+            cli_delta: None,
             done: true,
             exit_code: status.code(),
             error: None,

@@ -57,10 +57,11 @@ cargo run -p seven-chat-agent-cli-relay -- \
 | 转发→服 | `workspace_report` | 工作区根目录变更 |
 | 服→转发 | `registered` | 返回 `relay_id` |
 | 服→转发 | `run_job` | `friend_id`、`group_id`、可选 `cwd` 覆盖、会话字段 |
-| 转发→服 | `job_output` | 流式 `text_delta`，`done=true` 结束 |
+| 转发→服 | `job_output` | 流式 `text_delta` 或 `cli_delta`（Codex JSONL 解析后），`done=true` 结束 |
 
 ## 后续可增强
 
-- 转发端 Codex JSONL 块解析与 `CliDelta` 事件对齐
+- ~~转发端 Codex JSONL 块解析与 `CliDelta` 事件对齐~~（已实现）
+- 转发任务流式推送至 Web（当前任务结束后一次性渲染结构化块）
 - 多转发节点负载与亲和（按好友绑定）
 - 转发端 API Key / OAuth 环境变量注入（与 vault 同步）

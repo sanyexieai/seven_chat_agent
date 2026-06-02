@@ -8,10 +8,18 @@ services:
     restart: unless-stopped
     ports:
       - "${SERVER_PORT:-18737}:18737"
+      # 启用 HTTPS 时再映射（并在 .env 提供证书路径）
+      - "${SERVER_HTTPS_PORT:-18743}:18743"
     volumes:
       - server-data:/app/data
+      # 启用 HTTPS 时取消注释并设置宿主机证书路径
+      # - ./certs/fullchain.pem:/run/certs/fullchain.pem:ro
+      # - ./certs/privkey.pem:/run/certs/privkey.pem:ro
     environment:
       HONEYCOMB_BIND: "0.0.0.0:18737"
+      HONEYCOMB_HTTPS_BIND: ${HONEYCOMB_HTTPS_BIND:-0.0.0.0:18743}
+      HONEYCOMB_TLS_CERT: ${HONEYCOMB_TLS_CERT:-/run/certs/fullchain.pem}
+      HONEYCOMB_TLS_KEY: ${HONEYCOMB_TLS_KEY:-/run/certs/privkey.pem}
       HONEYCOMB_DATA: /app/data
       HONEYCOMB_DB: "sqlite:///app/data/seven_chat_agent.db"
       SEVEN_CHAT_AGENT_STATIC_DIR: /app/web/dist

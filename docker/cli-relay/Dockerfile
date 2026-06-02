@@ -2,7 +2,7 @@
 # 构建: docker build -f docker/cli-relay/Dockerfile -t cli-relay .
 # 注: 容器内执行 codex/claude/cursor 需在镜像或挂载中提供对应 CLI，或仅在已安装 CLI 的宿主机用二进制部署。
 
-FROM rust:1.80-bookworm AS builder
+FROM rust:1.86-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./

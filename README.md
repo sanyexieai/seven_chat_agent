@@ -123,6 +123,9 @@ cargo run --bin seven-chat-agent-server
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `SEVEN_CHAT_AGENT_BIND` | `127.0.0.1:18737` | 后端监听地址 |
+| `SEVEN_CHAT_AGENT_HTTPS_BIND` | — | HTTPS 监听地址（启用后同时保留 HTTP 监听） |
+| `SEVEN_CHAT_AGENT_TLS_CERT` | — | HTTPS 证书文件（PEM/fullchain） |
+| `SEVEN_CHAT_AGENT_TLS_KEY` | — | HTTPS 私钥文件（PEM） |
 | `SEVEN_CHAT_AGENT_DB`   | `sqlite://data/seven_chat_agent.db` | SQLite 数据库 URL |
 | `SEVEN_CHAT_AGENT_DATA` | `data` | 数据目录 |
 | `SEVEN_CHAT_AGENT_VAULT` | `data/vault.json` | 本地凭据文件（启用 `keychain` feature 后会改走 OS keychain） |

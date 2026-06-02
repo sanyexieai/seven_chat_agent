@@ -2,6 +2,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use axum::extract::{Host, OriginalUri, State};
+use axum::response::{IntoResponse, Redirect};
+use axum::routing::any;
+use axum::Router;
+use axum_server::tls_rustls::RustlsConfig;
 use seven_chat_agent_core::config::CoreConfig;
 use seven_chat_agent_core::{AssistantQueueTask, SevenChatAgent};
 use seven_chat_agent_server::{build_app_with_static, static_assets};
@@ -53,9 +58,36 @@ async fn main() -> anyhow::Result<()> {
     .parse()
     .context("SEVEN_CHAT_AGENT_BIND / HONEYCOMB_BIND")?;
 
-    tracing::info!(%addr, "seven-chat-agent-server listening");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    let https_addr = https_bind_addr()?;
+    if let Some(https_addr) = https_addr {
+        let cert_path = var_or_opt("SEVEN_CHAT_AGENT_TLS_CERT", "HONEYCOMB_TLS_CERT")
+            .ok_or_else(|| anyhow::anyhow!("SEVEN_CHAT_AGENT_TLS_CERT / HONEYCOMB_TLS_CERT required when HTTPS is enabled"))?;
+        let key_path = var_or_opt("SEVEN_CHAT_AGENT_TLS_KEY", "HONEYCOMB_TLS_KEY")
+            .ok_or_else(|| anyhow::anyhow!("SEVEN_CHAT_AGENT_TLS_KEY / HONEYCOMB_TLS_KEY required when HTTPS is enabled"))?;
+
+        let tls = RustlsConfig::from_pem_file(PathBuf::from(cert_path), PathBuf::from(key_path))
+            .await
+            .context("load TLS cert/key")?;
+
+        tracing::info!(%addr, %https_addr, "seven-chat-agent-server listening (http->https + https)");
+        let redirect_app = build_http_redirect_app(https_addr);
+        let http = async move {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            axum::serve(listener, redirect_app).await?;
+            anyhow::Ok(())
+        };
+        let https = async move {
+            axum_server::bind_rustls(https_addr, tls)
+                .serve(app.into_make_service())
+                .await?;
+            anyhow::Ok(())
+        };
+        let (_http, _https) = tokio::try_join!(http, https)?;
+    } else {
+        tracing::info!(%addr, "seven-chat-agent-server listening (http)");
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, app).await?;
+    }
     Ok(())
 }
 
@@ -71,4 +103,54 @@ fn resolve_static_dir() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn var_or_opt(primary: &str, fallback: &str) -> Option<String> {
+    std::env::var(primary)
+        .ok()
+        .or_else(|| std::env::var(fallback).ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn https_bind_addr() -> anyhow::Result<Option<SocketAddr>> {
+    let raw = var_or_opt("SEVEN_CHAT_AGENT_HTTPS_BIND", "HONEYCOMB_HTTPS_BIND");
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let addr = raw
+        .parse()
+        .with_context(|| format!("SEVEN_CHAT_AGENT_HTTPS_BIND / HONEYCOMB_HTTPS_BIND: {raw}"))?;
+    Ok(Some(addr))
+}
+
+fn build_http_redirect_app(https_addr: SocketAddr) -> Router {
+    Router::new()
+        .route("/{*path}", any(http_to_https_redirect))
+        .with_state(https_addr)
+}
+
+async fn http_to_https_redirect(
+    State(https_addr): State<SocketAddr>,
+    host: Option<Host>,
+    OriginalUri(uri): OriginalUri,
+) -> impl IntoResponse {
+    let host_value = host
+        .map(|h| h.0)
+        .unwrap_or_else(|| https_addr.ip().to_string());
+    let host_without_port = if host_value.starts_with('[') {
+        host_value
+            .split("]:")
+            .next()
+            .map(|v| format!("{v}]"))
+            .unwrap_or(host_value)
+    } else {
+        host_value
+            .split(':')
+            .next()
+            .map(str::to_string)
+            .unwrap_or(host_value)
+    };
+    let location = format!("https://{}:{}{}", host_without_port, https_addr.port(), uri);
+    Redirect::permanent(&location)
 }

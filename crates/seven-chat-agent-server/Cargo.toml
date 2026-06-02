@@ -30,6 +30,7 @@ uuid.workspace = true
 chrono.workspace = true
 mime_guess = "2"
 include_dir = { version = "0.7", optional = true }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 
 [features]
 default = []

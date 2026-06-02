@@ -1,5 +1,7 @@
 # Docker 构建与自动部署（3ye.co:9443）
 
+公开示例站点（v2 Web）：[https://3ye.co:18743/](https://3ye.co:18743/)
+
 打 Git 标签后，GitHub Actions 会：
 
 1. 构建 `seven-chat-agent-server` / `seven-chat-agent-cli-relay` 镜像  
@@ -64,7 +66,8 @@ sudo chown "$USER:$USER" /opt/seven-chat-agent/deploy
 
 cd /opt/seven-chat-agent/deploy
 cp .env.example .env
-# 编辑 .env：RELAY_PAIRING_TOKEN 等在 Web 端生成配对码后填入
+# 编辑 .env：API Key、助理默认模型、HTTPS（可选）、RELAY_PAIRING_TOKEN 等
+# compose 通过 env_file 注入 .env，并叠加 docker-compose.yml 中的容器路径默认值
 ```
 
 ### 仅部署服务端
@@ -76,7 +79,7 @@ export REGISTRY=3ye.co:9443
 bash remote-up.sh server
 ```
 
-浏览器访问 `http://<服务器IP>:18737`（或反向代理后的域名）。
+浏览器访问 `http://<服务器IP>:18737`（或反向代理后的域名）。示例部署对外为 [https://3ye.co:18743/](https://3ye.co:18743/)。
 
 ### 部署 CLI 转发（可选 profile）
 

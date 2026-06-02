@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use anyhow::Context;
 use axum::extract::{Host, OriginalUri, State};
 use axum::response::{IntoResponse, Redirect};
-use axum::routing::any;
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
+use rustls::crypto::{aws_lc_rs, ring, CryptoProvider};
 use seven_chat_agent_core::config::CoreConfig;
 use seven_chat_agent_core::{AssistantQueueTask, SevenChatAgent};
 use seven_chat_agent_server::{build_app_with_static, static_assets};
@@ -20,6 +20,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,seven_chat_agent_core=debug,seven_chat_agent_server=debug")))
         .init();
+
+    ensure_rustls_crypto_provider()?;
 
     let cfg = CoreConfig::from_env();
     std::fs::create_dir_all(&cfg.data_dir).ok();
@@ -60,17 +62,26 @@ async fn main() -> anyhow::Result<()> {
 
     let https_addr = https_bind_addr()?;
     if let Some(https_addr) = https_addr {
+        ensure_rustls_crypto_provider()?;
         let cert_path = var_or_opt("SEVEN_CHAT_AGENT_TLS_CERT", "HONEYCOMB_TLS_CERT")
             .ok_or_else(|| anyhow::anyhow!("SEVEN_CHAT_AGENT_TLS_CERT / HONEYCOMB_TLS_CERT required when HTTPS is enabled"))?;
         let key_path = var_or_opt("SEVEN_CHAT_AGENT_TLS_KEY", "HONEYCOMB_TLS_KEY")
             .ok_or_else(|| anyhow::anyhow!("SEVEN_CHAT_AGENT_TLS_KEY / HONEYCOMB_TLS_KEY required when HTTPS is enabled"))?;
+        ensure_tls_files_exist(&cert_path, &key_path)?;
 
-        let tls = RustlsConfig::from_pem_file(PathBuf::from(cert_path), PathBuf::from(key_path))
+        let tls = RustlsConfig::from_pem_file(PathBuf::from(&cert_path), PathBuf::from(&key_path))
             .await
             .context("load TLS cert/key")?;
 
-        tracing::info!(%addr, %https_addr, "seven-chat-agent-server listening (http->https + https)");
-        let redirect_app = build_http_redirect_app(https_addr);
+        let public_https_port = public_https_port(https_addr.port());
+        tracing::info!(
+            %addr,
+            %https_addr,
+            public_https_port,
+            cert = %cert_path,
+            "seven-chat-agent-server listening (http->https + https)"
+        );
+        let redirect_app = build_http_redirect_app(public_https_port);
         let http = async move {
             let listener = tokio::net::TcpListener::bind(addr).await?;
             axum::serve(listener, redirect_app).await?;
@@ -89,6 +100,25 @@ async fn main() -> anyhow::Result<()> {
         axum::serve(listener, app).await?;
     }
     Ok(())
+}
+
+/// rustls 0.23：当 aws-lc-rs 与 ring 同时被依赖链启用时，必须在首次 TLS 前手动安装 CryptoProvider。
+fn ensure_rustls_crypto_provider() -> anyhow::Result<()> {
+    if CryptoProvider::get_default().is_some() {
+        return Ok(());
+    }
+    // ring 常被 sqlx/reqwest 带入；aws-lc-rs 为 server 显式依赖。两者都尝试，避免 release 下选错后端。
+    if ring::default_provider().install_default().is_ok() {
+        tracing::info!("rustls CryptoProvider installed: ring");
+        return Ok(());
+    }
+    if aws_lc_rs::default_provider().install_default().is_ok() {
+        tracing::info!("rustls CryptoProvider installed: aws-lc-rs");
+        return Ok(());
+    }
+    anyhow::bail!(
+        "failed to install rustls CryptoProvider; rebuild server image with rustls aws-lc-rs or ring feature"
+    )
 }
 
 /// 优先级：`SEVEN_CHAT_AGENT_STATIC_DIR` env 显式指定 > 当前目录下 `web/dist` 自动探测。
@@ -124,20 +154,41 @@ fn https_bind_addr() -> anyhow::Result<Option<SocketAddr>> {
     Ok(Some(addr))
 }
 
-fn build_http_redirect_app(https_addr: SocketAddr) -> Router {
+fn ensure_tls_files_exist(cert_path: &str, key_path: &str) -> anyhow::Result<()> {
+    let cert = PathBuf::from(cert_path);
+    let key = PathBuf::from(key_path);
+    if !cert.is_file() {
+        anyhow::bail!(
+            "TLS cert file not found: {cert_path} (Docker 需把宿主机证书挂载到容器内该路径)"
+        );
+    }
+    if !key.is_file() {
+        anyhow::bail!(
+            "TLS key file not found: {key_path} (Docker 需把宿主机证书挂载到容器内该路径)"
+        );
+    }
+    Ok(())
+}
+
+/// 浏览器访问用的 HTTPS 端口（301 跳转目标）。默认与监听端口相同；走 Nginx 443 时可设 `HONEYCOMB_PUBLIC_HTTPS_PORT=443`。
+fn public_https_port(listen_port: u16) -> u16 {
+    var_or_opt("SEVEN_CHAT_AGENT_PUBLIC_HTTPS_PORT", "HONEYCOMB_PUBLIC_HTTPS_PORT")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(listen_port)
+}
+
+fn build_http_redirect_app(public_https_port: u16) -> Router {
     Router::new()
-        .route("/{*path}", any(http_to_https_redirect))
-        .with_state(https_addr)
+        .fallback(http_to_https_redirect)
+        .with_state(public_https_port)
 }
 
 async fn http_to_https_redirect(
-    State(https_addr): State<SocketAddr>,
+    State(public_https_port): State<u16>,
     host: Option<Host>,
     OriginalUri(uri): OriginalUri,
 ) -> impl IntoResponse {
-    let host_value = host
-        .map(|h| h.0)
-        .unwrap_or_else(|| https_addr.ip().to_string());
+    let host_value = host.map(|h| h.0).unwrap_or_else(|| "localhost".to_string());
     let host_without_port = if host_value.starts_with('[') {
         host_value
             .split("]:")
@@ -151,6 +202,10 @@ async fn http_to_https_redirect(
             .map(str::to_string)
             .unwrap_or(host_value)
     };
-    let location = format!("https://{}:{}{}", host_without_port, https_addr.port(), uri);
+    let location = if public_https_port == 443 {
+        format!("https://{host_without_port}{uri}")
+    } else {
+        format!("https://{host_without_port}:{public_https_port}{uri}")
+    };
     Redirect::permanent(&location)
 }

@@ -2556,6 +2556,7 @@ dependencies = [
  "futures",
  "include_dir",
  "mime_guess",
+ "rustls",
  "serde",
  "serde_json",
  "seven-chat-agent-cli-relay-protocol",

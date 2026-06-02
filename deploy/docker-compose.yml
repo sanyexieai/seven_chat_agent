@@ -1,30 +1,43 @@
 # 生产部署 compose（镜像由 CI 构建并推送到 3ye.co:9443）
 # 用法见 docs/deploy-docker.md
+#
+# 1. cp .env.example .env 并填写 API Key / HTTPS（可选）
+# 2. docker compose up -d server
+#
+# HTTPS：在 .env 设置 HONEYCOMB_HTTPS_BIND 与证书路径，并取消注释下方证书 volume。
 
 services:
   server:
     image: ${SERVER_IMAGE:-3ye.co:9443/seven-chat-agent/server:latest}
     container_name: seven-chat-agent-server
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "${SERVER_PORT:-18737}:18737"
-      # 启用 HTTPS 时再映射（并在 .env 提供证书路径）
       - "${SERVER_HTTPS_PORT:-18743}:18743"
     volumes:
       - server-data:/app/data
-      # 启用 HTTPS 时取消注释并设置宿主机证书路径
-      # - ./certs/fullchain.pem:/run/certs/fullchain.pem:ro
-      # - ./certs/privkey.pem:/run/certs/privkey.pem:ro
+      # 启用 HTTPS 时取消注释（TLS_CERTS_DIR 见 deploy/.env.example）
+      # - ${TLS_CERTS_DIR:-/etc/letsencrypt}:/app/certs:ro
     environment:
-      HONEYCOMB_BIND: "0.0.0.0:18737"
-      HONEYCOMB_HTTPS_BIND: ${HONEYCOMB_HTTPS_BIND:-0.0.0.0:18743}
-      HONEYCOMB_TLS_CERT: ${HONEYCOMB_TLS_CERT:-/run/certs/fullchain.pem}
-      HONEYCOMB_TLS_KEY: ${HONEYCOMB_TLS_KEY:-/run/certs/privkey.pem}
-      HONEYCOMB_DATA: /app/data
-      HONEYCOMB_DB: "sqlite:///app/data/seven_chat_agent.db"
-      SEVEN_CHAT_AGENT_STATIC_DIR: /app/web/dist
-      # 按需取消注释并填入
-      # AUTH_REQUIRED: "1"
+      # ── 服务（容器内路径；可被 deploy/.env 覆盖）──
+      HONEYCOMB_BIND: ${HONEYCOMB_BIND:-0.0.0.0:18737}
+      HONEYCOMB_DATA: ${HONEYCOMB_DATA:-/app/data}
+      HONEYCOMB_DB: ${HONEYCOMB_DB:-sqlite:///app/data/seven_chat_agent.db}
+      SEVEN_CHAT_AGENT_STATIC_DIR: ${SEVEN_CHAT_AGENT_STATIC_DIR:-/app/web/dist}
+      SEVEN_CHAT_AGENT_VAULT: ${SEVEN_CHAT_AGENT_VAULT:-/app/data/vault.json}
+      SEVEN_CHAT_AGENT_SKILLS_DIR: ${SEVEN_CHAT_AGENT_SKILLS_DIR:-/app/data/skills}
+      SEVEN_CHAT_AGENT_CLI_WORKSPACE_ROOT: ${SEVEN_CHAT_AGENT_CLI_WORKSPACE_ROOT:-/app/data/cli-workspaces}
+      # ── 助理默认模型 ──
+      SEVEN_CHAT_AGENT_ASSISTANT_PROVIDER: ${SEVEN_CHAT_AGENT_ASSISTANT_PROVIDER:-deepseek}
+      SEVEN_CHAT_AGENT_ASSISTANT_MODEL: ${SEVEN_CHAT_AGENT_ASSISTANT_MODEL:-deepseek-v4-flash}
+      # ── HTTPS（默认关闭；在 .env 填写后启用）──
+      HONEYCOMB_HTTPS_BIND: ${HONEYCOMB_HTTPS_BIND:-}
+      HONEYCOMB_TLS_CERT: ${HONEYCOMB_TLS_CERT:-}
+      HONEYCOMB_TLS_KEY: ${HONEYCOMB_TLS_KEY:-}
+      HONEYCOMB_PUBLIC_HTTPS_PORT: ${HONEYCOMB_PUBLIC_HTTPS_PORT:-}
+      # API Key、OLLAMA、AUTH 等其余变量由 env_file (.env) 注入，无需在此逐条列出
 
   cli-relay:
     profiles: ["relay"]
@@ -33,6 +46,8 @@ services:
     restart: unless-stopped
     depends_on:
       - server
+    env_file:
+      - .env
     environment:
       SEVEN_CHAT_AGENT_RELAY_URL: ${RELAY_URL:-ws://server:18737/cli-relay}
       SEVEN_CHAT_AGENT_RELAY_PAIRING_TOKEN: ${RELAY_PAIRING_TOKEN:?set RELAY_PAIRING_TOKEN in .env}

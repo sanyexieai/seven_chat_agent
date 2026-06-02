@@ -1,4 +1,7 @@
+import { useEffect, useMemo, useState } from "react";
+import { api } from "../api/client";
 import { isWorkerBeeFriend } from "../friendKind";
+import type { Friend } from "../types";
 import { useChat } from "../stores/chat";
 import { Avatar } from "./Avatar";
 
@@ -18,6 +21,77 @@ export function Sidebar({
   onOpenAssistant,
 }: Props) {
   const { friends, groups, target, selectFriend, selectGroup } = useChat();
+  const [onlineByFriend, setOnlineByFriend] = useState<Record<string, boolean>>({});
+  const [onlineDetailByFriend, setOnlineDetailByFriend] = useState<Record<string, string>>({});
+  const externalCliFriends = useMemo(() => friends.filter(isExternalCliFriend), [friends]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshOnline() {
+      if (externalCliFriends.length === 0) {
+        if (!cancelled) {
+          setOnlineByFriend({});
+          setOnlineDetailByFriend({});
+        }
+        return;
+      }
+      let relayOnline = new Set<string>();
+      const hasRelayFriend = externalCliFriends.some(
+        (f) => f.backend_config?.execution_mode === "relay",
+      );
+      if (hasRelayFriend) {
+        try {
+          const { relays } = await api.listCliRelays();
+          relayOnline = new Set(relays.filter((r) => r.online).map((r) => r.relay_id));
+        } catch {
+          relayOnline = new Set();
+        }
+      }
+      const rows = await Promise.all(
+        externalCliFriends.map(async (f) => {
+          try {
+            const { cli_auth } = await api.getFriendCliAuth(f.id);
+            const authOk = !!cli_auth?.authenticated;
+            const relayMode = f.backend_config?.execution_mode === "relay";
+            const relayId = String(f.backend_config?.relay_id || "");
+            const relayOk = !relayMode || (!!relayId && relayOnline.has(relayId));
+            return {
+              id: f.id,
+              online: authOk && relayOk,
+              detail: relayMode
+                ? authOk
+                  ? relayOk
+                    ? "在线（已登录 + 转发在线）"
+                    : "离线（转发未在线）"
+                  : "离线（CLI 未登录）"
+                : authOk
+                  ? "在线（CLI 已登录）"
+                  : "离线（CLI 未登录）",
+            };
+          } catch {
+            return { id: f.id, online: false, detail: "离线（状态检测失败）" };
+          }
+        }),
+      );
+      if (cancelled) return;
+      const m1: Record<string, boolean> = {};
+      const m2: Record<string, string> = {};
+      for (const r of rows) {
+        m1[r.id] = r.online;
+        m2[r.id] = r.detail;
+      }
+      setOnlineByFriend(m1);
+      setOnlineDetailByFriend(m2);
+    }
+
+    void refreshOnline();
+    const t = window.setInterval(refreshOnline, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [externalCliFriends]);
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-r border-slate-200 bg-slate-50">
@@ -87,9 +161,27 @@ export function Sidebar({
                       </button>
                     </div>
                   </div>
-                  <div className="truncate text-xs text-slate-500">
-                    {f.personality || backendLabel(f.backend_kind)}
-                  </div>
+                  {isExternalCliFriend(f) ? (
+                    <div
+                      className={`flex items-center gap-1 text-xs ${
+                        onlineByFriend[f.id] ? "text-emerald-700" : "text-slate-500"
+                      }`}
+                      title={onlineDetailByFriend[f.id] || "状态检测中"}
+                    >
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${
+                          onlineByFriend[f.id] ? "bg-emerald-500" : "bg-slate-300"
+                        }`}
+                      />
+                      <span className="truncate">
+                        {onlineDetailByFriend[f.id] || "状态检测中…"}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="truncate text-xs text-slate-500">
+                      {f.personality || backendLabel(f.backend_kind)}
+                    </div>
+                  )}
                 </div>
               </li>
             ))}
@@ -152,6 +244,12 @@ export function Sidebar({
       </div>
     </aside>
   );
+}
+
+function isExternalCliFriend(f: Friend): boolean {
+  if (f.backend_kind !== "pty") return false;
+  const preset = String(f.backend_config?.preset || "");
+  return preset === "codex-exec" || preset === "claude" || preset === "cursor";
 }
 
 function backendLabel(kind: string) {

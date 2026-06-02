@@ -1,8 +1,10 @@
-# 打 Git 标签后：构建 Docker 镜像 → 推送到 3ye.co:9443 → SSH 到服务器拉取并运行
+# 打 Git 标签后：
+# - server: 构建 Docker 镜像并推送到 3ye.co:9443，然后 SSH 到服务器部署
+# - cli-relay: 仅构建并发布多平台二进制（不推送 relay 镜像，不部署到服务器）
 #
 # 标签约定:
-#   v2.0.0          — 构建 server + cli-relay，部署 all
-#   cli-relay/2.0.0 — 仅构建/部署 cli-relay
+#   v2.0.0          — 构建 server 镜像 + cli-relay 二进制；仅部署 server
+#   cli-relay/2.0.0 — 仅构建并发布 cli-relay 二进制
 #   v2.0.0-server   — 仅构建/部署 server
 #
 # GitHub Secrets:
@@ -38,12 +40,12 @@ jobs:
           version="$ref"
           build_server=true
           build_relay=true
-          deploy_target=all
+          deploy_target=server
 
           if [[ "$ref" == cli-relay/* ]]; then
             version="${ref#cli-relay/}"
             build_server=false
-            deploy_target=cli-relay
+            deploy_target=none
           elif [[ "$ref" == v*-server ]]; then
             version="${ref%-server}"
             version="${version#v}"
@@ -111,61 +113,6 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/server:${{ needs.parse.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/server:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  build-cli-relay:
-    needs: parse
-    if: needs.parse.outputs.build_relay == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Registry connectivity check (with retry)
-        shell: bash
-        run: |
-          set -euo pipefail
-          host="${REGISTRY%%:*}"
-          port="${REGISTRY##*:}"
-          for i in 1 2 3; do
-            echo "[$i/3] probing https://${REGISTRY}/v2/"
-            code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 20 "https://${REGISTRY}/v2/" || true)"
-            if [[ "$code" == "200" || "$code" == "401" ]]; then
-              echo "registry reachable (http=${code})"
-              exit 0
-            fi
-            echo "probe http=${code:-n/a}"
-            echo "probe failed; collecting diagnostics..."
-            getent hosts "$host" || true
-            nc -zv -w 5 "$host" "$port" || true
-            sleep $((i * 5))
-          done
-          echo "registry health check failed"
-          exit 1
-      - name: Docker login (with retry)
-        shell: bash
-        env:
-          REG_USER: ${{ secrets.REGISTRY_USERNAME }}
-          REG_PASS: ${{ secrets.REGISTRY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          for i in 1 2 3; do
-            if echo "$REG_PASS" | docker login "${REGISTRY}" -u "$REG_USER" --password-stdin; then
-              exit 0
-            fi
-            echo "docker login failed [$i/3], retrying..."
-            sleep $((i * 5))
-          done
-          echo "docker login failed after retries"
-          exit 1
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/cli-relay/Dockerfile
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/cli-relay:${{ needs.parse.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/cli-relay:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -255,16 +202,15 @@ jobs:
           files: dist/*
 
   deploy:
-    needs: [parse, build-server, build-cli-relay, build-cli-relay-binaries, publish-cli-relay-binaries]
+    needs: [parse, build-server, build-cli-relay-binaries, publish-cli-relay-binaries]
     runs-on: ubuntu-latest
     if: |
       always() &&
       !cancelled() &&
-      (needs.build-server.result == 'success' || needs.build-server.result == 'skipped') &&
-      (needs.build-cli-relay.result == 'success' || needs.build-cli-relay.result == 'skipped') &&
+      needs.parse.outputs.build_server == 'true' &&
+      needs.build-server.result == 'success' &&
       (needs.build-cli-relay-binaries.result == 'success' || needs.build-cli-relay-binaries.result == 'skipped') &&
-      (needs.publish-cli-relay-binaries.result == 'success' || needs.publish-cli-relay-binaries.result == 'skipped') &&
-      (needs.build-server.result == 'success' || needs.build-cli-relay.result == 'success')
+      (needs.publish-cli-relay-binaries.result == 'success' || needs.publish-cli-relay-binaries.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
 

@@ -287,3 +287,15 @@ git push origin v2.0.0
 ```
 
 在 GitHub 创建 Release **v2.0.0**，正文可粘贴 [CHANGELOG.md](CHANGELOG.md) 中 v2 一节。
+
+### Docker 自动部署（3ye.co:9443）
+
+打标签后由 GitHub Actions 构建镜像、推送到 `https://3ye.co:9443`，并 SSH 到服务器拉取运行。配置 Secrets 与标签约定见 [docs/deploy-docker.md](docs/deploy-docker.md)。
+
+同时会把 `seven-chat-agent-cli-relay` 多平台二进制（linux/windows/macos）上传到对应 GitHub Release Assets。
+
+```bash
+git tag v2.0.0          # server + cli-relay
+git tag cli-relay/2.0.0 # 仅 cli-relay
+git push origin --tags
+```

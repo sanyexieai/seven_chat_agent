@@ -1,0 +1,13 @@
+target/
+data/
+.git/
+.github/
+**/*.md
+.env
+.env.*
+!.env.example
+web/node_modules/
+web/dist/
+node_modules/
+*.db
+*.db-*

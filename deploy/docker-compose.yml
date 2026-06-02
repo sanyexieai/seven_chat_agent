@@ -1,0 +1,38 @@
+# 生产部署 compose（镜像由 CI 构建并推送到 3ye.co:9443）
+# 用法见 docs/deploy-docker.md
+
+services:
+  server:
+    image: ${SERVER_IMAGE:-3ye.co:9443/seven-chat-agent/server:latest}
+    container_name: seven-chat-agent-server
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-18737}:18737"
+    volumes:
+      - server-data:/app/data
+    environment:
+      HONEYCOMB_BIND: "0.0.0.0:18737"
+      HONEYCOMB_DATA: /app/data
+      HONEYCOMB_DB: "sqlite:///app/data/seven_chat_agent.db"
+      SEVEN_CHAT_AGENT_STATIC_DIR: /app/web/dist
+      # 按需取消注释并填入
+      # AUTH_REQUIRED: "1"
+
+  cli-relay:
+    profiles: ["relay"]
+    image: ${CLI_RELAY_IMAGE:-3ye.co:9443/seven-chat-agent/cli-relay:latest}
+    container_name: seven-chat-agent-cli-relay
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      SEVEN_CHAT_AGENT_RELAY_URL: ${RELAY_URL:-ws://server:18737/cli-relay}
+      SEVEN_CHAT_AGENT_RELAY_PAIRING_TOKEN: ${RELAY_PAIRING_TOKEN:?set RELAY_PAIRING_TOKEN in .env}
+      SEVEN_CHAT_AGENT_RELAY_NAME: ${RELAY_NAME:-docker-relay}
+      SEVEN_CHAT_AGENT_RELAY_WORKSPACE_ROOT: /data/cli-workspaces
+    volumes:
+      - relay-data:/data
+
+volumes:
+  server-data:
+  relay-data:

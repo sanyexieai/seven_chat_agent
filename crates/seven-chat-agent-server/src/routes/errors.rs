@@ -7,6 +7,8 @@ use seven_chat_agent_core::Error as CoreError;
 pub enum ApiError {
     NotFound,
     BadRequest(String),
+    Unauthorized(String),
+    Forbidden(String),
     Internal(String),
 }
 
@@ -15,6 +17,8 @@ impl IntoResponse for ApiError {
         let (status, message) = match self {
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
@@ -26,6 +30,7 @@ impl From<CoreError> for ApiError {
         match e {
             CoreError::NotFound(_) => ApiError::NotFound,
             CoreError::BadRequest(m) => ApiError::BadRequest(m),
+            CoreError::Unauthorized(m) => ApiError::Unauthorized(m),
             other => ApiError::Internal(other.to_string()),
         }
     }

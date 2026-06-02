@@ -20,6 +20,20 @@ pub fn default_path_for_friend(friend_id: &str) -> PathBuf {
     workspace_root().join(friend_id)
 }
 
+/// 按租户 + 用户 + 好友隔离：`{root}/tenants/{tenant}/users/{user}/{friend}`。
+pub fn default_path_for_user_friend(
+    tenant_id: &str,
+    user_id: &str,
+    friend_id: &str,
+) -> PathBuf {
+    workspace_root()
+        .join("tenants")
+        .join(tenant_id)
+        .join("users")
+        .join(user_id)
+        .join(friend_id)
+}
+
 pub fn default_path_for_group(group_id: &str) -> PathBuf {
     workspace_root().join("groups").join(group_id)
 }
@@ -80,6 +94,17 @@ fn absolutize(path: &Path) -> Result<PathBuf> {
 /// 每位 CLI 好友的默认工作区：`{workspace_root}/{friend_id}`。
 pub fn ensure_for_friend(friend_id: &str) -> Result<String> {
     let path = default_path_for_friend(friend_id);
+    ensure_workspace(&path, true)?;
+    Ok(absolutize(&path)?.to_string_lossy().into_owned())
+}
+
+/// 登录用户私有默认工作区目录。
+pub fn ensure_for_user_friend(
+    tenant_id: &str,
+    user_id: &str,
+    friend_id: &str,
+) -> Result<String> {
+    let path = default_path_for_user_friend(tenant_id, user_id, friend_id);
     ensure_workspace(&path, true)?;
     Ok(absolutize(&path)?.to_string_lossy().into_owned())
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { AgentDnaSettings } from "./AgentDnaSettings";
 import {
   defaultBaseUrlForProvider,
   providerDisplayName,
@@ -239,6 +240,7 @@ export function SettingsDrawer({ open, onClose }: Props) {
               )}
             </ul>
           </section>
+          <AgentDnaSettings />
         </div>
       </div>
       {editingProvider && (

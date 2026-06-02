@@ -1,4 +1,5 @@
 pub mod attachment;
+pub mod auth;
 pub mod env;
 pub mod assistant_accumulation;
 pub mod llm_json;
@@ -10,6 +11,7 @@ pub mod memory_tier;
 pub mod assistant_intent;
 pub mod assistant_task_planner;
 pub mod agent;
+pub mod agent_dna;
 pub use seven_chat_agent_cli;
 pub mod cli_auth;
 pub mod cli_relay;
@@ -27,6 +29,7 @@ pub mod judge;
 pub mod provider;
 pub mod scheduler;
 pub mod store;
+pub mod tenant_context;
 
 pub use cli_auth::{CliAuthStatus, CliOAuthManager, CliOAuthPhase, CliOAuthSnapshot};
 pub use cli_relay::{RelayHub, RelayJobSpec, RelayNodeInfo};
@@ -71,6 +74,7 @@ impl SevenChatAgent {
         store.seed_assistant_policy_templates().await?;
         store.ensure_tenant().await?;
         store.ensure_assistant_global_settings().await?;
+        store.ensure_agent_dna().await?;
         store.migrate_all_friend_workspaces().await?;
         store.migrate_legacy_workspace_cli_sessions().await?;
         let _ = store.repair_recurring_todos().await;
@@ -101,6 +105,12 @@ impl SevenChatAgent {
         };
         core.spawn_assistant_queue_worker();
         Ok(core)
+    }
+
+    /// 当前 task-local tenant 的 store；无绑定时为进程默认 tenant。
+    fn active_store(&self) -> SqliteStore {
+        let tid = crate::tenant_context::active_tenant_or(self.store.tenant_id());
+        self.store.for_tenant(&tid)
     }
 
     fn spawn_assistant_queue_worker(&self) {
@@ -143,7 +153,7 @@ impl SevenChatAgent {
             AssistantQueueTask::SyncSkills => "sync_skills",
             AssistantQueueTask::ConsolidateMemory => "consolidate_memory",
         };
-        self.store
+        self.active_store()
             .enqueue_assistant_job(kind, None, delay_seconds, 3)
             .await?;
         Ok(())
@@ -165,7 +175,7 @@ impl SevenChatAgent {
                     priority,
                 } => {
                     let todo = self
-                        .store
+                        .active_store()
                         .create_assistant_todo(
                             owner_friend_id,
                             title,
@@ -207,7 +217,7 @@ impl SevenChatAgent {
                         "schedule": schedule_json,
                         "todo_id": created_todo.as_ref().map(|t| t.id.clone()),
                     });
-                    self.store
+                    self.active_store()
                         .enqueue_assistant_job(
                             "todo_reminder",
                             Some(&payload.to_string()),
@@ -222,31 +232,40 @@ impl SevenChatAgent {
     }
 
     async fn process_assistant_queue_once(&self) -> Result<()> {
-        let jobs = self.store.fetch_due_assistant_jobs(16).await?;
+        let jobs = self.store.fetch_due_assistant_jobs_global(16).await?;
         for job in jobs {
-            self.store.mark_assistant_job_running(&job.id).await?;
-            let run = match job.kind.as_str() {
-                "idle_tick" => {
-                    let result = self.run_assistant_idle_tick().await.map(|_| ());
-                    let _ = self
-                        .enqueue_assistant_task_after(AssistantQueueTask::IdleTick, 45)
-                        .await;
-                    result
+            let tenant_id = job.tenant_id.clone();
+            let job_id = job.id.clone();
+            let kind = job.kind.clone();
+            let payload = job.payload.clone();
+            let job_for_retry = job.clone();
+            crate::tenant_context::with_active_tenant(&tenant_id, || async {
+                let store = self.active_store();
+                store.mark_assistant_job_running(&job_id).await?;
+                let run = match kind.as_str() {
+                    "idle_tick" => {
+                        let result = self.run_assistant_idle_tick().await.map(|_| ());
+                        let _ = self
+                            .enqueue_assistant_task_after(AssistantQueueTask::IdleTick, 45)
+                            .await;
+                        result
+                    }
+                    "sync_skills" => self.run_assistant_sync_skills().await,
+                    "consolidate_memory" => self.run_assistant_consolidate().await,
+                    "todo_reminder" => self.run_assistant_todo_reminder(payload.as_deref()).await,
+                    _ => Err(Error::bad_request(format!("unknown queue task kind {kind}"))),
+                };
+                match run {
+                    Ok(()) => store.mark_assistant_job_done(&job_id).await?,
+                    Err(e) => {
+                        store
+                            .mark_assistant_job_failed_or_retry(&job_for_retry, &e.to_string())
+                            .await?
+                    }
                 }
-                "sync_skills" => self.run_assistant_sync_skills().await,
-                "consolidate_memory" => self.run_assistant_consolidate().await,
-                "todo_reminder" => self
-                    .run_assistant_todo_reminder(job.payload.as_deref())
-                    .await,
-                _ => Err(Error::bad_request(format!("unknown queue task kind {}", job.kind))),
-            };
-            match run {
-                Ok(()) => self.store.mark_assistant_job_done(&job.id).await?,
-                Err(e) => self
-                    .store
-                    .mark_assistant_job_failed_or_retry(&job, &e.to_string())
-                    .await?,
-            }
+                Ok::<(), Error>(())
+            })
+            .await?;
         }
         Ok(())
     }
@@ -257,11 +276,11 @@ impl SevenChatAgent {
         use crate::domain::AssistantTodoStatus;
         use crate::store::memory::NewMemory;
 
-        let settings = self.store.get_assistant_global_settings().await?;
-        if !settings.proactive_enabled || !self.store.assistant_budget_available(&settings) {
+        let settings = self.active_store().get_assistant_global_settings().await?;
+        if !settings.proactive_enabled || !self.active_store().assistant_budget_available(&settings) {
             return Ok(0);
         }
-        let Some(assistant_id) = self.store.builtin_assistant_id().await? else {
+        let Some(assistant_id) = self.active_store().builtin_assistant_id().await? else {
             return Ok(0);
         };
 
@@ -317,7 +336,7 @@ impl SevenChatAgent {
         }
 
         let delegate_friends = if settings.proactive_delegate_enabled {
-            let all = self.store.list_friends().await.unwrap_or_default();
+            let all = self.active_store().list_friends().await.unwrap_or_default();
             all.into_iter()
                 .filter(|f| {
                     f.enabled
@@ -339,14 +358,14 @@ impl SevenChatAgent {
 
         let mut processed = 0usize;
         for t in pending {
-            self.store
+            self.active_store()
                 .update_assistant_todo_status(&t.id, AssistantTodoStatus::Running)
                 .await?;
             let mut execute_note = String::from("由内置助理自主执行");
             let run_result: Result<()> = async {
                 if let Some(friend) = delegate_friends.get(processed % delegate_friends.len().max(1)) {
                     execute_note = format!("已调度 agent 好友「{}」执行", friend.name);
-                    let conv = self.store.get_or_create_dm(&friend.id).await?;
+                    let conv = self.active_store().get_or_create_dm(&friend.id).await?;
                     let task_prompt = format!(
                         "【系统调度任务】请执行以下待办：\n标题：{}\n优先级：{}\n说明：{}",
                         t.title,
@@ -358,10 +377,10 @@ impl SevenChatAgent {
                         .send_user_message(&conv.id, &task_prompt)
                         .await;
                 } else {
-                    if let Ok(Some(dir)) = self.store.builtin_assistant_skills_dir().await {
-                        let _ = self.store.sync_skills_from_disk(&assistant_id, &dir).await;
+                    if let Ok(Some(dir)) = self.active_store().builtin_assistant_skills_dir().await {
+                        let _ = self.active_store().sync_skills_from_disk(&assistant_id, &dir).await;
                     }
-                    let _ = self.store.consolidate_memories(&assistant_id).await;
+                    let _ = self.active_store().consolidate_memories(&assistant_id).await;
                 }
                 Ok(())
             }
@@ -397,18 +416,18 @@ impl SevenChatAgent {
                     workspace_id: None,
                 })
                 .await;
-            self.store.update_assistant_todo_status(&t.id, status).await?;
+            self.active_store().update_assistant_todo_status(&t.id, status).await?;
             processed += 1;
         }
         Ok(processed)
     }
 
     async fn run_assistant_sync_skills(&self) -> Result<()> {
-        let Some(assistant_id) = self.store.builtin_assistant_id().await? else {
+        let Some(assistant_id) = self.active_store().builtin_assistant_id().await? else {
             return Ok(());
         };
-        if let Some(dir) = self.store.builtin_assistant_skills_dir().await? {
-            self.store.sync_skills_from_disk(&assistant_id, &dir).await?;
+        if let Some(dir) = self.active_store().builtin_assistant_skills_dir().await? {
+            self.active_store().sync_skills_from_disk(&assistant_id, &dir).await?;
         }
         let _ = self
             .enqueue_assistant_task_after(AssistantQueueTask::SyncSkills, 90)
@@ -419,7 +438,7 @@ impl SevenChatAgent {
     pub async fn run_memory_maintenance(
         &self,
     ) -> Result<crate::memory_maintenance::MemoryMaintenanceReport> {
-        crate::memory_maintenance::run_memory_maintenance(&self.store, &self.providers).await
+        crate::memory_maintenance::run_memory_maintenance(&self.active_store(), &self.providers).await
     }
 
     async fn run_assistant_consolidate(&self) -> Result<()> {
@@ -437,7 +456,7 @@ impl SevenChatAgent {
             embeddings = report.embeddings_updated,
             "memory maintenance done"
         );
-        let _ = self.store.reset_assistant_observe_streak().await;
+        let _ = self.active_store().reset_assistant_observe_streak().await;
         let _ = self
             .enqueue_assistant_task_after(AssistantQueueTask::ConsolidateMemory, 135)
             .await;
@@ -459,7 +478,7 @@ impl SevenChatAgent {
         };
         let data: ReminderPayload = serde_json::from_str(payload)
             .map_err(|e| Error::bad_request(format!("invalid reminder payload: {e}")))?;
-        let conv = self.store.get_or_create_dm(&data.assistant_id).await?;
+        let conv = self.active_store().get_or_create_dm(&data.assistant_id).await?;
         let friend = self
             .store
             .get_friend(&data.assistant_id)

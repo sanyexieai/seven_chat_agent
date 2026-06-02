@@ -64,6 +64,7 @@ impl SqliteStore {
         let current = self.get_assistant_global_settings().await?;
         settings.observe_streak = current.observe_streak;
         settings.monthly_tokens_used = current.monthly_tokens_used;
+        settings.evolution_tokens_used = current.evolution_tokens_used;
         settings.budget_period_ym = current.budget_period_ym;
         settings.updated_at = None;
 
@@ -157,6 +158,7 @@ impl SqliteStore {
         if settings.budget_period_ym.as_deref() != Some(ym.as_str()) {
             settings.budget_period_ym = Some(ym);
             settings.monthly_tokens_used = 0;
+            settings.evolution_tokens_used = 0;
         }
         settings.monthly_tokens_used = settings.monthly_tokens_used.saturating_add(used_tokens);
         settings.updated_at = None;
@@ -176,5 +178,47 @@ impl SqliteStore {
     pub fn assistant_budget_available(&self, settings: &AssistantGlobalSettings) -> bool {
         settings.monthly_token_budget == 0
             || settings.monthly_tokens_used < settings.monthly_token_budget
+    }
+
+    pub fn evolution_budget_cap(&self, settings: &AssistantGlobalSettings) -> u64 {
+        if settings.evolution_token_budget_absolute > 0 {
+            return settings.evolution_token_budget_absolute;
+        }
+        if settings.monthly_token_budget > 0 && settings.evolution_token_budget_ratio > 0.0 {
+            return ((settings.monthly_token_budget as f64) * settings.evolution_token_budget_ratio)
+                as u64;
+        }
+        0
+    }
+
+    pub fn evolution_budget_available(&self, settings: &AssistantGlobalSettings) -> bool {
+        let cap = self.evolution_budget_cap(settings);
+        cap == 0 || settings.evolution_tokens_used < cap
+    }
+
+    pub async fn consume_evolution_tokens(
+        &self,
+        used_tokens: u64,
+    ) -> Result<AssistantGlobalSettings> {
+        let mut settings = self.get_assistant_global_settings().await?;
+        let ym = chrono::Utc::now().format("%Y-%m").to_string();
+        if settings.budget_period_ym.as_deref() != Some(ym.as_str()) {
+            settings.budget_period_ym = Some(ym);
+            settings.monthly_tokens_used = 0;
+            settings.evolution_tokens_used = 0;
+        }
+        settings.evolution_tokens_used = settings.evolution_tokens_used.saturating_add(used_tokens);
+        settings.updated_at = None;
+        let now = chrono::Utc::now().to_rfc3339();
+        let json = serde_json::to_string(&settings)?;
+        sqlx::query(
+            "UPDATE assistant_global_settings SET settings = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&json)
+        .bind(&now)
+        .bind(self.settings_row_id())
+        .execute(self.pool())
+        .await?;
+        self.get_assistant_global_settings().await
     }
 }

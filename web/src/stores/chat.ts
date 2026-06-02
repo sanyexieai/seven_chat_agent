@@ -107,6 +107,7 @@ export const useChat = create<ChatState>((set, get) => ({
   taskFlow: null,
   ws: null,
   async init() {
+    set({ ready: false });
     const prev = get().ws;
     if (prev && prev.readyState <= WebSocket.OPEN) {
       prev.close();

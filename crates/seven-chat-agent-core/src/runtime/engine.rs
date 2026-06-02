@@ -138,8 +138,39 @@ impl AgentRuntime {
                         }
 
                         if !step.text.trim().is_empty() {
-                            full = step.text.clone();
-                            yield AgentEvent::Token(step.text);
+                            let mut text = step.text.clone();
+                            if let Ok(dna) = memory.store().get_agent_dna().await {
+                                let report =
+                                    crate::agent_dna::check_response_compliance(&text, &dna);
+                                if report.weak_agreement {
+                                    tracing::info!(
+                                        signals = ?report.signals,
+                                        level = %dna.enforcement.level,
+                                        "dna L2 weak_agreement"
+                                    );
+                                    if dna.enforcement.level == "strict" {
+                                        messages.push(crate::provider::types::ChatMessage::assistant(
+                                            text.clone(),
+                                        ));
+                                        messages.push(crate::provider::types::ChatMessage::user(
+                                            crate::agent_dna::DNA_RETRY_USER_HINT.to_string(),
+                                        ));
+                                        if let Ok(retry) = think
+                                            .think(&providers, &profile_clone, &messages)
+                                            .await
+                                        {
+                                            tokens_in += retry.usage.prompt_tokens;
+                                            tokens_out += retry.usage.completion_tokens;
+                                            if !retry.text.trim().is_empty() {
+                                                text = retry.text;
+                                                model_used = Some(retry.label);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            full = text.clone();
+                            yield AgentEvent::Token(text);
                         }
                         done = true;
                     }

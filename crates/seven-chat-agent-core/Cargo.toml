@@ -30,6 +30,9 @@ portable-pty.workspace = true
 rand.workspace = true
 base64 = "0.22"
 mime_guess = "2"
+argon2 = "0.5"
+password-hash = "0.5"
+sha2 = "0.10"
 seven-chat-agent-cli = { path = "../seven-chat-agent-cli" }
 seven-chat-agent-cli-relay-protocol = { path = "../seven-chat-agent-cli-relay-protocol" }
 worker-bee-cli = { path = "../worker-bee-cli" }

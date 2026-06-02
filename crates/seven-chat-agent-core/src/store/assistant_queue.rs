@@ -7,6 +7,7 @@ use crate::Result;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AssistantQueueJob {
     pub id: String,
+    pub tenant_id: String,
     pub kind: String,
     pub payload: Option<String>,
     pub attempts: i64,
@@ -28,6 +29,7 @@ pub struct AssistantQueueStats {
 #[derive(Debug, sqlx::FromRow)]
 struct AssistantQueueJobRow {
     id: String,
+    tenant_id: String,
     kind: String,
     payload: Option<String>,
     attempts: i64,
@@ -41,6 +43,7 @@ impl From<AssistantQueueJobRow> for AssistantQueueJob {
     fn from(r: AssistantQueueJobRow) -> Self {
         Self {
             id: r.id,
+            tenant_id: r.tenant_id,
             kind: r.kind,
             payload: r.payload,
             attempts: r.attempts,
@@ -62,8 +65,9 @@ impl SqliteStore {
         max_attempts: i64,
     ) -> Result<()> {
         let pending: i64 = sqlx::query_scalar(
-            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE kind = ? AND status = 'pending'",
+            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE tenant_id = ? AND kind = ? AND status = 'pending'",
         )
+        .bind(self.tenant_id())
         .bind(kind)
         .fetch_one(self.pool())
         .await?;
@@ -85,9 +89,10 @@ impl SqliteStore {
         let now = Utc::now();
         let run_at = now + Duration::seconds(delay_seconds.max(0));
         sqlx::query(
-            "INSERT INTO assistant_queue_jobs (id, kind, payload, status, attempts, max_attempts, run_at, last_error, created_at, updated_at) VALUES (?, ?, ?, 'pending', 0, ?, ?, NULL, ?, ?)",
+            "INSERT INTO assistant_queue_jobs (id, tenant_id, kind, payload, status, attempts, max_attempts, run_at, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, NULL, ?, ?)",
         )
         .bind(&id)
+        .bind(self.tenant_id())
         .bind(kind)
         .bind(payload)
         .bind(max_attempts.max(1))
@@ -99,11 +104,29 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// 后台 worker：跨 tenant 拉取到期任务。
+    pub async fn fetch_due_assistant_jobs_global(&self, limit: i64) -> Result<Vec<AssistantQueueJob>> {
+        let now = Utc::now().to_rfc3339();
+        let rows: Vec<AssistantQueueJobRow> = sqlx::query_as(
+            "SELECT id, tenant_id, kind, payload, attempts, max_attempts, status, last_error, run_at \
+             FROM assistant_queue_jobs WHERE status = 'pending' AND run_at <= ? \
+             ORDER BY run_at ASC LIMIT ?",
+        )
+        .bind(&now)
+        .bind(limit.max(1))
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     pub async fn fetch_due_assistant_jobs(&self, limit: i64) -> Result<Vec<AssistantQueueJob>> {
         let now = Utc::now().to_rfc3339();
         let rows: Vec<AssistantQueueJobRow> = sqlx::query_as(
-            "SELECT id, kind, payload, attempts, max_attempts, status, last_error, run_at FROM assistant_queue_jobs WHERE status = 'pending' AND run_at <= ? ORDER BY run_at ASC LIMIT ?",
+            "SELECT id, tenant_id, kind, payload, attempts, max_attempts, status, last_error, run_at \
+             FROM assistant_queue_jobs WHERE tenant_id = ? AND status = 'pending' AND run_at <= ? \
+             ORDER BY run_at ASC LIMIT ?",
         )
+        .bind(self.tenant_id())
         .bind(&now)
         .bind(limit.max(1))
         .fetch_all(self.pool())
@@ -127,16 +150,20 @@ impl SqliteStore {
     ) -> Result<Vec<AssistantQueueJob>> {
         let rows: Vec<AssistantQueueJobRow> = if let Some(status) = status {
             sqlx::query_as(
-                "SELECT id, kind, payload, attempts, max_attempts, status, last_error, run_at FROM assistant_queue_jobs WHERE status = ? ORDER BY run_at DESC LIMIT ?",
+                "SELECT id, tenant_id, kind, payload, attempts, max_attempts, status, last_error, run_at \
+                 FROM assistant_queue_jobs WHERE tenant_id = ? AND status = ? ORDER BY run_at DESC LIMIT ?",
             )
+            .bind(self.tenant_id())
             .bind(status)
             .bind(limit.max(1))
             .fetch_all(self.pool())
             .await?
         } else {
             sqlx::query_as(
-                "SELECT id, kind, payload, attempts, max_attempts, status, last_error, run_at FROM assistant_queue_jobs ORDER BY run_at DESC LIMIT ?",
+                "SELECT id, tenant_id, kind, payload, attempts, max_attempts, status, last_error, run_at \
+                 FROM assistant_queue_jobs WHERE tenant_id = ? ORDER BY run_at DESC LIMIT ?",
             )
+            .bind(self.tenant_id())
             .bind(limit.max(1))
             .fetch_all(self.pool())
             .await?
@@ -145,26 +172,35 @@ impl SqliteStore {
     }
 
     pub async fn assistant_queue_stats(&self) -> Result<AssistantQueueStats> {
-        let pending: i64 =
-            sqlx::query_scalar("SELECT COUNT(1) FROM assistant_queue_jobs WHERE status='pending'")
-                .fetch_one(self.pool())
-                .await?;
-        let running: i64 =
-            sqlx::query_scalar("SELECT COUNT(1) FROM assistant_queue_jobs WHERE status='running'")
-                .fetch_one(self.pool())
-                .await?;
-        let done: i64 =
-            sqlx::query_scalar("SELECT COUNT(1) FROM assistant_queue_jobs WHERE status='done'")
-                .fetch_one(self.pool())
-                .await?;
-        let failed: i64 =
-            sqlx::query_scalar("SELECT COUNT(1) FROM assistant_queue_jobs WHERE status='failed'")
-                .fetch_one(self.pool())
-                .await?;
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE tenant_id = ? AND status='pending'",
+        )
+        .bind(self.tenant_id())
+        .fetch_one(self.pool())
+        .await?;
+        let running: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE tenant_id = ? AND status='running'",
+        )
+        .bind(self.tenant_id())
+        .fetch_one(self.pool())
+        .await?;
+        let done: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE tenant_id = ? AND status='done'",
+        )
+        .bind(self.tenant_id())
+        .fetch_one(self.pool())
+        .await?;
+        let failed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE tenant_id = ? AND status='failed'",
+        )
+        .bind(self.tenant_id())
+        .fetch_one(self.pool())
+        .await?;
         let now = Utc::now().to_rfc3339();
         let due_pending: i64 = sqlx::query_scalar(
-            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE status='pending' AND run_at <= ?",
+            "SELECT COUNT(1) FROM assistant_queue_jobs WHERE tenant_id = ? AND status='pending' AND run_at <= ?",
         )
+        .bind(self.tenant_id())
         .bind(now)
         .fetch_one(self.pool())
         .await?;
@@ -182,15 +218,17 @@ impl SqliteStore {
         let result = sqlx::query(
             "UPDATE assistant_queue_jobs
              SET status='pending', attempts=0, run_at=?, last_error=NULL, updated_at=?
-             WHERE id IN (
+             WHERE tenant_id = ? AND id IN (
                  SELECT id FROM assistant_queue_jobs
-                 WHERE status='failed'
+                 WHERE tenant_id = ? AND status='failed'
                  ORDER BY updated_at DESC
                  LIMIT ?
              )",
         )
         .bind(&now)
         .bind(&now)
+        .bind(self.tenant_id())
+        .bind(self.tenant_id())
         .bind(limit.max(1))
         .execute(self.pool())
         .await?;

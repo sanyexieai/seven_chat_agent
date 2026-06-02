@@ -43,24 +43,29 @@ impl AgentRegistry {
     }
 
     pub async fn get(&self, friend_id: &str) -> Result<AgentHandle> {
-        if let Some(h) = self.handles.get(friend_id) {
+        let tenant_id = crate::tenant_context::active_tenant_or(self.store.tenant_id());
+        let cache_key = format!("{tenant_id}:{friend_id}");
+        if let Some(h) = self.handles.get(&cache_key) {
             return Ok(h.clone());
         }
-        let friend = self
-            .store
+        let scoped = self.store.for_tenant(&tenant_id);
+        let friend = scoped
             .get_friend(friend_id)
             .await?
             .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
-        let handle = self.build(friend)?;
-        self.handles.insert(friend_id.into(), handle.clone());
+        let handle = self.build(friend, scoped)?;
+        self.handles.insert(cache_key, handle.clone());
         Ok(handle)
     }
 
     pub fn invalidate(&self, friend_id: &str) {
         self.handles.remove(friend_id);
+        let suffix = format!(":{friend_id}");
+        self.handles.retain(|k, _| !k.ends_with(&suffix));
     }
 
-    fn build(&self, friend: Friend) -> Result<AgentHandle> {
+    fn build(&self, friend: Friend, store: SqliteStore) -> Result<AgentHandle> {
+        let store = Arc::new(store);
         match friend.backend_kind {
             BackendKind::Human => Ok(Arc::new(HumanAgent::new(friend))),
             BackendKind::Pty => {
@@ -69,7 +74,7 @@ impl AgentRegistry {
                 if is_external_cli_preset(&cfg) {
                     Ok(Arc::new(PtyAgent::new(
                         friend,
-                        self.store.clone(),
+                        store,
                         self.providers.clone(),
                         self.judge.clone(),
                         self.cli_relay.clone(),
@@ -77,7 +82,7 @@ impl AgentRegistry {
                 } else if pty_preset_is_worker_bee(&cfg) {
                     Ok(Arc::new(UnifiedAgent::new(
                         friend,
-                        self.store.clone(),
+                        store,
                         self.providers.clone(),
                         self.judge.clone(),
                     )?))
@@ -89,7 +94,7 @@ impl AgentRegistry {
             }
             BackendKind::Assistant | BackendKind::Api => Ok(Arc::new(UnifiedAgent::new(
                 friend,
-                self.store.clone(),
+                store,
                 self.providers.clone(),
                 self.judge.clone(),
             )?)),

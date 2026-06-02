@@ -187,11 +187,11 @@ impl MessageDispatcher {
             AssistantMode::Delegate => {}
         }
 
-        let assistant_id = match self.store.group_assistant_member_id(&group.id).await? {
+        let assistant_id = match self.dispatch_store().group_assistant_member_id(&group.id).await? {
             Some(id) => id,
             None => return Ok(()),
         };
-        let friend = match self.store.get_friend(&assistant_id).await? {
+        let friend = match self.dispatch_store().get_friend(&assistant_id).await? {
             Some(f) if f.enabled => f,
             _ => return Ok(()),
         };
@@ -205,11 +205,11 @@ impl MessageDispatcher {
             return Ok(());
         }
 
-        let member_configs = self.store.list_group_member_configs(&group.id).await?;
-        let experts: Vec<Friend> = load_expert_friends(&self.store, &member_configs).await?;
+        let member_configs = self.dispatch_store().list_group_member_configs(&group.id).await?;
+        let experts: Vec<Friend> = load_expert_friends(&self.dispatch_store(), &member_configs).await?;
 
         let detected = classify_autonomy_for_message(
-            &self.store,
+            &self.dispatch_store(),
             &self.providers,
             &ast,
             &user_msg.content,
@@ -225,7 +225,7 @@ impl MessageDispatcher {
             .ok_or_else(|| Error::not_found("conversation"))?;
 
         let agent = self.agents.get(&friend.id).await?;
-        let history = self.store.recent_messages(conv_id, 60).await?;
+        let history = self.dispatch_store().recent_messages(conv_id, 60).await?;
         let expert_summary = summarize_expert_turn(&history, &friend.id);
         let mut group_for_ctx = group.clone();
         group_for_ctx.settings.assistant = ast.clone();
@@ -237,6 +237,7 @@ impl MessageDispatcher {
             self_friend: friend.clone(),
             peers: experts,
             user_attachments: user_msg.attachments.clone(),
+            member_group_local_path: None,
         };
         let prompt = build_delegate_prompt(
             group,
@@ -246,7 +247,16 @@ impl MessageDispatcher {
             owner_attention,
         );
 
-        // 代理人始终在群内代主人发言且为 done，不占用 waiting_human 阻断专家接话。
+        // 代理人代发：DNA strict 时改为 waiting_human，需主人确认（L3 动作门）。
+        let dna = self.dispatch_store().get_agent_dna().await.unwrap_or_default();
+        let delegate_needs_confirm =
+            crate::agent_dna::dna_requires_delegate_confirmation(&dna) && !owner_attention;
+        let final_status = if delegate_needs_confirm {
+            MessageStatus::WaitingHuman
+        } else {
+            MessageStatus::Done
+        };
+
         if let Some(reply) = self
             .stream_one_reply_with_options(
                 &conv,
@@ -258,13 +268,13 @@ impl MessageDispatcher {
                 &prompt,
                 StreamReplyOptions {
                     on_behalf_of_user: true,
-                    final_status: MessageStatus::Done,
+                    final_status,
                 },
             )
             .await?
         {
             record_group_delegate_memory(
-                &self.store,
+                &self.dispatch_store(),
                 group,
                 user_msg,
                 &reply,

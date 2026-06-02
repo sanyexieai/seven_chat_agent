@@ -24,7 +24,7 @@ impl MessageDispatcher {
 
         let member_ids: Vec<String> = members.iter().map(|m| m.id.clone()).collect();
         let readiness = validate_group_task_flow_readiness(
-            &self.store,
+            &self.dispatch_store(),
             &self.judge.provider_registry(),
             settings,
             &member_ids,
@@ -169,7 +169,7 @@ impl MessageDispatcher {
         });
 
         let agent = self.agents.get(&leader.id).await?;
-        let history = self.store.recent_messages(&conv.id, 60).await?;
+        let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
         let ctx = ChatContext {
             conversation_id: conv.id.clone(),
             group_id: Some(conv.target_id.clone()),
@@ -178,6 +178,7 @@ impl MessageDispatcher {
             self_friend: leader.clone(),
             peers: agents.iter().filter(|m| m.id != leader.id).cloned().collect(),
             user_attachments: user_msg.attachments.clone(),
+            member_group_local_path: None,
         };
         let plan_block = if plan_text.is_empty() {
             "（无单独计划稿，请边计划边执行）".to_string()
@@ -222,7 +223,7 @@ impl MessageDispatcher {
                     .filter(|m| m.id != friend.id)
                     .cloned()
                     .collect();
-                let history = self.store.recent_messages(&conv.id, 40).await?;
+                let history = self.dispatch_store().recent_messages(&conv.id, 40).await?;
                 let ctx = ChatContext {
                     conversation_id: conv.id.clone(),
                     group_id: Some(conv.target_id.clone()),
@@ -231,6 +232,7 @@ impl MessageDispatcher {
                     self_friend: friend.clone(),
                     peers,
                     user_attachments: user_msg.attachments.clone(),
+                    member_group_local_path: None,
                 };
                 let others = peer_names
                     .iter()
@@ -430,7 +432,7 @@ impl MessageDispatcher {
         });
 
         let agent = self.agents.get(&leader.id).await?;
-        let history = self.store.recent_messages(&conv.id, 60).await?;
+        let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
         let ctx = ChatContext {
             conversation_id: conv.id.clone(),
             group_id: Some(conv.target_id.clone()),
@@ -439,6 +441,7 @@ impl MessageDispatcher {
             self_friend: leader.clone(),
             peers: agents.iter().filter(|m| m.id != leader.id).cloned().collect(),
             user_attachments: user_msg.attachments.clone(),
+            member_group_local_path: None,
         };
         let plan_prompt = format!(
             "你是负责人「{}」。任命/选举理由：{}\n\n用户任务：\n{}\n\n竞选摘要：\n{}\n\n\
@@ -470,7 +473,7 @@ impl MessageDispatcher {
             });
             for member in agents.iter().filter(|m| m.id != leader.id) {
                 let agent = self.agents.get(&member.id).await?;
-                let history = self.store.recent_messages(&conv.id, 60).await?;
+                let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
                 let ctx = ChatContext {
                     conversation_id: conv.id.clone(),
                     group_id: Some(conv.target_id.clone()),
@@ -479,6 +482,7 @@ impl MessageDispatcher {
                     self_friend: member.clone(),
                     peers: vec![leader.clone()],
                     user_attachments: user_msg.attachments.clone(),
+                    member_group_local_path: None,
                 };
                 let prompt = format!(
                     "负责人「{}」发布了计划：\n{}\n\n你是「{}」。请用 1–3 句话评议：是否同意、需补充什么、是否愿意配合（不要抢执行权）。",

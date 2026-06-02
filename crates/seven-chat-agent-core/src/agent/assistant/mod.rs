@@ -131,7 +131,7 @@ impl AssistantAgent {
             }
         }
 
-        s
+        self.store.prepend_tenant_dna(&s).await.unwrap_or(s)
     }
 
     fn vision_enabled(&self) -> bool {
@@ -492,7 +492,13 @@ impl Agent for AssistantAgent {
                     }
                 }
                 if global.evolution_enabled {
-                    if let Err(e) = assistant.reflect(&turn_id, &prompt_for_post, &full).await {
+                    if !store.evolution_budget_available(&global) {
+                        tracing::info!(
+                            used = global.evolution_tokens_used,
+                            cap = store.evolution_budget_cap(&global),
+                            "evolution token budget exhausted, skip assistant reflect"
+                        );
+                    } else if let Err(e) = assistant.reflect(&turn_id, &prompt_for_post, &full).await {
                         tracing::warn!(err=%e, "assistant.reflect failed");
                     }
                 }

@@ -61,6 +61,12 @@ const defaultAssistant: GroupAssistantSettings = {
   im_writeback: defaultImWriteback,
 };
 
+const PRIMARY_WORKSPACE_KEY = "primary";
+
+function isRelayFriend(f: { backend_config?: Record<string, unknown> }) {
+  return f.backend_config?.execution_mode === "relay";
+}
+
 const defaults: GroupSettings = {
   judge_threshold: defaultJudge.threshold,
   judge: defaultJudge,
@@ -108,6 +114,10 @@ export function GroupEditor({ groupId, onClose }: Props) {
   const [policyTemplates, setPolicyTemplates] = useState<
     AssistantPolicyTemplate[]
   >([]);
+  const [memberLocalPaths, setMemberLocalPaths] = useState<Record<string, string>>(
+    {},
+  );
+  const [gitUrl, setGitUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -131,6 +141,8 @@ export function GroupEditor({ groupId, onClose }: Props) {
       setName("");
       setMemberIds(new Set());
       setMemberJudges({});
+      setMemberLocalPaths({});
+      setGitUrl("");
       setSettings(defaults);
       return;
     }
@@ -152,6 +164,12 @@ export function GroupEditor({ groupId, onClose }: Props) {
         }
       }
       setMemberJudges(judges);
+      const paths: Record<string, string> = {};
+      for (const b of bundle.member_bindings ?? []) {
+        if (b.local_path) paths[b.friend_id] = b.local_path;
+      }
+      setMemberLocalPaths(paths);
+      setGitUrl(bundle.workspaces?.[0]?.git_url ?? "");
       setSettings(normalizeSettings(bundle.group.settings));
     });
   }, [groupId]);
@@ -210,12 +228,44 @@ export function GroupEditor({ groupId, onClose }: Props) {
       if (aid) {
         members.push({ friend_id: aid, role: "assistant" });
       }
+      const workspaces = gitUrl.trim()
+        ? [
+            {
+              name: "主仓库",
+              kind: "git" as const,
+              git_url: gitUrl.trim(),
+              default_branch: "main",
+              logical_key: PRIMARY_WORKSPACE_KEY,
+            },
+          ]
+        : [];
+      const member_bindings = Array.from(memberIds).flatMap((friend_id) => {
+        const f = friends.find((x) => x.id === friend_id);
+        if (!f || !gitUrl.trim()) return [];
+        const path = memberLocalPaths[friend_id]?.trim();
+        const relay = isRelayFriend(f);
+        if (!relay && !path) return [];
+        return [
+          {
+            group_workspace_id: PRIMARY_WORKSPACE_KEY,
+            friend_id,
+            execution_mode: relay ? "relay" : "local",
+            relay_id:
+              relay && typeof f.backend_config?.relay_id === "string"
+                ? f.backend_config.relay_id
+                : null,
+            local_path: path || null,
+          },
+        ];
+      });
       const result = await api.upsertGroup({
         id: groupId ?? undefined,
         name: name.trim(),
         avatar: null,
         settings: toSave,
         members,
+        workspaces,
+        member_bindings,
       });
       await reloadGroups();
       await selectGroup(result.group.id);
@@ -492,6 +542,11 @@ export function GroupEditor({ groupId, onClose }: Props) {
                       />
                       <span className="text-sm font-medium">
                         {f.name}
+                        {isRelayFriend(f) && (
+                          <span className="ml-1" title="远程 CLI relay">
+                            🛰
+                          </span>
+                        )}
                         <span className="ml-1 text-xs font-normal text-slate-500">
                           · {f.backend_kind}
                         </span>
@@ -543,6 +598,30 @@ export function GroupEditor({ groupId, onClose }: Props) {
                                   use_group_default: false,
                                   threshold: Number(e.target.value),
                                 })
+                              }
+                            />
+                          </div>
+                        )}
+                        {inGroup && gitUrl.trim() && f.backend_kind === "pty" && (
+                          <div className="mt-2 border-t border-slate-100 pt-2 pl-6">
+                            <label className="label text-xs">
+                              {isRelayFriend(f)
+                                ? "远程执行目录（本机路径）"
+                                : "本机执行目录（可选）"}
+                            </label>
+                            <input
+                              className="input font-mono text-xs"
+                              value={memberLocalPaths[f.id] ?? ""}
+                              onChange={(e) =>
+                                setMemberLocalPaths((prev) => ({
+                                  ...prev,
+                                  [f.id]: e.target.value,
+                                }))
+                              }
+                              placeholder={
+                                isRelayFriend(f)
+                                  ? "/home/you/projects/my-repo"
+                                  : "留空则用群服务端目录"
                               }
                             />
                           </div>
@@ -1026,7 +1105,20 @@ export function GroupEditor({ groupId, onClose }: Props) {
               </div>
             </div>
             <div className="mt-3">
-              <label className="label">群共享 CLI 工作目录</label>
+              <label className="label">群 Git 仓库（逻辑项目）</label>
+              <input
+                className="input font-mono text-xs"
+                value={gitUrl}
+                onChange={(e) => setGitUrl(e.target.value)}
+                placeholder="https://github.com/org/repo.git（可选）"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                多机协作以 Git 为真相源；远程 CLI（🛰）成员在各自机器上 clone
+                后填写「远程执行目录」，不会使用下方服务端群目录。
+              </p>
+            </div>
+            <div className="mt-3">
+              <label className="label">群共享 CLI 工作目录（仅 local 成员）</label>
               <input
                 className="input font-mono text-xs"
                 value={settings.cli_workspace ?? ""}
@@ -1036,10 +1128,10 @@ export function GroupEditor({ groupId, onClose }: Props) {
                     cli_workspace: e.target.value.trim() || null,
                   })
                 }
-                placeholder="留空则 data/cli-workspaces/groups/<群ID>（群内所有 Agent 共用）"
+                placeholder="留空则 data/cli-workspaces/groups/<群ID>"
               />
               <p className="mt-1 text-xs text-slate-500">
-                群聊中 Codex / Claude / 工蜂等在本目录协作；私聊仍用各好友自己的工作区。
+                仅在本服务器执行的 Pty 成员使用；relay 成员忽略此目录。
               </p>
             </div>
             <div className="mt-3">

@@ -232,6 +232,15 @@ fn sync_memory_from_worker_bee(p: &mut RuntimeProfile) {
 fn resolve_workspace(friend: &Friend, ctx: Option<&crate::agent::ChatContext>) -> crate::Result<Option<String>> {
     let cfg: PtyBackendConfig =
         serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
+    if crate::friend_cli::pty_execution_is_relay(&cfg) {
+        return Ok(Some(crate::friend_cli::resolve_cli_workspace(
+            &cfg,
+            &friend.id,
+            ctx.and_then(|c| c.group_id.as_deref()),
+            ctx.and_then(|c| c.group_cli_workspace()),
+            ctx.and_then(|c| c.member_group_local_path.as_deref()),
+        )?));
+    }
     if let Some(ctx) = ctx {
         if ctx.group_id.is_some() {
             return Ok(Some(crate::friend_cli::resolve_cli_workspace(
@@ -239,6 +248,7 @@ fn resolve_workspace(friend: &Friend, ctx: Option<&crate::agent::ChatContext>) -
                 &friend.id,
                 ctx.group_id.as_deref(),
                 ctx.group_cli_workspace(),
+                ctx.member_group_local_path.as_deref(),
             )?));
         }
     }

@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::domain::{
     Group, GroupMemberConfig, GroupMemberRole, GroupSettings, BUILTIN_HEX_ASSISTANT_ID,
 };
+use crate::store::group_workspace::{UpsertGroupMemberBinding, UpsertGroupWorkspace};
 use crate::store::{parse_dt, SqliteStore};
 use crate::{Error, Result};
 
@@ -46,13 +47,18 @@ pub struct UpsertGroup {
     /// 兼容旧前端：仅成员 id 列表。
     #[serde(default)]
     pub member_ids: Vec<String>,
+    #[serde(default)]
+    pub workspaces: Vec<UpsertGroupWorkspace>,
+    #[serde(default)]
+    pub member_bindings: Vec<UpsertGroupMemberBinding>,
 }
 
 impl SqliteStore {
     pub async fn list_groups(&self) -> Result<Vec<Group>> {
         let rows = sqlx::query_as::<_, GroupRow>(
-            "SELECT id, name, avatar, settings, created_at FROM groups ORDER BY created_at DESC",
+            "SELECT id, name, avatar, settings, created_at FROM groups WHERE tenant_id = ? ORDER BY created_at DESC",
         )
+        .bind(self.tenant_id())
         .fetch_all(self.pool())
         .await?;
         rows.into_iter().map(|r| r.into_group()).collect()
@@ -60,9 +66,10 @@ impl SqliteStore {
 
     pub async fn get_group(&self, id: &str) -> Result<Option<Group>> {
         let row = sqlx::query_as::<_, GroupRow>(
-            "SELECT id, name, avatar, settings, created_at FROM groups WHERE id = ?",
+            "SELECT id, name, avatar, settings, created_at FROM groups WHERE id = ? AND tenant_id = ?",
         )
         .bind(id)
+        .bind(self.tenant_id())
         .fetch_optional(self.pool())
         .await?;
         row.map(|r| r.into_group()).transpose()
@@ -174,12 +181,13 @@ impl SqliteStore {
             .await?;
         if exists == 0 {
             sqlx::query(
-                "INSERT INTO groups (id, name, avatar, settings, created_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO groups (id, name, avatar, settings, tenant_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(&id)
             .bind(&req.name)
             .bind(&req.avatar)
             .bind(&settings_json)
+            .bind(self.tenant_id())
             .bind(&now)
             .execute(self.pool())
             .await?;
@@ -236,6 +244,11 @@ impl SqliteStore {
 
         self.get_or_create_group_conversation(&id).await?;
 
+        if !req.workspaces.is_empty() || !req.member_bindings.is_empty() {
+            self.sync_group_workspaces_and_bindings(&id, &req.workspaces, &req.member_bindings)
+                .await?;
+        }
+
         self.get_group(&id)
             .await?
             .ok_or_else(|| Error::not_found("group after upsert"))
@@ -246,9 +259,10 @@ impl SqliteStore {
         group_id: &str,
     ) -> Result<crate::domain::Conversation> {
         let existing = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM conversations WHERE kind = 'group' AND target_id = ?",
+            "SELECT id FROM conversations WHERE kind = 'group' AND target_id = ? AND tenant_id = ?",
         )
         .bind(group_id)
+        .bind(self.tenant_id())
         .fetch_optional(self.pool())
         .await?;
         if let Some(id) = existing {
@@ -260,10 +274,11 @@ impl SqliteStore {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO conversations (id, kind, target_id, created_at) VALUES (?, 'group', ?, ?)",
+            "INSERT INTO conversations (id, kind, target_id, tenant_id, created_at) VALUES (?, 'group', ?, ?, ?)",
         )
         .bind(&id)
         .bind(group_id)
+        .bind(self.tenant_id())
         .bind(&now)
         .execute(self.pool())
         .await?;

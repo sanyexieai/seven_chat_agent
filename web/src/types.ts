@@ -51,6 +51,8 @@ export interface CliRelayNode {
   relay_id: string;
   name: string;
   host_label: string | null;
+  /** 转发端上报的工作区根目录 */
+  workspace_root?: string | null;
   online: boolean;
   connected_at: string;
 }
@@ -96,6 +98,7 @@ export interface Workspace {
   id: string;
   tenant_id: string;
   owner_friend_id: string;
+  owner_user_id?: string | null;
   name: string;
   path: string;
   is_default: boolean;
@@ -111,6 +114,7 @@ export interface Conversation {
   target_id: string;
   title: string | null;
   last_message_at: string | null;
+  scope_user_id?: string | null;
   created_at: string;
 }
 
@@ -228,6 +232,9 @@ export interface AssistantGlobalSettings {
   embedding_model?: string | null;
   ephemeral_ttl_hours?: number;
   evolution_enabled: boolean;
+  evolution_token_budget_ratio?: number;
+  evolution_token_budget_absolute?: number;
+  evolution_tokens_used?: number;
   auto_extract_memories: boolean;
   proactive_enabled: boolean;
   proactive_batch_size: number;
@@ -238,6 +245,22 @@ export interface AssistantGlobalSettings {
   budget_period_ym?: string | null;
   tool_whitelist: string[];
   observe_streak?: number;
+  updated_at?: string | null;
+}
+
+export interface AgentDnaPrinciple {
+  id: string;
+  text: string;
+  required?: boolean;
+}
+
+export interface AgentDna {
+  version: number;
+  enabled: boolean;
+  preamble: string;
+  principles: AgentDnaPrinciple[];
+  style?: { tone: string; language: string };
+  enforcement?: { level: string };
   updated_at?: string | null;
 }
 
@@ -324,6 +347,28 @@ export interface GroupMemberConfig {
   judge_override?: MemberJudgeOverride | null;
 }
 
+export interface GroupWorkspace {
+  id: string;
+  group_id: string;
+  tenant_id: string;
+  name: string;
+  kind: string;
+  git_url?: string | null;
+  default_branch?: string | null;
+  logical_key?: string | null;
+  created_at: string;
+}
+
+export interface GroupMemberBinding {
+  id: string;
+  group_id: string;
+  group_workspace_id: string;
+  friend_id: string;
+  execution_mode?: string | null;
+  relay_id?: string | null;
+  local_path?: string | null;
+}
+
 export interface GroupTaskFlowReadiness {
   task_flow_enabled: boolean;
   ready: boolean;
@@ -342,6 +387,8 @@ export interface GroupBundle {
   assistant_member_id?: string | null;
   assistant_resolved?: GroupAssistantSettings;
   members?: GroupMemberConfig[];
+  workspaces?: GroupWorkspace[];
+  member_bindings?: GroupMemberBinding[];
   conversation_id?: string;
   task_flow_readiness?: GroupTaskFlowReadiness;
 }

@@ -56,6 +56,8 @@ pub struct ChatContext {
     pub peers: Vec<Friend>,
     /// 当前轮用户消息的附件（用于多模态）。
     pub user_attachments: Vec<MessageAttachment>,
+    /// 群成员 binding 上的 local_path（relay/local 执行 cwd）。
+    pub member_group_local_path: Option<String>,
 }
 
 impl ChatContext {
@@ -63,6 +65,18 @@ impl ChatContext {
         self.group_settings
             .as_ref()
             .and_then(|g| g.cli_workspace.as_deref())
+    }
+
+    pub async fn with_member_binding(
+        mut self,
+        store: &crate::store::SqliteStore,
+    ) -> crate::Result<Self> {
+        if let Some(gid) = self.group_id.as_deref() {
+            self.member_group_local_path = store
+                .resolve_member_group_local_path(gid, &self.self_friend.id)
+                .await?;
+        }
+        Ok(self)
     }
 }
 

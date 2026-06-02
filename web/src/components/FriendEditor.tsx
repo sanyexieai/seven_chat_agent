@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type CliAuthStatus } from "../api/client";
 import { FriendWorkspacesSection } from "./FriendWorkspacesSection";
+import { FriendAgentMemoryTab } from "./FriendAgentMemoryTab";
+import { FriendAgentDnaTab } from "./FriendAgentDnaTab";
 import { providerDisplayName } from "../providerDefaults";
 import { useChat } from "../stores/chat";
 import type {
@@ -23,7 +25,17 @@ export function FriendEditor({ friendId, onClose }: Props) {
   const [providerBaseUrl, setProviderBaseUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [agentTab, setAgentTab] = useState<
+    "persona" | "capability" | "memory" | "workspace" | "dna"
+  >("persona");
   const canDelete = !!friendId && !draft.is_builtin;
+  const isWorkerBee =
+    draft.backend_kind === "pty" && draft.pty.preset === "worker-bee-cli";
+  const isExternalCli =
+    draft.backend_kind === "pty" &&
+    !!draft.pty.preset &&
+    draft.pty.preset !== "worker-bee-cli";
+  const showAgentTabs = !!friendId && draft.backend_kind === "pty";
   const workerBeeProvider = providers.find((p) => p.id === draft.pty.provider_id);
 
   useEffect(() => {
@@ -116,13 +128,45 @@ export function FriendEditor({ friendId, onClose }: Props) {
       <div className="card flex max-h-[90vh] w-[640px] flex-col overflow-hidden p-0">
         <header className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
           <h2 className="text-base font-semibold">
-            {friendId ? "编辑好友" : "添加好友"}
+            {friendId
+              ? showAgentTabs
+                ? "Agent 面板"
+                : "编辑好友"
+              : "添加好友"}
           </h2>
           <button className="btn-ghost" onClick={onClose}>
             ×
           </button>
         </header>
+        {showAgentTabs && (
+          <nav className="flex flex-wrap gap-1 border-b border-slate-200 px-5 py-2">
+            {(
+              [
+                ["persona", "人设"],
+                ["capability", "能力"],
+                ...(isWorkerBee ? [["memory", "记忆"] as const] : []),
+                ["workspace", "工作区"],
+                ["dna", "DNA"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={`rounded px-2 py-1 text-xs ${
+                  agentTab === id
+                    ? "bg-honey-50 font-medium text-honey-800"
+                    : "text-slate-500 hover:bg-slate-100"
+                }`}
+                onClick={() => setAgentTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+        )}
         <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          {(!showAgentTabs || agentTab === "persona") && (
+            <>
           <div>
             <label className="label">名字</label>
             <input
@@ -186,7 +230,13 @@ export function FriendEditor({ friendId, onClose }: Props) {
               API 均在下方配置，与内置 Hex 相同模型）。
             </p>
           </div>
-          {draft.backend_kind === "pty" && (
+            </>
+          )}
+          {draft.backend_kind === "human" && (!showAgentTabs || agentTab === "persona") && (
+            <HumanConfigEditor draft={draft} setDraft={setDraft} />
+          )}
+          {draft.backend_kind === "pty" &&
+            (!showAgentTabs || agentTab === "capability") && (
             <PtyConfigEditor
               friendId={friendId}
               draft={draft}
@@ -195,10 +245,34 @@ export function FriendEditor({ friendId, onClose }: Props) {
               providerKeys={providerKeys}
               providerBaseUrl={providerBaseUrl}
               onProviderBaseUrlChange={setProviderBaseUrl}
+              hideWorkspaces={showAgentTabs}
             />
           )}
-          {draft.backend_kind === "human" && (
-            <HumanConfigEditor draft={draft} setDraft={setDraft} />
+          {showAgentTabs && agentTab === "memory" && friendId && isWorkerBee && (
+            <FriendAgentMemoryTab friendId={friendId} />
+          )}
+          {showAgentTabs && agentTab === "workspace" && (
+            <div className="space-y-3">
+              {friendId ? (
+                <FriendWorkspacesSection friendId={friendId} />
+              ) : (
+                <p className="text-xs text-slate-500">保存好友后可管理工作区。</p>
+              )}
+              <div>
+                <label className="label">工作目录（兼容 / 覆盖默认工作区）</label>
+                <input
+                  className="input font-mono text-xs"
+                  value={draft.pty.cwd}
+                  onChange={(e) =>
+                    setDraft({ ...draft, pty: { ...draft.pty, cwd: e.target.value } })
+                  }
+                  placeholder="留空则使用当前选中的工作区路径"
+                />
+              </div>
+            </div>
+          )}
+          {showAgentTabs && agentTab === "dna" && (
+            <FriendAgentDnaTab externalCli={isExternalCli} />
           )}
           {error && (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -729,6 +803,7 @@ function CliRelayConfigPanel({
   const [relays, setRelays] = useState<CliRelayNode[]>([]);
   const [relaysBusy, setRelaysBusy] = useState(false);
   const [pairingToken, setPairingToken] = useState<string | null>(null);
+  const [relayWsUrl, setRelayWsUrl] = useState<string | null>(null);
   const [pairingBusy, setPairingBusy] = useState(false);
   const [relayError, setRelayError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -757,8 +832,9 @@ function CliRelayConfigPanel({
     setPairingBusy(true);
     setRelayError(null);
     try {
-      const { pairing_token } = await api.createCliRelayPairingToken();
+      const { pairing_token, relay_ws_url } = await api.createCliRelayPairingToken();
       setPairingToken(pairing_token);
+      setRelayWsUrl(relay_ws_url);
       setCopied(false);
     } catch (e: any) {
       setRelayError(e.message || String(e));
@@ -778,10 +854,10 @@ function CliRelayConfigPanel({
     }
   }
 
-  const wsRelayUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/cli-relay`;
-  const relayCmd = pairingToken
-    ? `cargo run -p seven-chat-agent-cli-relay -- --url ${wsRelayUrl} --pairing-token ${pairingToken} --name my-pc`
-    : null;
+  const relayCmd =
+    pairingToken && relayWsUrl
+      ? `cargo run -p seven-chat-agent-cli-relay -- --url '${relayWsUrl}' --pairing-token ${pairingToken} --name my-pc`
+      : null;
 
   return (
     <div className="space-y-3 rounded-md border border-sky-200 bg-sky-50/80 p-3">
@@ -840,11 +916,17 @@ function CliRelayConfigPanel({
                 </button>
               </div>
               <p className="text-xs text-sky-900">
-                在<strong>远程电脑</strong>项目目录执行（需已安装 Rust 与本机 CLI）：
+                在<strong>远程电脑</strong>项目目录执行（需已安装 Rust 与本机 CLI）。
+                请使用下面<strong>后端直连</strong>地址（开发时浏览器可能是 18738，CLI 须连 18737）：
               </p>
+              <p className="break-all font-mono text-[11px] text-sky-800">{relayWsUrl}</p>
               <pre className="overflow-x-auto rounded bg-slate-900 p-2 text-[11px] text-slate-100">
                 {relayCmd}
               </pre>
+              <p className="text-xs text-amber-800">
+                配对码一次性且约 15 分钟有效；服务端重启后需重新生成。终端应出现{" "}
+                <code>paired with server</code>，再在下方点「刷新在线节点」。
+              </p>
             </div>
           )}
           <div>
@@ -874,6 +956,21 @@ function CliRelayConfigPanel({
                 当前绑定的节点未在线，对话将失败直至重新连接。
               </p>
             )}
+            {relayId && (() => {
+              const node = relays.find((r) => r.relay_id === relayId);
+              if (!node?.workspace_root) return null;
+              return (
+                <p className="mt-2 text-xs text-sky-900">
+                  远程工作区根目录：<code className="break-all">{node.workspace_root}</code>
+                  <br />
+                  本好友目录约定为{" "}
+                  <code className="break-all">
+                    {node.workspace_root.replace(/\/$/, "")}/friends/&lt;好友ID&gt;
+                  </code>
+                  （由转发程序在远程自动创建）
+                </p>
+              );
+            })()}
           </div>
         </>
       )}
@@ -1160,6 +1257,7 @@ function PtyConfigEditor({
   providerKeys,
   providerBaseUrl,
   onProviderBaseUrlChange,
+  hideWorkspaces = false,
 }: {
   friendId: string | null;
   draft: FriendDraft;
@@ -1168,6 +1266,7 @@ function PtyConfigEditor({
   providerKeys: ProviderKey[];
   providerBaseUrl: string;
   onProviderBaseUrlChange: (url: string) => void;
+  hideWorkspaces?: boolean;
 }) {
   const isCustom = draft.pty.preset === "custom";
   const isWorkerBee = draft.pty.preset === "worker-bee-cli";
@@ -1388,14 +1487,15 @@ function PtyConfigEditor({
           </div>
         </div>
       )}
-      {friendId ? (
+      {friendId && !hideWorkspaces ? (
         <FriendWorkspacesSection friendId={friendId} />
-      ) : (
+      ) : !hideWorkspaces ? (
         <p className="text-xs text-slate-500">
           保存好友后可在此管理多个工作区；首个默认目录为{" "}
           <code>data/cli-workspaces/&lt;好友ID&gt;</code>。
         </p>
-      )}
+      ) : null}
+      {!hideWorkspaces && (
       <div>
         <label className="label">工作目录（兼容 / 覆盖默认工作区）</label>
         <input
@@ -1407,6 +1507,7 @@ function PtyConfigEditor({
           placeholder="留空则使用当前选中的工作区路径；群聊请在群设置里配置共享目录"
         />
       </div>
+      )}
       {isCustom ? (
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -1452,8 +1553,10 @@ function PtyConfigEditor({
           </>
         ) : draft.pty.execution_mode === "relay" ? (
           <>
-            外部 CLI 经转发程序在远程本机执行；工作目录为远程机器上的路径（留空则服务端配置的
-            cwd 规则，建议在远程使用绝对路径）。
+            外部 CLI 经转发程序在远程本机执行；<strong>工作目录由转发程序决定</strong>
+            （默认 <code>~/.local/share/seven-chat-agent/cli-workspaces/friends/&lt;好友ID&gt;</code>
+            ，可通过环境变量 <code>SEVEN_CHAT_AGENT_RELAY_WORKSPACE_ROOT</code> 或启动参数{" "}
+            <code>--workspace-root</code> 修改）。配对后上方会显示远程上报的路径。
           </>
         ) : (
           <>

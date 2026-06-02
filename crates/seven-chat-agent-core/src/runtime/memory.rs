@@ -21,6 +21,10 @@ impl MemoryService {
         }
     }
 
+    pub fn store(&self) -> &Arc<SqliteStore> {
+        &self.store
+    }
+
     pub async fn build_system_prompt(
         &self,
         friend: &Friend,
@@ -102,7 +106,7 @@ impl MemoryService {
             }
         }
 
-        Ok(s)
+        self.store.prepend_tenant_dna(&s).await
     }
 
     pub fn build_messages(
@@ -260,7 +264,13 @@ impl MemoryService {
             }
         }
         if global.evolution_enabled {
-            if let Err(e) = self
+            if !self.store.evolution_budget_available(&global) {
+                tracing::info!(
+                    used = global.evolution_tokens_used,
+                    cap = self.store.evolution_budget_cap(&global),
+                    "evolution token budget exhausted, skip reflect"
+                );
+            } else if let Err(e) = self
                 .reflect(
                     friend_id,
                     turn_id,
@@ -447,10 +457,24 @@ impl MemoryService {
         req.response_format_json = true;
         let mut stream = provider.chat(req).await?;
         let mut raw = String::new();
+        let mut tokens_in: i64 = 0;
+        let mut tokens_out: i64 = 0;
         while let Some(item) = stream.next().await {
-            if let Ok(ProviderEvent::Token(t)) = item {
-                raw.push_str(&t);
+            match item {
+                Ok(ProviderEvent::Token(t)) => raw.push_str(&t),
+                Ok(ProviderEvent::Done { usage, .. }) => {
+                    tokens_in = usage.prompt_tokens;
+                    tokens_out = usage.completion_tokens;
+                }
+                _ => {}
             }
+        }
+        let used = (tokens_in.max(0) + tokens_out.max(0)) as u64;
+        if used == 0 {
+            let est = (prompt.len() + response.len() + raw.len()) as u64 / 4;
+            let _ = self.store.consume_evolution_tokens(est.max(1)).await;
+        } else {
+            let _ = self.store.consume_evolution_tokens(used).await;
         }
         let json = crate::llm_json::extract_json_object(&raw).unwrap_or(raw);
         let v: serde_json::Value = match serde_json::from_str(&json) {

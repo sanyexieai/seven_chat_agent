@@ -272,26 +272,47 @@ impl Agent for PtyAgent {
                 }
             };
 
-            match resolve_cli_workspace(
-                &cfg,
-                &friend_id,
-                ctx.group_id.as_deref(),
-                ctx.group_cli_workspace(),
-            ) {
-                Ok(ws) => {
-                    adapter.cwd = Some(ws.clone());
-                    cfg.cwd = Some(ws);
+            let member_local_path = if let Some(gid) = ctx.group_id.as_deref() {
+                store
+                    .resolve_member_group_local_path(gid, &friend_id)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+
+            let is_relay = pty_execution_is_relay(&cfg);
+
+            if is_relay {
+                if let Some(relay_id) = pty_relay_id(&cfg) {
+                    if let Some(ws) = cli_relay.workspace_path_for_friend(relay_id, &friend_id) {
+                        adapter.cwd = Some(ws);
+                    }
                 }
-                Err(e) => {
-                    yield AgentEvent::Error(e.to_string());
-                    return;
+            } else {
+                match resolve_cli_workspace(
+                    &cfg,
+                    &friend_id,
+                    ctx.group_id.as_deref(),
+                    ctx.group_cli_workspace(),
+                    member_local_path.as_deref(),
+                ) {
+                    Ok(ws) => {
+                        adapter.cwd = Some(ws.clone());
+                        cfg.cwd = Some(ws);
+                    }
+                    Err(e) => {
+                        yield AgentEvent::Error(e.to_string());
+                        return;
+                    }
                 }
             }
 
             let resume =
                 pty_cli_session_is_resume(&cfg) && external_cli_label(&adapter.label).is_some();
 
-            if resume {
+            if resume && !is_relay {
                 if adapter.label == "cursor" {
                     if let Err(e) =
                         ensure_cursor_chat_session(&adapter.cmd, &mut cfg, &store, &friend_id).await
@@ -317,7 +338,7 @@ impl Agent for PtyAgent {
             let raw_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
             let mut retried_fresh = false;
 
-            if pty_execution_is_relay(&cfg) {
+            if is_relay {
                 let relay_id = match pty_relay_id(&cfg) {
                     Some(id) => id.to_string(),
                     None => {
@@ -332,10 +353,18 @@ impl Agent for PtyAgent {
                 let preset = effective_pty_preset(&cfg);
                 let mut env = cfg.env.clone();
                 env.extend(cli_auth_env_pairs(&cfg, &store.vault));
+                let cwd_override = member_local_path.or_else(|| {
+                    cfg.cwd
+                        .as_ref()
+                        .filter(|p| !crate::friend_cli::looks_like_server_cli_workspace(p))
+                        .cloned()
+                });
                 let spec = RelayJobSpec {
                     preset,
                     prompt: composed_prompt.clone(),
-                    cwd: cfg.cwd.clone(),
+                    friend_id: friend_id.clone(),
+                    group_id: ctx.group_id.clone(),
+                    cwd_override,
                     cli_session_mode: cfg.cli_session_mode.clone(),
                     cli_session_id: cfg.cli_session_id.clone(),
                     env,
@@ -709,7 +738,7 @@ fn decode_chunk(bytes: &[u8], strip: bool) -> String {
 
 /// 私聊默认工作区（Agent 构造时用）；群聊在 `send` 时按 `ChatContext` 重算。
 fn resolve_pty_cwd(cfg: &PtyBackendConfig, friend_id: &str) -> Result<String> {
-    resolve_cli_workspace(cfg, friend_id, None, None)
+    resolve_cli_workspace(cfg, friend_id, None, None, None)
 }
 
 /// codex exec 除进程 `current_dir` 外还支持 `-C` 指定 agent 工作根目录。

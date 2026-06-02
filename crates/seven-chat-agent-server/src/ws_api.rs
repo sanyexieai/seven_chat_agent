@@ -64,10 +64,70 @@ async fn handle_method(
     params: serde_json::Value,
 ) -> std::result::Result<serde_json::Value, String> {
     let core = &state.core;
+    let store = if matches!(
+        method,
+        "authStatus"
+            | "register"
+            | "login"
+            | "previewTenantInvite"
+            | "createCliRelayPairingToken"
+            | "listCliRelays"
+    ) {
+        core.store.as_ref().clone()
+    } else {
+        resolve_tenant_store(state, &params).await?
+    };
     match method {
+        "authStatus" => Ok(serde_json::json!({
+            "auth_required": seven_chat_agent_core::auth::auth_required(),
+        })),
+        "register" => {
+            let body: seven_chat_agent_core::store::user::RegisterUser =
+                serde_json::from_value(params).map_err(|e| e.to_string())?;
+            let auth = store.register_user(body).await.map_err(|e| e.to_string())?;
+            core.providers
+                .reload_tenant(&auth.tenant_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "auth": auth }))
+        }
+        "login" => {
+            let body: seven_chat_agent_core::store::user::LoginUser =
+                serde_json::from_value(params).map_err(|e| e.to_string())?;
+            let auth = store.login_user(body).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "auth": auth }))
+        }
+        "logout" => {
+            let token = params
+                .get("auth_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "auth_token required".to_string())?;
+            store.logout_session(token).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "me" => {
+            let token = params
+                .get("auth_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "auth_token required".to_string())?;
+            let session = store
+                .resolve_session(token)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "invalid session".to_string())?;
+            let user = store
+                .get_user_by_id(&session.user_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "user not found".to_string())?;
+            Ok(serde_json::json!({
+                "user": user.public(),
+                "tenant_id": session.tenant_id,
+            }))
+        }
         "health" => Ok(serde_json::json!({ "ok": true })),
         "listFriends" => {
-            let friends = core.store.list_friends().await.map_err(|e| e.to_string())?;
+            let friends = store.list_friends().await.map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "friends": friends }))
         }
         "getFriend" => {
@@ -75,8 +135,7 @@ async fn handle_method(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "id required".to_string())?;
-            let friend = core
-                .store
+            let friend = store
                 .get_friend(id)
                 .await
                 .map_err(|e| e.to_string())?
@@ -90,7 +149,7 @@ async fn handle_method(
                 .ok_or_else(|| "id required".to_string())?;
             let cli_auth = core
                 .cli_oauth
-                .full_status(&core.store, id)
+                .full_status(&store, id)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "cli_auth": cli_auth }))
@@ -102,12 +161,12 @@ async fn handle_method(
                 .ok_or_else(|| "id required".to_string())?;
             let oauth = core
                 .cli_oauth
-                .start(&core.store, id)
+                .start(&store, id)
                 .await
                 .map_err(|e| e.to_string())?;
             let cli_auth = core
                 .cli_oauth
-                .full_status(&core.store, id)
+                .full_status(&store, id)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "oauth": oauth, "cli_auth": cli_auth }))
@@ -120,7 +179,7 @@ async fn handle_method(
             core.cli_oauth.cancel(id).await.map_err(|e| e.to_string())?;
             let cli_auth = core
                 .cli_oauth
-                .full_status(&core.store, id)
+                .full_status(&store, id)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "cli_auth": cli_auth }))
@@ -132,14 +191,14 @@ async fn handle_method(
                 .ok_or_else(|| "id required".to_string())?;
             let cli_auth = core
                 .cli_oauth
-                .logout(&core.store, id)
+                .logout(&store, id)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "cli_auth": cli_auth }))
         }
         "upsertFriend" => {
             let req: UpsertFriend = serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let friend = core.store.upsert_friend(req).await.map_err(|e| e.to_string())?;
+            let friend = store.upsert_friend(req).await.map_err(|e| e.to_string())?;
             core.agents.invalidate(&friend.id);
             Ok(serde_json::json!({ "friend": friend }))
         }
@@ -149,24 +208,21 @@ async fn handle_method(
                 .or_else(|| params.get("friend_id"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "id required".to_string())?;
-            core.store
+            store
                 .ensure_friend_workspaces(id)
                 .await
                 .map_err(|e| e.to_string())?;
-            let workspaces = core
-                .store
+            let workspaces = store
                 .list_workspaces_for_friend(id)
                 .await
                 .map_err(|e| e.to_string())?;
-            let friend = core
-                .store
-                .get_friend(id)
+            let active_workspace_id = store
+                .active_workspace_id_for_friend(id)
                 .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "friend not found".to_string())?;
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({
                 "workspaces": workspaces,
-                "active_workspace_id": friend.active_workspace_id,
+                "active_workspace_id": active_workspace_id,
             }))
         }
         "createFriendWorkspace" => {
@@ -186,8 +242,7 @@ async fn handle_method(
                     .and_then(|v| v.as_str())
                     .map(String::from),
             };
-            let ws = core
-                .store
+            let ws = store
                 .create_workspace(id, req)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -205,20 +260,18 @@ async fn handle_method(
                 .or_else(|| params.get("ws_id"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "workspace_id required".to_string())?;
-            core.store
+            store
                 .set_active_workspace(id, ws_id)
                 .await
                 .map_err(|e| e.to_string())?;
             core.agents.invalidate(id);
-            let friend = core
-                .store
-                .get_friend(id)
+            let active_workspace_id = store
+                .active_workspace_id_for_friend(id)
                 .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "friend not found".to_string())?;
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({
                 "ok": true,
-                "active_workspace_id": friend.active_workspace_id,
+                "active_workspace_id": active_workspace_id,
             }))
         }
         "listWorkspaceCliSessions" => {
@@ -231,8 +284,7 @@ async fn handle_method(
                 .or_else(|| params.get("ws_id"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "workspace_id required".to_string())?;
-            let ws = core
-                .store
+            let ws = store
                 .get_workspace(ws_id)
                 .await
                 .map_err(|e| e.to_string())?
@@ -240,8 +292,7 @@ async fn handle_method(
             if ws.owner_friend_id != friend_id {
                 return Err("workspace not found".to_string());
             }
-            let cli_sessions = core
-                .store
+            let cli_sessions = store
                 .list_cli_sessions(ws_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -261,8 +312,7 @@ async fn handle_method(
                 .get("session_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "session_id required".to_string())?;
-            let ws = core
-                .store
+            let ws = store
                 .get_workspace(ws_id)
                 .await
                 .map_err(|e| e.to_string())?
@@ -270,7 +320,7 @@ async fn handle_method(
             if ws.owner_friend_id != friend_id {
                 return Err("workspace not found".to_string());
             }
-            core.store
+            store
                 .set_active_cli_session(ws_id, session_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -295,8 +345,7 @@ async fn handle_method(
                 .get("ingest_memories")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let ws = core
-                .store
+            let ws = store
                 .get_workspace(ws_id)
                 .await
                 .map_err(|e| e.to_string())?
@@ -305,26 +354,22 @@ async fn handle_method(
                 return Err("workspace not found".to_string());
             }
             let report = match tool {
-                "codex" => core
-                    .store
+                "codex" => store
                     .import_codex_sessions_for_workspace(ws_id, ingest)
                     .await
                     .map_err(|e| e.to_string())?,
-                "claude" => core
-                    .store
+                "claude" => store
                     .import_claude_sessions_for_workspace(ws_id, ingest)
                     .await
                     .map_err(|e| e.to_string())?,
-                "cursor" => core
-                    .store
+                "cursor" => store
                     .import_cursor_sessions_for_workspace(ws_id, ingest)
                     .await
                     .map_err(|e| e.to_string())?,
                 _ => return Err(format!("unknown tool: {tool}")),
             };
             core.agents.invalidate(friend_id);
-            let cli_sessions = core
-                .store
+            let cli_sessions = store
                 .list_cli_sessions(ws_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -336,13 +381,12 @@ async fn handle_method(
                 .or_else(|| params.get("ws_id"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "workspace_id required".to_string())?;
-            let ws = core
-                .store
+            let ws = store
                 .get_workspace(ws_id)
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "workspace not found".to_string())?;
-            core.store
+            store
                 .delete_workspace(ws_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -354,15 +398,19 @@ async fn handle_method(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "id required".to_string())?;
-            core.store.delete_friend(id).await.map_err(|e| e.to_string())?;
+            store.delete_friend(id).await.map_err(|e| e.to_string())?;
             core.agents.invalidate(id);
             Ok(serde_json::json!({ "ok": true }))
         }
         "listGroups" => {
-            let groups = core.store.list_groups().await.map_err(|e| e.to_string())?;
+            let groups = store.list_groups().await.map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             for g in &groups {
-                out.push(group_bundle_json(core, g).await.map_err(|e| e.to_string())?);
+                out.push(
+                    group_bundle_json(&store, &core.providers, g)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
             }
             Ok(serde_json::json!({ "groups": out }))
         }
@@ -371,15 +419,15 @@ async fn handle_method(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "id required".to_string())?;
-            let g = core
-                .store
+            let g = store
                 .get_group(id)
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "group not found".to_string())?;
-            let mut bundle = group_bundle_json(core, &g).await.map_err(|e| e.to_string())?;
-            let conv = core
-                .store
+            let mut bundle = group_bundle_json(&store, &core.providers, &g)
+                .await
+                .map_err(|e| e.to_string())?;
+            let conv = store
                 .get_or_create_group_conversation(&g.id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -391,7 +439,7 @@ async fn handle_method(
             req.settings.sync_judge_threshold_fields();
             let expert_ids = expert_member_ids_from_upsert(&req.members, &req.member_ids);
             let readiness = validate_group_task_flow_readiness(
-                &core.store,
+                &store,
                 &core.providers,
                 &req.settings,
                 &expert_ids,
@@ -401,10 +449,11 @@ async fn handle_method(
             if !readiness.errors.is_empty() {
                 return Err(readiness.errors.join("；"));
             }
-            let g = core.store.upsert_group(req).await.map_err(|e| e.to_string())?;
-            let mut bundle = group_bundle_json(core, &g).await.map_err(|e| e.to_string())?;
-            let conv = core
-                .store
+            let g = store.upsert_group(req).await.map_err(|e| e.to_string())?;
+            let mut bundle = group_bundle_json(&store, &core.providers, &g)
+                .await
+                .map_err(|e| e.to_string())?;
+            let conv = store
                 .get_or_create_group_conversation(&g.id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -412,7 +461,7 @@ async fn handle_method(
             Ok(bundle)
         }
         "listProviders" => {
-            let providers = core.store.list_providers().await.map_err(|e| e.to_string())?;
+            let providers = store.list_providers().await.map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "providers": providers }))
         }
         "upsertProvider" => {
@@ -421,8 +470,7 @@ async fn handle_method(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "provider id required".to_string())?;
-            let existing = core
-                .store
+            let existing = store
                 .get_provider(id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -484,11 +532,14 @@ async fn handle_method(
                 enabled: req.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
                 created_at,
             };
-            core.store
+            store
                 .upsert_provider(&provider)
                 .await
                 .map_err(|e| e.to_string())?;
-            core.providers.reload().await.map_err(|e| e.to_string())?;
+            core.providers
+                .reload_tenant(store.tenant_id())
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "provider": provider }))
         }
         "deleteProvider" => {
@@ -496,19 +547,24 @@ async fn handle_method(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "id required".to_string())?;
-            core.store.delete_provider(id).await.map_err(|e| e.to_string())?;
-            core.providers.reload().await.map_err(|e| e.to_string())?;
+            store.delete_provider(id).await.map_err(|e| e.to_string())?;
+            core.providers
+                .reload_tenant(store.tenant_id())
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "ok": true }))
         }
         "upsertProviderKey" => {
             let req: UpsertProviderKey =
                 serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let provider_key = core
-                .store
+            let provider_key = store
                 .upsert_provider_key(req)
                 .await
                 .map_err(|e| e.to_string())?;
-            core.providers.reload().await.map_err(|e| e.to_string())?;
+            core.providers
+                .reload_tenant(store.tenant_id())
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "provider_key": provider_key }))
         }
         "deleteProviderKey" => {
@@ -516,11 +572,14 @@ async fn handle_method(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "id required".to_string())?;
-            core.store
+            store
                 .delete_provider_key(id)
                 .await
                 .map_err(|e| e.to_string())?;
-            core.providers.reload().await.map_err(|e| e.to_string())?;
+            core.providers
+                .reload_tenant(store.tenant_id())
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "ok": true }))
         }
         "resolveDelegate" => {
@@ -545,8 +604,7 @@ async fn handle_method(
             Ok(serde_json::json!({ "message": message }))
         }
         "listAssistantPolicyTemplates" => {
-            let templates = core
-                .store
+            let templates = store
                 .list_assistant_policy_templates()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -562,7 +620,7 @@ async fn handle_method(
             )
             .map_err(|e| e.to_string())?;
             body.owner_friend_id = friend_id.to_string();
-            let memory = core.store.insert_memory(body).await.map_err(|e| e.to_string())?;
+            let memory = store.insert_memory(body).await.map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "memory": memory }))
         }
         "deleteAssistantMemory" => {
@@ -570,7 +628,7 @@ async fn handle_method(
                 .get("memory_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "memory_id required".to_string())?;
-            core.store
+            store
                 .delete_memory(memory_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -578,8 +636,7 @@ async fn handle_method(
         }
         "listProviderKeys" => {
             let provider_id = params.get("provider_id").and_then(|v| v.as_str());
-            let provider_keys = core
-                .store
+            let provider_keys = store
                 .list_provider_keys(provider_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -590,13 +647,11 @@ async fn handle_method(
                 .get("friend_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "friend_id required".to_string())?;
-            let conversation = core
-                .store
+            let conversation = store
                 .get_or_create_dm(friend_id)
                 .await
                 .map_err(|e| e.to_string())?;
-            let messages = core
-                .store
+            let messages = store
                 .list_messages(&conversation.id, 200)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -617,8 +672,7 @@ async fn handle_method(
                     .get("attachments")
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
-            let conv = core
-                .store
+            let conv = store
                 .get_or_create_dm(friend_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -630,10 +684,21 @@ async fn handle_method(
                 &attachments,
             )
             .map_err(|e| e.to_string())?;
-            core.dispatcher
-                .send_user_message_with_attachments(&conv.id, &content, &attachments)
-                .await
-                .map_err(|e| e.to_string())?;
+            let tenant_id = store.tenant_id().to_string();
+            let user_id = store.user_id().map(str::to_string);
+            seven_chat_agent_core::tenant_context::with_active_scope(
+                &tenant_id,
+                user_id.as_deref(),
+                || {
+                    core.dispatcher.send_user_message_with_attachments(
+                        &conv.id,
+                        &content,
+                        &attachments,
+                    )
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "ok": true, "conversation_id": conv.id }))
         }
         "listConversationMessages" => {
@@ -641,8 +706,7 @@ async fn handle_method(
                 .get("conversation_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "conversation_id required".to_string())?;
-            let messages = core
-                .store
+            let messages = store
                 .list_messages(id, 500)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -667,15 +731,22 @@ async fn handle_method(
                 std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
             seven_chat_agent_core::attachment::validate_attachments(&data_dir, id, &attachments)
                 .map_err(|e| e.to_string())?;
-            core.dispatcher
-                .send_user_message_with_attachments(id, &content, &attachments)
-                .await
-                .map_err(|e| e.to_string())?;
+            let tenant_id = store.tenant_id().to_string();
+            let user_id = store.user_id().map(str::to_string);
+            seven_chat_agent_core::tenant_context::with_active_scope(
+                &tenant_id,
+                user_id.as_deref(),
+                || {
+                    core.dispatcher
+                        .send_user_message_with_attachments(id, &content, &attachments)
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "ok": true, "conversation_id": id }))
         }
         "getAssistantGlobalSettings" => {
-            let settings = core
-                .store
+            let settings = store
                 .get_assistant_global_settings()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -684,24 +755,24 @@ async fn handle_method(
         "upsertAssistantGlobalSettings" => {
             let body: seven_chat_agent_core::domain::AssistantGlobalSettings =
                 serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let settings = core
-                .store
+            let settings = store
                 .upsert_assistant_global_settings(body)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "settings": settings }))
         }
         "consolidateAssistantMemories" => {
-            let report = core
-                .run_memory_maintenance()
-                .await
-                .map_err(|e| e.to_string())?;
-            core.store
+            let tenant_id = store.tenant_id().to_string();
+            let report = seven_chat_agent_core::tenant_context::with_active_tenant(&tenant_id, || async {
+                core.run_memory_maintenance().await
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            store
                 .reset_assistant_observe_streak()
                 .await
                 .map_err(|e| e.to_string())?;
-            let settings = core
-                .store
+            let settings = store
                 .get_assistant_global_settings()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -731,8 +802,7 @@ async fn handle_method(
                     .and_then(|v| v.as_str())
                     .map(String::from),
             };
-            let memories = core
-                .store
+            let memories = store
                 .list_memories_filtered(friend_id, filter, limit)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -743,8 +813,7 @@ async fn handle_method(
                 .get("friend_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "friend_id required".to_string())?;
-            let stats = core
-                .store
+            let stats = store
                 .memory_stats(friend_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -764,7 +833,7 @@ async fn handle_method(
             let workspace_id = if let Some(w) = params.get("workspace_id").and_then(|v| v.as_str()) {
                 Some(w.to_string())
             } else {
-                core.store
+                store
                     .get_active_workspace(friend_id)
                     .await
                     .ok()
@@ -782,8 +851,7 @@ async fn handle_method(
                     .map(String::from),
                 workspace_id,
             };
-            let memories = core
-                .store
+            let memories = store
                 .recall_memories_for_turn(friend_id, &prompt, limit, false, &ctx)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -809,8 +877,7 @@ async fn handle_method(
                 .get("promote_to_curated")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let memory = core
-                .store
+            let memory = store
                 .update_memory(
                     memory_id,
                     kind,
@@ -835,8 +902,7 @@ async fn handle_method(
                 .get("friend_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "friend_id required".to_string())?;
-            let skills = core
-                .store
+            let skills = store
                 .list_skills(friend_id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -847,8 +913,7 @@ async fn handle_method(
                 .get("friend_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "friend_id required".to_string())?;
-            let reflections = core
-                .store
+            let reflections = store
                 .list_reflections(friend_id, 50)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -864,8 +929,7 @@ async fn handle_method(
                 .and_then(|v| v.as_str())
                 .map(seven_chat_agent_core::domain::AssistantTodoStatus::parse);
             let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(200);
-            let todos = core
-                .store
+            let todos = store
                 .list_assistant_todos(friend_id, status, limit)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -926,8 +990,7 @@ async fn handle_method(
                 .get("status")
                 .and_then(|v| v.as_str())
                 .map(seven_chat_agent_core::domain::AssistantTodoStatus::parse);
-            let todo = core
-                .store
+            let todo = store
                 .update_assistant_todo(todo_id, title, detail, priority, status)
                 .await
                 .map_err(|e| e.to_string())?
@@ -942,8 +1005,7 @@ async fn handle_method(
                 .get("friend_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "friend_id required".to_string())?;
-            let todos = core
-                .store
+            let todos = store
                 .list_assistant_todos(friend_id, None, 200)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -952,16 +1014,14 @@ async fn handle_method(
         "listAssistantQueueJobs" => {
             let status = params.get("status").and_then(|v| v.as_str());
             let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(200);
-            let jobs = core
-                .store
+            let jobs = store
                 .list_assistant_queue_jobs(status, limit)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "jobs": jobs }))
         }
         "getAssistantQueueStats" => {
-            let stats = core
-                .store
+            let stats = store
                 .assistant_queue_stats()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -969,8 +1029,7 @@ async fn handle_method(
         }
         "replayFailedAssistantQueueJobs" => {
             let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(100);
-            let replayed = core
-                .store
+            let replayed = store
                 .replay_failed_assistant_jobs(limit)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -979,15 +1038,14 @@ async fn handle_method(
         "listInvites" => {
             let friend_id = params.get("friend_id").and_then(|v| v.as_str());
             if let Some(fid) = friend_id {
-                let invites = core.store.list_invites(fid).await.map_err(|e| e.to_string())?;
+                let invites = store.list_invites(fid).await.map_err(|e| e.to_string())?;
                 return Ok(serde_json::json!({ "invites": invites }));
             }
-            let friends = core.store.list_friends().await.map_err(|e| e.to_string())?;
+            let friends = store.list_friends().await.map_err(|e| e.to_string())?;
             let mut all = Vec::new();
             for f in friends {
                 if f.backend_kind == seven_chat_agent_core::domain::BackendKind::Human {
-                    let invites = core
-                        .store
+                    let invites = store
                         .list_invites(&f.id)
                         .await
                         .map_err(|e| e.to_string())?;
@@ -1005,8 +1063,7 @@ async fn handle_method(
                 .get("expires_in_hours")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(72);
-            let invite = core
-                .store
+            let invite = store
                 .create_invite(friend_id, expires_in_hours)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1017,7 +1074,7 @@ async fn handle_method(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "id required".to_string())?;
-            core.store.delete_invite(id).await.map_err(|e| e.to_string())?;
+            store.delete_invite(id).await.map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "ok": true }))
         }
         "humanState" => {
@@ -1025,29 +1082,26 @@ async fn handle_method(
                 .get("code")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "code required".to_string())?;
-            let invite = core
-                .store
+            let invite = store
                 .get_invite_by_code(code)
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "invite not found".to_string())?;
             if invite.used_at.is_none() {
-                let _ = core.store.consume_invite(code).await;
+                let _ = store.consume_invite(code).await;
             }
-            let friend = core
-                .store
+            let friend = store
                 .get_friend(&invite.friend_id)
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "friend not found".to_string())?;
-            let session = core
-                .store
+            let session = store
                 .upsert_human_session(&friend.id, "invite", None)
                 .await
                 .map_err(|e| e.to_string())?;
-            let convs = core.store.list_conversations().await.map_err(|e| e.to_string())?;
+            let convs = store.list_conversations().await.map_err(|e| e.to_string())?;
             let messages = if let Some(c) = convs.iter().find(|c| c.target_id == friend.id) {
-                core.store
+                store
                     .list_messages(&c.id, 200)
                     .await
                     .map_err(|e| e.to_string())?
@@ -1070,8 +1124,7 @@ async fn handle_method(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "content required".to_string())?;
             let conversation_id = params.get("conversation_id").and_then(|v| v.as_str());
-            let invite = core
-                .store
+            let invite = store
                 .get_invite_by_code(code)
                 .await
                 .map_err(|e| e.to_string())?
@@ -1080,7 +1133,7 @@ async fn handle_method(
             let conv_id = if let Some(cid) = conversation_id {
                 cid.to_string()
             } else {
-                core.store
+                store
                     .get_or_create_dm(&friend_id)
                     .await
                     .map_err(|e| e.to_string())?
@@ -1101,13 +1154,12 @@ async fn handle_method(
                 .get("duration_ms")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(3000);
-            let invite = core
-                .store
+            let invite = store
                 .get_invite_by_code(code)
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "invite not found".to_string())?;
-            core.store
+            store
                 .set_human_typing(&invite.friend_id, duration_ms)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1115,46 +1167,198 @@ async fn handle_method(
         }
         "createCliRelayPairingToken" => {
             let token = core.cli_relay.create_pairing_token();
-            Ok(serde_json::json!({ "pairing_token": token }))
+            let bind = seven_chat_agent_core::env::var_or(
+                "SEVEN_CHAT_AGENT_BIND",
+                "HONEYCOMB_BIND",
+                "127.0.0.1:18737",
+            );
+            let relay_ws_url = format!("ws://{bind}/cli-relay");
+            Ok(serde_json::json!({
+                "pairing_token": token,
+                "relay_ws_url": relay_ws_url,
+            }))
         }
         "listCliRelays" => {
             let relays = core.cli_relay.list_nodes();
             Ok(serde_json::json!({ "relays": relays }))
         }
+        "previewTenantInvite" => {
+            let code = params
+                .get("code")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "code required".to_string())?;
+            let preview = store.preview_tenant_invite(code).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "preview": preview }))
+        }
+        "listTenantMembers" => {
+            let members = store
+                .list_users_in_tenant(store.tenant_id())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "members": members, "tenant_id": store.tenant_id() }))
+        }
+        "listTenantInvites" => {
+            ws_require_admin(&params, &store).await?;
+            let invites = store
+                .list_tenant_invites(store.tenant_id())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "invites": invites }))
+        }
+        "createTenantInvite" => {
+            let session = ws_require_admin(&params, &store).await?;
+            let invited_email = params.get("invited_email").and_then(|v| v.as_str());
+            let role = params.get("role").and_then(|v| v.as_str());
+            let expires_in_hours = params
+                .get("expires_in_hours")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(168);
+            let invite = store
+                .create_tenant_invite(
+                    store.tenant_id(),
+                    &session.user_id,
+                    invited_email,
+                    role,
+                    expires_in_hours,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "invite": invite }))
+        }
+        "deleteTenantInvite" => {
+            ws_require_admin(&params, &store).await?;
+            let id = params
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "id required".to_string())?;
+            store
+                .delete_tenant_invite(store.tenant_id(), id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "updateTenantMemberRole" => {
+            ws_require_admin(&params, &store).await?;
+            let user_id = params
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "user_id required".to_string())?;
+            let role = params
+                .get("role")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "role required".to_string())?;
+            let user = store
+                .update_user_role_in_tenant(store.tenant_id(), user_id, role)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "user": user }))
+        }
+        "getAgentDna" => {
+            let dna = store.get_agent_dna().await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "dna": dna }))
+        }
+        "previewAgentDna" => {
+            let dna = store.get_agent_dna().await.map_err(|e| e.to_string())?;
+            let rendered = seven_chat_agent_core::agent_dna::render_dna_block(&dna);
+            Ok(serde_json::json!({ "dna": dna, "rendered": rendered }))
+        }
+        "upsertAgentDna" => {
+            ws_require_admin(&params, &store).await?;
+            let body: seven_chat_agent_core::agent_dna::AgentDna =
+                serde_json::from_value(params).map_err(|e| e.to_string())?;
+            let dna = store.upsert_agent_dna(body).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "dna": dna }))
+        }
         _ => Err(format!("unsupported method: {method}")),
     }
 }
 
+async fn ws_require_admin(
+    params: &serde_json::Value,
+    store: &seven_chat_agent_core::store::SqliteStore,
+) -> std::result::Result<seven_chat_agent_core::domain::AuthSession, String> {
+    let token = params
+        .get("auth_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "auth_token required".to_string())?;
+    let session = store
+        .resolve_session(token)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "invalid session".to_string())?;
+    if session.role != "admin" {
+        return Err("需要管理员权限".into());
+    }
+    Ok(session)
+}
+
+async fn resolve_tenant_store(
+    state: &AppState,
+    params: &serde_json::Value,
+) -> std::result::Result<seven_chat_agent_core::store::SqliteStore, String> {
+    if let Some(token) = params
+        .get("auth_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(session) = state
+            .core
+            .store
+            .resolve_session(token)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(
+                state
+                    .core
+                    .store
+                    .for_tenant(&session.tenant_id)
+                    .for_user(&session.user_id),
+            );
+        }
+    }
+    if seven_chat_agent_core::auth::auth_required() {
+        return Err("需要登录（传 auth_token）".into());
+    }
+    Ok(state.core.store.as_ref().clone())
+}
+
 async fn group_bundle_json(
-    core: &seven_chat_agent_core::SevenChatAgent,
+    store: &seven_chat_agent_core::store::SqliteStore,
+    providers: &seven_chat_agent_core::provider::ProviderRegistry,
     g: &seven_chat_agent_core::domain::Group,
 ) -> std::result::Result<serde_json::Value, String> {
-    let members = core
-        .store
+    let members = store
         .list_group_member_configs(&g.id)
         .await
         .map_err(|e| e.to_string())?;
     let member_ids: Vec<String> = members.iter().map(|m| m.friend_id.clone()).collect();
-    let expert_member_ids: Vec<String> = core
-        .store
+    let expert_member_ids: Vec<String> = store
         .list_group_expert_friend_ids(&g.id)
         .await
         .map_err(|e| e.to_string())?;
-    let assistant_member_id = core
-        .store
+    let assistant_member_id = store
         .group_assistant_member_id(&g.id)
         .await
         .map_err(|e| e.to_string())?;
+    let workspaces = store
+        .list_group_workspaces(&g.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let member_bindings = store
+        .list_group_member_bindings(&g.id)
+        .await
+        .map_err(|e| e.to_string())?;
     let task_flow_readiness = validate_group_task_flow_readiness(
-        &core.store,
-        &core.providers,
+        store,
+        providers,
         &g.settings,
         &expert_member_ids,
     )
     .await
     .map_err(|e| e.to_string())?;
-    let assistant_resolved = core
-        .store
+    let assistant_resolved = store
         .resolve_group_assistant_settings(&g.settings.assistant)
         .await
         .map_err(|e| e.to_string())?;
@@ -1165,6 +1369,8 @@ async fn group_bundle_json(
         "assistant_member_id": assistant_member_id,
         "assistant_resolved": assistant_resolved,
         "members": members,
+        "workspaces": workspaces,
+        "member_bindings": member_bindings,
         "task_flow_readiness": task_flow_readiness,
     }))
 }

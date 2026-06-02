@@ -27,7 +27,8 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
             pairing_token,
             name,
             host_label,
-        }) => (pairing_token, name, host_label),
+            workspace_root,
+        }) => (pairing_token, name, host_label, workspace_root),
         Ok(_) => {
             let err = RelayMessage::Error {
                 message: "首条消息必须是 register".into(),
@@ -48,10 +49,13 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
         }
     };
 
-    let (pairing_token, name, host_label) = register;
-    let (relay_id, mut outbound_rx) = match hub.register_connection(pairing_token, name, host_label) {
+    let (pairing_token, name, host_label, workspace_root) = register;
+    let display_name = name.clone();
+    let (relay_id, mut outbound_rx) =
+        match hub.register_connection(pairing_token, name, host_label, workspace_root) {
         Ok(v) => v,
         Err(message) => {
+            tracing::warn!(%message, "cli relay register rejected");
             let err = RelayMessage::Error { message };
             let _ = sender
                 .send(Message::Text(err.to_json().unwrap_or_default()))
@@ -59,6 +63,8 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
             return;
         }
     };
+
+    tracing::info!(%relay_id, name = %display_name, "cli relay node online");
 
     let registered = RelayMessage::Registered {
         relay_id: relay_id.clone(),
@@ -90,6 +96,14 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
                         match &parsed {
                             RelayMessage::JobOutput { job_id, .. } => {
                                 hub_in.on_job_output(job_id, &parsed);
+                            }
+                            RelayMessage::WorkspaceReport { workspace_root } => {
+                                hub_in.set_workspace_root(&relay_id_in, workspace_root.clone());
+                                tracing::info!(
+                                    relay_id = %relay_id_in,
+                                    %workspace_root,
+                                    "cli relay workspace reported"
+                                );
                             }
                             RelayMessage::Ping => {
                                 let _ = sender.send(Message::Text(

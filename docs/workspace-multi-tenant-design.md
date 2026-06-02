@@ -34,9 +34,42 @@ Web 通过 ws-api：`listFriendWorkspaces`、`createFriendWorkspace`、`activate
 
 ## 多租户现状
 
-- **记忆 / 全局策略**：`SEVEN_CHAT_AGENT_TENANT_ID` 隔离
-- **工作区表**：含 `tenant_id`，与记忆租户一致
-- **好友/会话/消息**：仍未全表 `tenant_id`（单实例部署可接受）
+详见 [多租户与用户体系.md](./多租户与用户体系.md)。
+
+- **记忆 / 全局策略 / 工作区 / cli_sessions**：`tenant_id` 隔离
+- **用户登录注册**：T1 已实现（可选 `AUTH_REQUIRED`）
+- **friends / groups / conversations**：已加 `tenant_id` 列；全链路过滤进行中
+
+## 已实现（Phase D · 按登录用户隔离工作区）
+
+### 数据模型
+
+- **`workspaces.owner_user_id`**：非空表示该工作区仅所属用户可见；`NULL` 为租户内共享（未登录 / 旧数据 / `AUTH_REQUIRED=0`）
+- **`user_workspace_prefs`**：`(user_id, friend_id) → active_workspace_id`，每用户独立「当前工作区」
+
+### 目录布局
+
+登录用户默认路径：
+
+`{CLI_WORKSPACE_ROOT}/tenants/{tenant_id}/users/{user_id}/{friend_id}/`
+
+同租户内用户 A / 用户 B 对同一 Agent 好友各自拥有独立目录与 CLI 会话，互不可见。
+
+### API / 运行时
+
+- 带 `auth_token` 的请求：`SqliteStore.for_user(session.user_id)`，列表/创建/激活/PTY cwd 均按用户过滤
+- 发消息时 `ACTIVE_USER` 传入 dispatcher，Agent 执行使用该用户的工作区
+- 未登录：仍用 `owner_user_id IS NULL` 的共享工作区 + `friends.active_workspace_id`
+
+### 已实现（Phase E · 私聊按用户拆分）
+
+- **`conversations.scope_user_id`**：登录用户的 DM 唯一键为 `(tenant_id, dm, friend_id, scope_user_id)`；未登录 / 真人邀请为 `NULL`（共享线程）
+- `get_or_create_dm` / `list_conversations` / 发消息调度均按 `scope_user_id` 过滤
+- 调度器根据会话上的 `scope_user_id` 恢复 `ACTIVE_USER`，Agent 回复使用对端用户的工作区
+
+## 群工作区与远程 CLI
+
+群内 **relay** 成员不能共用服务端 `cli_workspace` 路径；runtime 已改为 relay 时回退好友工作区。逻辑项目 + Git 协调见多租户文档 §3。
 
 ## 已实现（Phase B）
 

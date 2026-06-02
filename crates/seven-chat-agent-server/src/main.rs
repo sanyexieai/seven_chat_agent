@@ -45,10 +45,13 @@ async fn main() -> anyhow::Result<()> {
     }
     let app = build_app_with_static(agent, static_dir);
 
-    let addr: SocketAddr = std::env::var("SEVEN_CHAT_AGENT_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:18737".into())
-        .parse()
-        .context("SEVEN_CHAT_AGENT_BIND")?;
+    let addr: SocketAddr = seven_chat_agent_core::env::var_or(
+        "SEVEN_CHAT_AGENT_BIND",
+        "HONEYCOMB_BIND",
+        "127.0.0.1:18737",
+    )
+    .parse()
+    .context("SEVEN_CHAT_AGENT_BIND / HONEYCOMB_BIND")?;
 
     tracing::info!(%addr, "seven-chat-agent-server listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;

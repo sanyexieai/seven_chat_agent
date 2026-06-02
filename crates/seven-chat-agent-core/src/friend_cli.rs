@@ -37,14 +37,34 @@ pub fn pty_relay_id(cfg: &PtyBackendConfig) -> Option<&str> {
         .filter(|s| !s.trim().is_empty())
 }
 
-/// CLI 工作目录：群聊用群共享目录；私聊用好友目录。
+/// 是否为服务端自动创建的 cli-workspaces 路径（不能作为 relay 远程 cwd）。
+pub fn looks_like_server_cli_workspace(path: &str) -> bool {
+    let t = path.trim();
+    if t.is_empty() {
+        return false;
+    }
+    t.contains("cli-workspaces")
+}
+
+/// CLI 工作目录：群聊用群共享目录（仅 local）；relay 由转发端按 friend_id 自行解析。
 pub fn resolve_cli_workspace(
     cfg: &PtyBackendConfig,
     friend_id: &str,
     group_id: Option<&str>,
     group_cli_workspace: Option<&str>,
+    member_local_path: Option<&str>,
 ) -> crate::Result<String> {
+    if pty_execution_is_relay(cfg) {
+        if let Some(p) = member_local_path.filter(|s| !s.trim().is_empty()) {
+            return Ok(p.trim().to_string());
+        }
+        let rid = pty_relay_id(cfg).unwrap_or("?");
+        return Ok(format!("@relay:{rid}/friends/{friend_id}"));
+    }
     if let Some(gid) = group_id.filter(|s| !s.is_empty()) {
+        if let Some(p) = member_local_path.filter(|s| !s.trim().is_empty()) {
+            return crate::cli_workspace::ensure_at(p);
+        }
         if let Some(ws) = group_cli_workspace {
             let t = ws.trim();
             if !t.is_empty() {
@@ -381,6 +401,31 @@ mod tests {
         normalize_pty_config(&mut cfg, false);
         assert_eq!(cfg.preset.as_deref(), Some("codex-exec"));
         assert_eq!(cfg.cmd, "codex");
+    }
+
+    #[test]
+    fn relay_workspace_is_virtual_until_reported() {
+        let cfg = PtyBackendConfig {
+            execution_mode: Some("relay".into()),
+            relay_id: Some("relay_abc".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_cli_workspace(&cfg, "friend-1", None, None, None).unwrap(),
+            "@relay:relay_abc/friends/friend-1"
+        );
+    }
+
+    #[test]
+    fn relay_accepts_member_local_path() {
+        let cfg = PtyBackendConfig {
+            execution_mode: Some("relay".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_cli_workspace(&cfg, "f", None, None, Some("/remote/group-ws")).unwrap(),
+            "/remote/group-ws"
+        );
     }
 
     #[test]

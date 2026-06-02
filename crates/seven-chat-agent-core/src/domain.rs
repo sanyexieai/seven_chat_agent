@@ -49,12 +49,85 @@ pub struct Friend {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub tenant_id: String,
+    pub email: String,
+    pub username: Option<String>,
+    pub display_name: String,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPublic {
+    pub id: String,
+    pub tenant_id: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    pub display_name: String,
+    pub role: String,
+}
+
+impl User {
+    pub fn public(&self) -> UserPublic {
+        UserPublic {
+            id: self.id.clone(),
+            tenant_id: self.tenant_id.clone(),
+            email: self.email.clone(),
+            username: self.username.clone(),
+            display_name: self.display_name.clone(),
+            role: self.role.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthSession {
+    pub user_id: String,
+    pub tenant_id: String,
+    pub email: String,
+    pub username: Option<String>,
+    pub display_name: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantInvite {
+    pub id: String,
+    pub tenant_id: String,
+    pub code: String,
+    pub invited_email: Option<String>,
+    pub role: String,
+    pub created_by_user_id: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+    pub used_by_user_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantInvitePreview {
+    pub tenant_id: String,
+    pub tenant_name: String,
+    pub role: String,
+    pub invited_email: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub valid: bool,
+    pub reason: Option<String>,
+}
+
 /// 好友下的独立工作目录（多项目 / 多 Codex·Claude 会话）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: String,
     pub tenant_id: String,
     pub owner_friend_id: String,
+    /// 登录用户私有工作区；`None` 表示租户内共享（仅未登录 / 旧数据）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
     pub name: String,
     pub path: String,
     pub is_default: bool,
@@ -272,6 +345,9 @@ pub struct Conversation {
     pub target_id: String,
     pub title: Option<String>,
     pub last_message_at: Option<DateTime<Utc>>,
+    /// 私聊按登录用户拆分；`None` 表示租户内共享（未登录 / 真人邀请等）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_user_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -544,6 +620,15 @@ pub struct AssistantGlobalSettings {
     /// 回合结束后反思 + 知识沉淀（reflections）。
     #[serde(default = "default_true")]
     pub evolution_enabled: bool,
+    /// 进化 token 占月度主预算的比例（0～1）；与 absolute 二选一或叠加取较小有效上限。
+    #[serde(default = "default_evolution_ratio")]
+    pub evolution_token_budget_ratio: f64,
+    /// 进化 token 硬顶（0 表示仅按比例从 monthly_token_budget 推导）。
+    #[serde(default)]
+    pub evolution_token_budget_absolute: u64,
+    /// 当月进化池已消耗 token（reflection 等）。
+    #[serde(default)]
+    pub evolution_tokens_used: u64,
     /// 回合结束后从对话提取长期记忆。
     #[serde(default = "default_true")]
     pub auto_extract_memories: bool,
@@ -610,6 +695,10 @@ fn default_proactive_batch() -> u32 {
     2
 }
 
+fn default_evolution_ratio() -> f64 {
+    0.1
+}
+
 impl Default for AssistantGlobalSettings {
     fn default() -> Self {
         Self {
@@ -631,6 +720,9 @@ impl Default for AssistantGlobalSettings {
             embedding_model: None,
             ephemeral_ttl_hours: default_ephemeral_ttl_hours(),
             evolution_enabled: true,
+            evolution_token_budget_ratio: default_evolution_ratio(),
+            evolution_token_budget_absolute: 0,
+            evolution_tokens_used: 0,
             auto_extract_memories: true,
             proactive_enabled: true,
             proactive_batch_size: default_proactive_batch(),
@@ -891,6 +983,43 @@ pub struct GroupMemberConfig {
     pub role: GroupMemberRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_override: Option<seven_chat_agent_judge::MemberJudgeOverride>,
+}
+
+/// 群逻辑工作区：Git 仓库或 logical_key，不绑定单一物理 cwd。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupWorkspace {
+    pub id: String,
+    pub group_id: String,
+    pub tenant_id: String,
+    pub name: String,
+    #[serde(default = "default_logical_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_key: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+fn default_logical_kind() -> String {
+    "logical".into()
+}
+
+/// 成员在某逻辑工作区上的执行绑定（local/relay + 本机 cwd）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMemberBinding {
+    pub id: String,
+    pub group_id: String,
+    pub group_workspace_id: String,
+    pub friend_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

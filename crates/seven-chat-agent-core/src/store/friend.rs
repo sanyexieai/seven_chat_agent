@@ -74,8 +74,9 @@ fn default_true() -> bool {
 impl SqliteStore {
     pub async fn list_friends(&self) -> Result<Vec<Friend>> {
         let rows = sqlx::query_as::<_, FriendRow>(&format!(
-            "SELECT {FRIEND_SELECT} FROM friends ORDER BY is_builtin DESC, created_at ASC"
+            "SELECT {FRIEND_SELECT} FROM friends WHERE tenant_id = ? ORDER BY is_builtin DESC, created_at ASC"
         ))
+        .bind(self.tenant_id())
         .fetch_all(self.pool())
         .await?;
         rows.into_iter().map(|r| r.into_friend()).collect()
@@ -83,12 +84,19 @@ impl SqliteStore {
 
     pub async fn get_friend(&self, id: &str) -> Result<Option<Friend>> {
         let row = sqlx::query_as::<_, FriendRow>(&format!(
-            "SELECT {FRIEND_SELECT} FROM friends WHERE id = ?"
+            "SELECT {FRIEND_SELECT} FROM friends WHERE id = ? AND tenant_id = ?"
         ))
         .bind(id)
+        .bind(self.tenant_id())
         .fetch_optional(self.pool())
         .await?;
-        row.map(|r| r.into_friend()).transpose()
+        let mut friend = row.map(|r| r.into_friend()).transpose()?;
+        if let Some(ref mut f) = friend {
+            if self.is_user_scoped() {
+                f.active_workspace_id = self.active_workspace_id_for_friend(id).await?;
+            }
+        }
+        Ok(friend)
     }
 
     pub async fn upsert_friend(&self, req: UpsertFriend) -> Result<Friend> {
@@ -153,7 +161,7 @@ impl SqliteStore {
                 .as_ref()
                 .map(|s| s.trim().is_empty())
                 .unwrap_or(true);
-            if cwd_empty {
+            if cwd_empty && !crate::friend_cli::pty_execution_is_relay(&cfg) {
                 let path = cli_workspace::ensure_for_friend(&id)?;
                 cfg.cwd = Some(path);
                 backend_config_value = serde_json::to_value(&cfg)?;
@@ -165,7 +173,7 @@ impl SqliteStore {
 
         if exists == 0 {
             sqlx::query(
-                "INSERT INTO friends (id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, judge_provider_ref, enabled, is_builtin, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
+                "INSERT INTO friends (id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, judge_provider_ref, enabled, is_builtin, tenant_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?)",
             )
             .bind(&id)
             .bind(&req.name)
@@ -177,6 +185,7 @@ impl SqliteStore {
             .bind(&backend_config)
             .bind(&req.judge_provider_ref)
             .bind(req.enabled)
+            .bind(self.tenant_id())
             .bind(&now)
             .execute(self.pool())
             .await?;

@@ -13,21 +13,26 @@ use seven_chat_agent_core::group_validate::{
     expert_member_ids_from_upsert, validate_group_task_flow_readiness,
 };
 use seven_chat_agent_core::store::group::UpsertGroup;
-use seven_chat_agent_core::{AssistantQueueTask, SevenChatAgent};
+use seven_chat_agent_core::AssistantQueueTask;
 use seven_chat_agent_core::store::memory::NewMemory;
 use seven_chat_agent_core::store::workspace::{CreateWorkspace, UpdateWorkspace};
 use seven_chat_agent_core::store::provider::UpsertProviderKey;
 use serde::Deserialize;
 
+use crate::auth::tenant_store_from_request;
 use crate::state::AppState;
 
 pub mod attachments;
+pub mod auth;
 pub mod errors;
+pub mod tenant;
 
 use errors::ApiError;
 
 pub fn api_router() -> Router<AppState> {
     Router::new()
+        .nest("/auth", auth::auth_router())
+        .nest("/tenant", tenant::tenant_router())
         .route("/health", get(health))
         .route("/friends", get(list_friends).post(upsert_friend))
         .route("/friends/:id", get(get_friend).delete(delete_friend))
@@ -108,6 +113,11 @@ pub fn api_router() -> Router<AppState> {
             post(consolidate_assistant_global_memories),
         )
         .route("/assistant/tenant", get(get_assistant_tenant))
+        .route(
+            "/agent-dna",
+            get(get_agent_dna).put(upsert_agent_dna),
+        )
+        .route("/agent-dna/preview", get(preview_agent_dna))
         .route("/assistant/:friend_id/memories", get(list_memories).post(add_memory))
         .route(
             "/assistant/:friend_id/memories/stats",
@@ -146,18 +156,24 @@ async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({"ok": true})))
 }
 
-async fn list_friends(State(s): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let friends = s.core.store.list_friends().await?;
+async fn list_friends(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = crate::auth::resolve_optional_auth(&s, &headers).await?;
+    let store = auth.tenant_store(&s);
+    let friends = store.list_friends().await?;
     Ok(Json(serde_json::json!({ "friends": friends })))
 }
 
 async fn get_friend(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let f = s
-        .core
-        .store
+    let auth = crate::auth::resolve_optional_auth(&s, &headers).await?;
+    let store = auth.tenant_store(&s);
+    let f = store
         .get_friend(&id)
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
@@ -166,139 +182,156 @@ async fn get_friend(
 
 async fn friend_cli_auth(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let status = s.core.cli_oauth.full_status(&s.core.store, &id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let status = s.core.cli_oauth.full_status(&store, &id).await?;
     Ok(Json(serde_json::json!({ "cli_auth": status })))
 }
 
 async fn friend_cli_oauth_start(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let snap = s.core.cli_oauth.start(&s.core.store, &id).await?;
-    let status = s.core.cli_oauth.full_status(&s.core.store, &id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let snap = s.core.cli_oauth.start(&store, &id).await?;
+    let status = s.core.cli_oauth.full_status(&store, &id).await?;
     Ok(Json(serde_json::json!({ "oauth": snap, "cli_auth": status })))
 }
 
 async fn friend_cli_oauth_cancel(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     s.core.cli_oauth.cancel(&id).await?;
-    let status = s.core.cli_oauth.full_status(&s.core.store, &id).await?;
+    let status = s.core.cli_oauth.full_status(&store, &id).await?;
     Ok(Json(serde_json::json!({ "cli_auth": status })))
 }
 
 async fn friend_cli_logout(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let status = s.core.cli_oauth.logout(&s.core.store, &id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let status = s.core.cli_oauth.logout(&store, &id).await?;
     Ok(Json(serde_json::json!({ "cli_auth": status })))
 }
 
 async fn upsert_friend(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<UpsertFriend>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let f = s.core.store.upsert_friend(req).await?;
+    let auth = crate::auth::resolve_optional_auth(&s, &headers).await?;
+    let store = auth.tenant_store(&s);
+    let f = store.upsert_friend(req).await?;
     s.core.agents.invalidate(&f.id);
     Ok(Json(serde_json::json!({ "friend": f })))
 }
 
 async fn delete_friend(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core.store.delete_friend(&id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    store.delete_friend(&id).await?;
     s.core.agents.invalidate(&id);
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn list_friend_workspaces(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core.store.ensure_friend_workspaces(&id).await?;
-    let workspaces = s.core.store.list_workspaces_for_friend(&id).await?;
-    let friend = s
-        .core
-        .store
-        .get_friend(&id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    store.ensure_friend_workspaces(&id).await?;
+    let workspaces = store.list_workspaces_for_friend(&id).await?;
+    let active_workspace_id = store.active_workspace_id_for_friend(&id).await?;
     Ok(Json(serde_json::json!({
         "workspaces": workspaces,
-        "active_workspace_id": friend.active_workspace_id,
+        "active_workspace_id": active_workspace_id,
     })))
 }
 
 async fn create_friend_workspace(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<CreateWorkspace>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ws = s.core.store.create_workspace(&id, req).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let ws = store.create_workspace(&id, req).await?;
     s.core.agents.invalidate(&id);
     Ok(Json(serde_json::json!({ "workspace": ws })))
 }
 
 async fn update_friend_workspace(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((id, ws_id)): Path<(String, String)>,
     Json(req): Json<UpdateWorkspace>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let ws = store.get_workspace(&ws_id).await?;
     let ws = ws.ok_or(ApiError::NotFound)?;
     if ws.owner_friend_id != id {
         return Err(ApiError::NotFound);
     }
-    let ws = s.core.store.update_workspace(&ws_id, req).await?;
+    let ws = store.update_workspace(&ws_id, req).await?;
     s.core.agents.invalidate(&id);
     Ok(Json(serde_json::json!({ "workspace": ws })))
 }
 
 async fn delete_friend_workspace(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((id, ws_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let ws = store.get_workspace(&ws_id).await?;
     let ws = ws.ok_or(ApiError::NotFound)?;
     if ws.owner_friend_id != id {
         return Err(ApiError::NotFound);
     }
-    s.core.store.delete_workspace(&ws_id).await?;
+    store.delete_workspace(&ws_id).await?;
     s.core.agents.invalidate(&id);
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn list_workspace_cli_sessions(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((id, ws_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let ws = store.get_workspace(&ws_id).await?;
     let ws = ws.ok_or(ApiError::NotFound)?;
     if ws.owner_friend_id != id {
         return Err(ApiError::NotFound);
     }
-    let sessions = s.core.store.list_cli_sessions(&ws_id).await?;
+    let sessions = store.list_cli_sessions(&ws_id).await?;
     Ok(Json(serde_json::json!({ "cli_sessions": sessions })))
 }
 
 async fn activate_workspace_cli_session(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((id, ws_id, session_id)): Path<(String, String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let ws = store.get_workspace(&ws_id).await?;
     let ws = ws.ok_or(ApiError::NotFound)?;
     if ws.owner_friend_id != id {
         return Err(ApiError::NotFound);
     }
-    s.core
-        .store
-        .set_active_cli_session(&ws_id, &session_id)
-        .await?;
+    store.set_active_cli_session(&ws_id, &session_id).await?;
     s.core.agents.invalidate(&id);
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -311,117 +344,108 @@ struct ImportCliBody {
 
 async fn import_workspace_codex_sessions(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((id, ws_id)): Path<(String, String)>,
     Json(body): Json<ImportCliBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    import_workspace_cli(State(s), id, ws_id, "codex", body.ingest_memories).await
+    import_workspace_cli(&s, &headers, id, ws_id, "codex", body.ingest_memories).await
 }
 
 async fn import_workspace_claude_sessions(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((id, ws_id)): Path<(String, String)>,
     Json(body): Json<ImportCliBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    import_workspace_cli(State(s), id, ws_id, "claude", body.ingest_memories).await
+    import_workspace_cli(&s, &headers, id, ws_id, "claude", body.ingest_memories).await
 }
 
 async fn import_workspace_cursor_sessions(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((id, ws_id)): Path<(String, String)>,
     Json(body): Json<ImportCliBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    import_workspace_cli(State(s), id, ws_id, "cursor", body.ingest_memories).await
+    import_workspace_cli(&s, &headers, id, ws_id, "cursor", body.ingest_memories).await
 }
 
 async fn import_workspace_cli(
-    s: State<AppState>,
+    s: &AppState,
+    headers: &axum::http::HeaderMap,
     friend_id: String,
     ws_id: String,
     tool: &str,
     ingest_memories: bool,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ws = s.core.store.get_workspace(&ws_id).await?;
+    let store = tenant_store_from_request(s, headers).await?;
+    let ws = store.get_workspace(&ws_id).await?;
     let ws = ws.ok_or(ApiError::NotFound)?;
     if ws.owner_friend_id != friend_id {
         return Err(ApiError::NotFound);
     }
     let report = match tool {
-        "codex" => {
-            s.core
-                .store
-                .import_codex_sessions_for_workspace(&ws_id, ingest_memories)
-                .await?
-        }
-        "claude" => {
-            s.core
-                .store
-                .import_claude_sessions_for_workspace(&ws_id, ingest_memories)
-                .await?
-        }
-        "cursor" => {
-            s.core
-                .store
-                .import_cursor_sessions_for_workspace(&ws_id, ingest_memories)
-                .await?
-        }
+        "codex" => store.import_codex_sessions_for_workspace(&ws_id, ingest_memories).await?,
+        "claude" => store.import_claude_sessions_for_workspace(&ws_id, ingest_memories).await?,
+        "cursor" => store.import_cursor_sessions_for_workspace(&ws_id, ingest_memories).await?,
         _ => return Err(ApiError::BadRequest("unknown import tool".into())),
     };
     s.core.agents.invalidate(&friend_id);
-    let sessions = s.core.store.list_cli_sessions(&ws_id).await?;
+    let sessions = store.list_cli_sessions(&ws_id).await?;
     Ok(Json(serde_json::json!({ "report": report, "tool": tool, "cli_sessions": sessions })))
 }
 
 async fn activate_friend_workspace(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((id, ws_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core.store.set_active_workspace(&id, &ws_id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    store.set_active_workspace(&id, &ws_id).await?;
     s.core.agents.invalidate(&id);
-    let friend = s
-        .core
-        .store
-        .get_friend(&id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let active_workspace_id = store.active_workspace_id_for_friend(&id).await?;
     Ok(Json(serde_json::json!({
         "ok": true,
-        "active_workspace_id": friend.active_workspace_id,
+        "active_workspace_id": active_workspace_id,
     })))
 }
 
-async fn list_groups(State(s): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let groups = s.core.store.list_groups().await?;
+async fn list_groups(State(s): State<AppState>,
+    headers: axum::http::HeaderMap) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let groups = store.list_groups().await?;
     let mut out = Vec::new();
     for g in &groups {
-        out.push(group_bundle_json(&s.core, g).await?);
+        out.push(group_bundle_json(&store, &s.core.providers, g).await?);
     }
     Ok(Json(serde_json::json!({ "groups": out })))
 }
 
 async fn get_group(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let g = s
-        .core
-        .store
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let g = store
         .get_group(&id)
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
-    let mut bundle = group_bundle_json(&s.core, &g).await?;
-    let conv = s.core.store.get_or_create_group_conversation(&g.id).await?;
+    let mut bundle = group_bundle_json(&store, &s.core.providers, &g).await?;
+    let conv = store.get_or_create_group_conversation(&g.id).await?;
     bundle["conversation_id"] = serde_json::json!(conv.id);
     Ok(Json(bundle))
 }
 
 async fn upsert_group(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(mut req): Json<UpsertGroup>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     req.settings.sync_judge_threshold_fields();
     let expert_ids = expert_member_ids_from_upsert(&req.members, &req.member_ids);
     let readiness = validate_group_task_flow_readiness(
-        &s.core.store,
+        &store,
         &s.core.providers,
         &req.settings,
         &expert_ids,
@@ -430,30 +454,32 @@ async fn upsert_group(
     if !readiness.errors.is_empty() {
         return Err(ApiError::BadRequest(readiness.errors.join("；")));
     }
-    let g = s.core.store.upsert_group(req).await?;
-    let mut bundle = group_bundle_json(&s.core, &g).await?;
-    let conv = s.core.store.get_or_create_group_conversation(&g.id).await?;
+    let g = store.upsert_group(req).await?;
+    let mut bundle = group_bundle_json(&store, &s.core.providers, &g).await?;
+    let conv = store.get_or_create_group_conversation(&g.id).await?;
     bundle["conversation_id"] = serde_json::json!(conv.id);
     Ok(Json(bundle))
 }
 
 async fn group_bundle_json(
-    core: &SevenChatAgent,
+    store: &seven_chat_agent_core::store::SqliteStore,
+    providers: &seven_chat_agent_core::provider::ProviderRegistry,
     g: &seven_chat_agent_core::domain::Group,
 ) -> Result<serde_json::Value, ApiError> {
-    let members = core.store.list_group_member_configs(&g.id).await?;
+    let members = store.list_group_member_configs(&g.id).await?;
     let member_ids: Vec<String> = members.iter().map(|m| m.friend_id.clone()).collect();
-    let expert_member_ids: Vec<String> = core.store.list_group_expert_friend_ids(&g.id).await?;
-    let assistant_member_id = core.store.group_assistant_member_id(&g.id).await?;
+    let expert_member_ids: Vec<String> = store.list_group_expert_friend_ids(&g.id).await?;
+    let assistant_member_id = store.group_assistant_member_id(&g.id).await?;
+    let workspaces = store.list_group_workspaces(&g.id).await?;
+    let member_bindings = store.list_group_member_bindings(&g.id).await?;
     let task_flow_readiness = validate_group_task_flow_readiness(
-        &core.store,
-        &core.providers,
+        store,
+        providers,
         &g.settings,
         &expert_member_ids,
     )
     .await?;
-    let assistant_resolved = core
-        .store
+    let assistant_resolved = store
         .resolve_group_assistant_settings(&g.settings.assistant)
         .await?;
     Ok(serde_json::json!({
@@ -463,30 +489,38 @@ async fn group_bundle_json(
         "assistant_member_id": assistant_member_id,
         "assistant_resolved": assistant_resolved,
         "members": members,
+        "workspaces": workspaces,
+        "member_bindings": member_bindings,
         "task_flow_readiness": task_flow_readiness,
     }))
 }
 
 async fn list_assistant_policy_templates(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let templates = s.core.store.list_assistant_policy_templates().await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let templates = store.list_assistant_policy_templates().await?;
     Ok(Json(serde_json::json!({ "templates": templates })))
 }
 
 async fn upsert_assistant_policy_template(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<seven_chat_agent_core::store::assistant_policy::UpsertAssistantPolicyTemplate>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let t = s.core.store.upsert_assistant_policy_template(req).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let t = store.upsert_assistant_policy_template(req).await?;
     Ok(Json(serde_json::json!({ "template": t })))
 }
 
 async fn delete_assistant_policy_template(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    s.core.store.delete_assistant_policy_template(&id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    store.delete_assistant_policy_template(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -523,8 +557,13 @@ async fn group_im_inbound(
     Ok(Json(serde_json::json!({ "ok": true, "message": message })))
 }
 
-async fn list_providers(State(s): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let providers = s.core.store.list_providers().await?;
+async fn list_providers(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = crate::auth::resolve_optional_auth(&s, &headers).await?;
+    let store = auth.tenant_store(&s);
+    let providers = store.list_providers().await?;
     Ok(Json(serde_json::json!({ "providers": providers })))
 }
 
@@ -550,13 +589,16 @@ fn default_true() -> bool {
 
 async fn upsert_provider(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<UpsertProviderReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if req.id.trim().is_empty() {
         return Err(ApiError::BadRequest("provider id is required".into()));
     }
+    let auth = crate::auth::resolve_optional_auth(&s, &headers).await?;
+    let store = auth.tenant_store(&s);
     let id = req.id.clone();
-    let existing = s.core.store.get_provider(&id).await?;
+    let existing = store.get_provider(&id).await?;
     let created_at = existing
         .as_ref()
         .map(|e| e.created_at)
@@ -597,17 +639,26 @@ async fn upsert_provider(
         enabled: req.enabled,
         created_at,
     };
-    s.core.store.upsert_provider(&provider).await?;
-    s.core.providers.reload().await?;
+    store.upsert_provider(&provider).await?;
+    s.core
+        .providers
+        .reload_tenant(store.tenant_id())
+        .await?;
     Ok(Json(serde_json::json!({ "provider": provider })))
 }
 
 async fn delete_provider(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core.store.delete_provider(&id).await?;
-    s.core.providers.reload().await?;
+    let auth = crate::auth::resolve_optional_auth(&s, &headers).await?;
+    let store = auth.tenant_store(&s);
+    store.delete_provider(&id).await?;
+    s.core
+        .providers
+        .reload_tenant(store.tenant_id())
+        .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -618,44 +669,52 @@ struct ProviderKeyQuery {
 
 async fn list_provider_keys(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     axum::extract::Query(q): axum::extract::Query<ProviderKeyQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let keys = s.core.store.list_provider_keys(q.provider_id.as_deref()).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let keys = store.list_provider_keys(q.provider_id.as_deref()).await?;
     Ok(Json(serde_json::json!({ "provider_keys": keys })))
 }
 
 async fn upsert_provider_key(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<UpsertProviderKey>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let k = s.core.store.upsert_provider_key(req).await?;
-    s.core.providers.reload().await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let k = store.upsert_provider_key(req).await?;
+    s.core.providers.reload_tenant(store.tenant_id()).await?;
     Ok(Json(serde_json::json!({ "provider_key": k })))
 }
 
 async fn delete_provider_key(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core.store.delete_provider_key(&id).await?;
-    s.core.providers.reload().await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    store.delete_provider_key(&id).await?;
+    s.core.providers.reload_tenant(store.tenant_id()).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn list_conversations(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let convs = s.core.store.list_conversations().await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let convs = store.list_conversations().await?;
     Ok(Json(serde_json::json!({ "conversations": convs })))
 }
 
 async fn get_conversation(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let c = s
-        .core
-        .store
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let c = store
         .get_conversation(&id)
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
@@ -664,18 +723,22 @@ async fn get_conversation(
 
 async fn list_messages(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let messages = s.core.store.list_messages(&id, 500).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let messages = store.list_messages(&id, 500).await?;
     Ok(Json(serde_json::json!({ "messages": messages })))
 }
 
 async fn open_dm(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let conv = s.core.store.get_or_create_dm(&friend_id).await?;
-    let messages = s.core.store.list_messages(&conv.id, 200).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let conv = store.get_or_create_dm(&friend_id).await?;
+    let messages = store.list_messages(&conv.id, 200).await?;
     Ok(Json(serde_json::json!({
         "conversation": conv,
         "messages": messages,
@@ -684,22 +747,32 @@ async fn open_dm(
 
 async fn send_message(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
     Json(body): Json<attachments::SendWithAttachments>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let conv = s.core.store.get_or_create_dm(&friend_id).await?;
+    let auth = crate::auth::resolve_optional_auth(&s, &headers).await?;
+    let store = auth.tenant_store(&s);
+    let conv = store.get_or_create_dm(&friend_id).await?;
     let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
     attachments::validate_send_attachments(&data_dir, &conv.id, &body.attachments)?;
     let core = s.core.clone();
     let conv_id = conv.id.clone();
     let content = body.content.clone();
     let attachments = body.attachments.clone();
+    let tenant_id = store.tenant_id().to_string();
+    let user_id = auth.session().map(|sess| sess.user_id.clone());
     tokio::spawn(async move {
-        if let Err(e) = core
-            .dispatcher
-            .send_user_message_with_attachments(&conv_id, &content, &attachments)
-            .await
-        {
+        let run = seven_chat_agent_core::tenant_context::with_active_scope(
+            &tenant_id,
+            user_id.as_deref(),
+            || {
+                core.dispatcher
+                    .send_user_message_with_attachments(&conv_id, &content, &attachments)
+            },
+        )
+        .await;
+        if let Err(e) = run {
             tracing::error!(err = %e, "send_user_message failed");
         }
     });
@@ -708,21 +781,31 @@ async fn send_message(
 
 async fn send_to_conversation(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<attachments::SendWithAttachments>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = crate::auth::resolve_optional_auth(&s, &headers).await?;
+    let store = auth.tenant_store(&s);
     let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
     attachments::validate_send_attachments(&data_dir, &id, &body.attachments)?;
     let core = s.core.clone();
     let conv_id = id.clone();
     let content = body.content.clone();
     let attachments = body.attachments.clone();
+    let tenant_id = store.tenant_id().to_string();
+    let user_id = auth.session().map(|sess| sess.user_id.clone());
     tokio::spawn(async move {
-        if let Err(e) = core
-            .dispatcher
-            .send_user_message_with_attachments(&conv_id, &content, &attachments)
-            .await
-        {
+        let run = seven_chat_agent_core::tenant_context::with_active_scope(
+            &tenant_id,
+            user_id.as_deref(),
+            || {
+                core.dispatcher
+                    .send_user_message_with_attachments(&conv_id, &content, &attachments)
+            },
+        )
+        .await;
+        if let Err(e) = run {
             tracing::error!(err = %e, "send_user_message failed");
         }
     });
@@ -764,31 +847,74 @@ struct MemoryQuery {
 
 async fn get_assistant_global_settings(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let settings = s.core.store.get_assistant_global_settings().await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let settings = store.get_assistant_global_settings().await?;
     Ok(Json(serde_json::json!({ "settings": settings })))
 }
 
 async fn upsert_assistant_global_settings(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<AssistantGlobalSettings>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let settings = s.core.store.upsert_assistant_global_settings(body).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let settings = store.upsert_assistant_global_settings(body).await?;
     Ok(Json(serde_json::json!({ "settings": settings })))
 }
 
-async fn get_assistant_tenant(State(s): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+async fn get_assistant_tenant(State(s): State<AppState>,
+    headers: axum::http::HeaderMap) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     Ok(Json(serde_json::json!({
-        "tenant_id": s.core.store.tenant_id(),
+        "tenant_id": store.tenant_id(),
     })))
+}
+
+async fn get_agent_dna(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let dna = store.get_agent_dna().await?;
+    Ok(Json(serde_json::json!({ "dna": dna })))
+}
+
+async fn upsert_agent_dna(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<seven_chat_agent_core::agent_dna::AgentDna>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = crate::auth::session_from_request(&s, &headers).await?;
+    crate::auth::require_admin(&session)?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let dna = store.upsert_agent_dna(body).await?;
+    Ok(Json(serde_json::json!({ "dna": dna })))
+}
+
+async fn preview_agent_dna(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let dna = store.get_agent_dna().await?;
+    let rendered = seven_chat_agent_core::agent_dna::render_dna_block(&dna);
+    Ok(Json(serde_json::json!({ "rendered": rendered, "dna": dna })))
 }
 
 async fn consolidate_assistant_global_memories(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let report = s.core.run_memory_maintenance().await?;
-    s.core.store.reset_assistant_observe_streak().await?;
-    let settings = s.core.store.get_assistant_global_settings().await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let tenant_id = store.tenant_id().to_string();
+    let report = seven_chat_agent_core::tenant_context::with_active_tenant(&tenant_id, || async {
+        s.core.run_memory_maintenance().await
+    })
+    .await?;
+    store.reset_assistant_observe_streak().await?;
+    let settings = store.get_assistant_global_settings().await?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "settings": settings,
@@ -798,9 +924,11 @@ async fn consolidate_assistant_global_memories(
 
 async fn list_memories(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<MemoryQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     let limit = q.limit.unwrap_or(100);
     let filter = seven_chat_agent_core::store::memory::ListMemoryFilter {
         tier: q.tier,
@@ -808,9 +936,7 @@ async fn list_memories(
         scope: q.scope,
         category: q.category,
     };
-    let memories = s
-        .core
-        .store
+    let memories = store
         .list_memories_filtered(&friend_id, filter, limit)
         .await?;
     Ok(Json(serde_json::json!({ "memories": memories })))
@@ -818,19 +944,23 @@ async fn list_memories(
 
 async fn add_memory(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
     Json(mut body): Json<NewMemory>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     body.owner_friend_id = friend_id;
-    let m = s.core.store.insert_memory(body).await?;
+    let m = store.insert_memory(body).await?;
     Ok(Json(serde_json::json!({ "memory": m })))
 }
 
 async fn delete_memory(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((_friend_id, memory_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core.store.delete_memory(&memory_id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    store.delete_memory(&memory_id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -854,13 +984,13 @@ struct PatchMemoryBody {
 
 async fn patch_memory_handler(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((_friend_id, memory_id)): Path<(String, String)>,
     Json(body): Json<PatchMemoryBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     let scope_ref = body.scope_ref.as_deref().map(Some);
-    let memory = s
-        .core
-        .store
+    let memory = store
         .update_memory(
             &memory_id,
             body.kind.as_deref(),
@@ -882,9 +1012,11 @@ async fn patch_memory_handler(
 
 async fn assistant_memory_stats(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let stats = s.core.store.memory_stats(&friend_id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let stats = store.memory_stats(&friend_id).await?;
     Ok(Json(serde_json::json!({ "stats": stats })))
 }
 
@@ -899,16 +1031,17 @@ struct RecallPreviewQuery {
 
 async fn assistant_memory_recall_preview(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<RecallPreviewQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     let prompt = q.prompt.unwrap_or_default();
     let limit = q.limit.unwrap_or(8);
     let workspace_id = if let Some(w) = q.workspace_id {
         Some(w)
     } else {
-        s.core
-            .store
+        store
             .get_active_workspace(&friend_id)
             .await?
             .map(|w| w.id)
@@ -918,9 +1051,7 @@ async fn assistant_memory_recall_preview(
         friend_id: q.friend_id,
         workspace_id,
     };
-    let memories = s
-        .core
-        .store
+    let memories = store
         .recall_memories_for_turn(&friend_id, &prompt, limit, false, &ctx)
         .await?;
     Ok(Json(serde_json::json!({ "memories": memories, "prompt": prompt })))
@@ -928,9 +1059,11 @@ async fn assistant_memory_recall_preview(
 
 async fn list_skills(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let skills = if let Ok(friend) = s.core.store.get_friend(&friend_id).await {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let skills = if let Ok(friend) = store.get_friend(&friend_id).await {
         if let Some(friend) = friend {
             let cfg: seven_chat_agent_core::domain::PtyBackendConfig =
                 serde_json::from_value(friend.backend_config).unwrap_or_default();
@@ -938,24 +1071,23 @@ async fn list_skills(
                 .skills_dir
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| "data/skills".to_string());
-            s.core
-                .store
-                .sync_skills_from_disk(&friend_id, &dir)
-                .await?
+            store.sync_skills_from_disk(&friend_id, &dir).await?
         } else {
-            s.core.store.list_skills(&friend_id).await?
+            store.list_skills(&friend_id).await?
         }
     } else {
-        s.core.store.list_skills(&friend_id).await?
+        store.list_skills(&friend_id).await?
     };
     Ok(Json(serde_json::json!({ "skills": skills })))
 }
 
 async fn list_reflections(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let reflections = s.core.store.list_reflections(&friend_id, 50).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let reflections = store.list_reflections(&friend_id, 50).await?;
     Ok(Json(serde_json::json!({ "reflections": reflections })))
 }
 
@@ -996,16 +1128,16 @@ fn default_assistant_todo_priority() -> i64 {
 
 async fn list_assistant_todos(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<AssistantTodoQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     let status = q
         .status
         .as_deref()
         .map(AssistantTodoStatus::parse);
-    let todos = s
-        .core
-        .store
+    let todos = store
         .list_assistant_todos(&friend_id, status, q.limit.unwrap_or(200))
         .await?;
     Ok(Json(serde_json::json!({ "todos": todos })))
@@ -1013,9 +1145,11 @@ async fn list_assistant_todos(
 
 async fn create_assistant_todo(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
     Json(body): Json<CreateAssistantTodoReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     let intent = if let Some(raw) = body.raw_text.as_deref().filter(|x| !x.trim().is_empty()) {
         parse_quick_intent(raw).unwrap_or_else(|| AssistantIntent::TodoCreate {
             title: if body.title.trim().is_empty() {
@@ -1039,26 +1173,29 @@ async fn create_assistant_todo(
         }
     };
     let plan = plan_from_intent(&friend_id, intent);
-    let todo = s
-        .core
-        .execute_assistant_task_plan(&friend_id, &plan)
-        .await?
-        .ok_or_else(|| ApiError::BadRequest("planner created no todo".into()))?;
+    let tenant_id = store.tenant_id().to_string();
+    let core = s.core.clone();
+    let friend_id = friend_id.clone();
+    let todo = seven_chat_agent_core::tenant_context::with_active_tenant(&tenant_id, || async {
+        core.execute_assistant_task_plan(&friend_id, &plan).await
+    })
+    .await?
+    .ok_or_else(|| ApiError::BadRequest("planner created no todo".into()))?;
     Ok(Json(serde_json::json!({ "todo": todo, "intent": format!("{:?}", plan.intent) })))
 }
 
 async fn update_assistant_todo(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((_friend_id, todo_id)): Path<(String, String)>,
     Json(body): Json<UpdateAssistantTodoReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     if body.title.trim().is_empty() {
         return Err(ApiError::BadRequest("todo title is required".into()));
     }
     let status = body.status.as_deref().map(AssistantTodoStatus::parse);
-    let todo = s
-        .core
-        .store
+    let todo = store
         .update_assistant_todo(
             &todo_id,
             body.title.trim(),
@@ -1073,14 +1210,17 @@ async fn update_assistant_todo(
 
 async fn run_assistant_todos_once(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(friend_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core
-        .enqueue_assistant_task(AssistantQueueTask::IdleTick)
-        .await?;
-    let todos = s
-        .core
-        .store
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let tenant_id = store.tenant_id().to_string();
+    let core = s.core.clone();
+    seven_chat_agent_core::tenant_context::with_active_tenant(&tenant_id, || async {
+        core.enqueue_assistant_task(AssistantQueueTask::IdleTick).await
+    })
+    .await?;
+    let todos = store
         .list_assistant_todos(&friend_id, None, 200)
         .await?;
     Ok(Json(serde_json::json!({ "ok": true, "queued": true, "todos": todos })))
@@ -1094,11 +1234,11 @@ struct AssistantQueueQuery {
 
 async fn list_assistant_queue_jobs(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     axum::extract::Query(q): axum::extract::Query<AssistantQueueQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let jobs = s
-        .core
-        .store
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let jobs = store
         .list_assistant_queue_jobs(q.status.as_deref(), q.limit.unwrap_or(200))
         .await?;
     Ok(Json(serde_json::json!({ "jobs": jobs })))
@@ -1106,8 +1246,10 @@ async fn list_assistant_queue_jobs(
 
 async fn get_assistant_queue_stats(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let stats = s.core.store.assistant_queue_stats().await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let stats = store.assistant_queue_stats().await?;
     Ok(Json(serde_json::json!({ "stats": stats })))
 }
 
@@ -1123,9 +1265,11 @@ fn default_replay_limit() -> i64 {
 
 async fn replay_failed_assistant_queue_jobs(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<ReplayQueueReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let replayed = s.core.store.replay_failed_assistant_jobs(body.limit).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let replayed = store.replay_failed_assistant_jobs(body.limit).await?;
     Ok(Json(serde_json::json!({ "ok": true, "replayed": replayed })))
 }
 
@@ -1141,11 +1285,11 @@ fn default_expires() -> i64 {
 
 async fn create_invite(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<CreateInviteBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let invite = s
-        .core
-        .store
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let invite = store
         .create_invite(&body.friend_id, body.expires_in_hours)
         .await?;
     Ok(Json(serde_json::json!({ "invite": invite })))
@@ -1153,17 +1297,19 @@ async fn create_invite(
 
 async fn list_all_invites(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     axum::extract::Query(q): axum::extract::Query<InviteQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
     if let Some(fid) = q.friend_id {
-        let invites = s.core.store.list_invites(&fid).await?;
+        let invites = store.list_invites(&fid).await?;
         return Ok(Json(serde_json::json!({ "invites": invites })));
     }
-    let friends = s.core.store.list_friends().await?;
+    let friends = store.list_friends().await?;
     let mut all = Vec::new();
     for f in friends {
         if f.backend_kind == seven_chat_agent_core::domain::BackendKind::Human {
-            let invites = s.core.store.list_invites(&f.id).await?;
+            let invites = store.list_invites(&f.id).await?;
             all.extend(invites);
         }
     }
@@ -1177,16 +1323,38 @@ struct InviteQuery {
 
 async fn delete_invite(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    s.core.store.delete_invite(&id).await?;
+    let store = tenant_store_from_request(&s, &headers).await?;
+    store.delete_invite(&id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn store_for_invite(
+    s: &AppState,
+    code: &str,
+) -> Result<seven_chat_agent_core::store::SqliteStore, ApiError> {
+    let invite = s
+        .core
+        .store
+        .get_invite_by_code(code)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let tid = s
+        .core
+        .store
+        .friend_tenant_id(&invite.friend_id)
+        .await?
+        .unwrap_or_else(|| s.core.store.tenant_id().to_string());
+    Ok(s.core.store.for_tenant(&tid))
 }
 
 async fn human_state(
     State(s): State<AppState>,
     Path(code): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = store_for_invite(&s, &code).await?;
     let invite = match s.core.store.get_invite_by_code(&code).await? {
         Some(i) => i,
         None => return Err(ApiError::NotFound),
@@ -1194,20 +1362,16 @@ async fn human_state(
     if invite.used_at.is_none() {
         let _ = s.core.store.consume_invite(&code).await;
     }
-    let friend = s
-        .core
-        .store
+    let friend = store
         .get_friend(&invite.friend_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    let session = s
-        .core
-        .store
+    let session = store
         .upsert_human_session(&friend.id, "invite", None)
         .await?;
-    let convs = s.core.store.list_conversations().await?;
+    let convs = store.list_conversations().await?;
     let messages = if let Some(c) = convs.iter().find(|c| c.target_id == friend.id) {
-        s.core.store.list_messages(&c.id, 200).await?
+        store.list_messages(&c.id, 200).await?
     } else {
         Vec::new()
     };
@@ -1229,6 +1393,7 @@ async fn human_send(
     Path(code): Path<String>,
     Json(body): Json<HumanSendBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = store_for_invite(&s, &code).await?;
     let invite = s
         .core
         .store
@@ -1238,13 +1403,7 @@ async fn human_send(
     let friend_id = invite.friend_id.clone();
     let conv_id = match body.conversation_id {
         Some(id) => id,
-        None => {
-            s.core
-                .store
-                .get_or_create_dm(&friend_id)
-                .await?
-                .id
-        }
+        None => store.get_or_create_dm(&friend_id).await?.id,
     };
     let core = s.core.clone();
     let conv_id_clone = conv_id.clone();
@@ -1272,6 +1431,7 @@ async fn human_typing(
     Path(code): Path<String>,
     Json(body): Json<HumanTypingBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = store_for_invite(&s, &code).await?;
     let invite = s
         .core
         .store
@@ -1279,9 +1439,6 @@ async fn human_typing(
         .await?
         .ok_or(ApiError::NotFound)?;
     let dur = body.duration_ms.unwrap_or(3000);
-    s.core
-        .store
-        .set_human_typing(&invite.friend_id, dur)
-        .await?;
+    store.set_human_typing(&invite.friend_id, dur).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

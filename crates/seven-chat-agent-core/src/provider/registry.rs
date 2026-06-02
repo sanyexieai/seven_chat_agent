@@ -12,9 +12,14 @@ use crate::provider::rate_limit::RateLimiter;
 use crate::provider::types::ProviderUsage;
 use crate::provider::ModelProvider;
 use crate::store::SqliteStore;
+use crate::tenant_context;
 use crate::Result;
 
 pub type ProviderHandle = Arc<dyn ModelProvider>;
+
+fn handle_key(tenant_id: &str, provider_id: &str) -> String {
+    format!("{tenant_id}:{provider_id}")
+}
 
 pub struct ProviderRegistry {
     store: Arc<SqliteStore>,
@@ -35,20 +40,29 @@ impl ProviderRegistry {
     }
 
     pub async fn reload(&self) -> Result<()> {
-        let providers = self.store.list_providers().await?;
-        self.handles.clear();
+        self.reload_tenant(self.store.tenant_id()).await
+    }
+
+    pub async fn reload_tenant(&self, tenant_id: &str) -> Result<()> {
+        let store = self.store.for_tenant(tenant_id);
+        let providers = store.list_providers().await?;
+        let prefix = format!("{tenant_id}:");
+        self.handles.retain(|k, _| !k.starts_with(&prefix));
         for p in providers {
             if !p.enabled {
                 continue;
             }
-            let handle = self.build_handle(p.clone())?;
-            self.handles.insert(p.id.clone(), handle);
+            let handle = self.build_handle(tenant_id, p.clone())?;
+            self.handles.insert(handle_key(tenant_id, &p.id), handle);
         }
         Ok(())
     }
 
     pub fn get(&self, provider_id: &str) -> Option<ProviderHandle> {
-        self.handles.get(provider_id).map(|v| v.clone())
+        let tenant_id = tenant_context::active_tenant_or(self.store.tenant_id());
+        self.handles
+            .get(&handle_key(&tenant_id, provider_id))
+            .map(|v| v.clone())
     }
 
     pub fn list(&self) -> Vec<ProviderHandle> {
@@ -82,9 +96,10 @@ impl ProviderRegistry {
         Ok(std::env::var(env_name).ok().filter(|s| !s.trim().is_empty()))
     }
 
-    fn build_handle(&self, p: Provider) -> Result<ProviderHandle> {
+    fn build_handle(&self, tenant_id: &str, p: Provider) -> Result<ProviderHandle> {
+        let store = Arc::new(self.store.for_tenant(tenant_id));
         let resolver: Arc<dyn KeyResolver> = Arc::new(StoreKeyResolver {
-            store: self.store.clone(),
+            store,
             rate: self.rate.clone(),
         });
         match p.kind.as_str() {
@@ -168,7 +183,7 @@ impl StoreKeyResolver {
     }
 }
 
-async fn seed_default_providers(store: &SqliteStore) -> Result<()> {
+pub async fn seed_default_providers(store: &SqliteStore) -> Result<()> {
     let now = || chrono::Utc::now();
     let defaults = vec![
         Provider {

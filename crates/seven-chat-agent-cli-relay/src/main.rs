@@ -1,6 +1,7 @@
 //! 在远程电脑上运行的 CLI 转发程序：连接服务端 WebSocket，接收 RunJob 并在本机调用 CLI。
 
 mod executor;
+mod workspace;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -25,6 +26,10 @@ struct Args {
     /// 本机节点显示名称
     #[arg(long, env = "SEVEN_CHAT_AGENT_RELAY_NAME", default_value = "local-relay")]
     name: String,
+
+    /// 本机 CLI 工作区根目录（留空则用 ~/.local/share/seven-chat-agent/cli-workspaces）
+    #[arg(long, env = "SEVEN_CHAT_AGENT_RELAY_WORKSPACE_ROOT")]
+    workspace_root: Option<String>,
 }
 
 #[tokio::main]
@@ -38,11 +43,24 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let url = Url::parse(&args.url).context("invalid relay url")?;
-    info!(%url, name = %args.name, "connecting to honeycomb cli relay");
+    let workspace_root = args
+        .workspace_root
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| workspace::workspace_root_string());
+    info!(%url, name = %args.name, %workspace_root, "connecting to honeycomb cli relay");
 
-    let (ws, _) = connect_async(url.as_str())
-        .await
-        .context("websocket connect failed")?;
+    let (ws, response) = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        connect_async(url.as_str()),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("连接超时（15s）"))?
+    .with_context(|| {
+        format!(
+            "无法连接 {url}。请确认 server 已启动；开发模式请用后端地址 ws://127.0.0.1:18737/cli-relay（不要用未配置代理的 18738）"
+        )
+    })?;
+    info!(status = %response.status(), "websocket connected");
     let (mut write, mut read) = ws.split();
 
     let register = RelayMessage::Register {
@@ -51,6 +69,7 @@ async fn main() -> Result<()> {
         host_label: std::env::var("COMPUTERNAME")
             .ok()
             .or_else(|| std::env::var("HOSTNAME").ok()),
+        workspace_root: Some(workspace_root.clone()),
     };
     write
         .send(Message::Text(register.to_json()?))
@@ -83,6 +102,8 @@ async fn main() -> Result<()> {
                         job_id,
                         preset,
                         prompt,
+                        friend_id,
+                        group_id,
                         cwd,
                         cli_session_mode,
                         cli_session_id,
@@ -94,6 +115,8 @@ async fn main() -> Result<()> {
                                 &job_id,
                                 &preset,
                                 &prompt,
+                                friend_id.as_deref(),
+                                group_id.as_deref(),
                                 cwd.as_deref(),
                                 cli_session_mode.as_deref(),
                                 cli_session_id.as_deref(),

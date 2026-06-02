@@ -8,15 +8,18 @@ use seven_chat_agent_core::attachment::{
 };
 use seven_chat_agent_core::domain::MessageAttachment;
 
+use crate::auth::tenant_store_from_request;
 use crate::routes::errors::ApiError;
 use crate::state::AppState;
 
 pub async fn upload_conversation_attachments(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(conv_id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if s.core.store.get_conversation(&conv_id).await?.is_none() {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    if store.get_conversation(&conv_id).await?.is_none() {
         return Err(ApiError::NotFound);
     }
     let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
@@ -46,9 +49,11 @@ pub async fn upload_conversation_attachments(
 
 pub async fn get_upload(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((conv_id, file_id)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    if s.core.store.get_conversation(&conv_id).await?.is_none() {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    if store.get_conversation(&conv_id).await?.is_none() {
         return Err(ApiError::NotFound);
     }
     let data_dir = std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());

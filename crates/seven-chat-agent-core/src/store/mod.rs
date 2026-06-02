@@ -2,14 +2,18 @@ pub mod assistant_global;
 pub mod assistant_policy;
 pub mod assistant_queue;
 pub mod assistant_todo;
+pub mod agent_dna;
 pub mod conversation;
 pub mod friend;
 pub mod group;
+pub mod group_workspace;
 pub mod human;
 pub mod memory;
 pub mod message;
 pub mod provider;
 pub mod skill;
+pub mod tenant_invite;
+pub mod user;
 pub mod vault;
 pub mod workspace;
 pub mod cli_session;
@@ -30,6 +34,8 @@ pub struct SqliteStore {
     pool: SqlitePool,
     pub vault: SecretVault,
     tenant_id: String,
+    /// 当前请求用户；设置后工作区按用户隔离。
+    user_id: Option<String>,
 }
 
 impl SqliteStore {
@@ -66,11 +72,38 @@ impl SqliteStore {
             pool,
             vault,
             tenant_id,
+            user_id: None,
         })
     }
 
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
+    }
+
+    pub fn user_id(&self) -> Option<&str> {
+        self.user_id.as_deref()
+    }
+
+    pub fn is_user_scoped(&self) -> bool {
+        self.user_id.is_some()
+    }
+
+    /// 按请求 tenant 构造同源 store（共享 pool / vault）。
+    pub fn for_tenant(&self, tenant_id: &str) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            vault: self.vault.clone(),
+            tenant_id: tenant_id.to_string(),
+            user_id: None,
+        }
+    }
+
+    /// 绑定登录用户，工作区与 CLI 目录按用户隔离。
+    pub fn for_user(self, user_id: impl Into<String>) -> Self {
+        Self {
+            user_id: Some(user_id.into()),
+            ..self
+        }
     }
 
     /// 确保当前租户存在，并将 legacy `global` 设置行复制到租户 id。
@@ -81,6 +114,11 @@ impl SqliteStore {
             .bind(tid)
             .execute(self.pool())
             .await?;
+        let _ = sqlx::query("UPDATE tenants SET slug = ? WHERE id = ? AND (slug IS NULL OR slug = '')")
+            .bind(tid)
+            .bind(tid)
+            .execute(self.pool())
+            .await;
         sqlx::query(
             r#"INSERT OR IGNORE INTO assistant_global_settings (id, settings, updated_at)
                SELECT ?, settings, updated_at FROM assistant_global_settings WHERE id = 'global'"#,
@@ -285,8 +323,8 @@ impl SqliteStore {
 
         sqlx::query(
             r#"INSERT INTO friends
-                (id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, is_builtin)
-                VALUES (?, ?, NULL, ?, ?, ?, 'pty', ?, 1)"#,
+                (id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, is_builtin, tenant_id, enabled, created_at)
+                VALUES (?, ?, NULL, ?, ?, ?, 'pty', ?, 1, ?, 1, ?)"#,
         )
         .bind(&id)
         .bind("Hex 助理")
@@ -298,7 +336,9 @@ impl SqliteStore {
             serde_json::Value::String("记忆".into()),
         ]).to_string())
         .bind(cfg.to_string())
-        .execute(&self.pool)
+        .bind(self.tenant_id())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(self.pool())
         .await?;
 
         Ok(())
@@ -308,9 +348,9 @@ impl SqliteStore {
         let caps = serde_json::to_string(&p.capabilities)?;
         let price = serde_json::to_string(&p.price)?;
         sqlx::query(
-            r#"INSERT INTO providers (id, kind, display_name, base_url, default_model, capabilities, price, enabled)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
+            r#"INSERT INTO providers (tenant_id, id, kind, display_name, base_url, default_model, capabilities, price, enabled)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(tenant_id, id) DO UPDATE SET
                    kind = excluded.kind,
                    display_name = excluded.display_name,
                    base_url = excluded.base_url,
@@ -319,6 +359,7 @@ impl SqliteStore {
                    price = excluded.price,
                    enabled = excluded.enabled"#,
         )
+        .bind(self.tenant_id())
         .bind(&p.id)
         .bind(&p.kind)
         .bind(&p.display_name)
@@ -334,16 +375,17 @@ impl SqliteStore {
 
     pub async fn list_providers(&self) -> Result<Vec<Provider>> {
         let rows = sqlx::query_as::<_, ProviderRow>(
-            "SELECT id, kind, display_name, base_url, default_model, capabilities, price, enabled, created_at FROM providers ORDER BY display_name",
+            "SELECT id, kind, display_name, base_url, default_model, capabilities, price, enabled, created_at FROM providers WHERE tenant_id = ? ORDER BY display_name",
         )
+        .bind(self.tenant_id())
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(|r| r.into_provider()).collect()
     }
 
     pub async fn delete_provider(&self, id: &str) -> Result<()> {
-        // provider_keys 在 init.sql 里是 ON DELETE CASCADE，会自动跟着删
-        sqlx::query("DELETE FROM providers WHERE id = ?")
+        sqlx::query("DELETE FROM providers WHERE tenant_id = ? AND id = ?")
+            .bind(self.tenant_id())
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -352,12 +394,33 @@ impl SqliteStore {
 
     pub async fn get_provider(&self, id: &str) -> Result<Option<Provider>> {
         let row = sqlx::query_as::<_, ProviderRow>(
-            "SELECT id, kind, display_name, base_url, default_model, capabilities, price, enabled, created_at FROM providers WHERE id = ?",
+            "SELECT id, kind, display_name, base_url, default_model, capabilities, price, enabled, created_at FROM providers WHERE tenant_id = ? AND id = ?",
         )
+        .bind(self.tenant_id())
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|r| r.into_provider()).transpose()
+    }
+
+    pub async fn conversation_tenant_id(&self, conversation_id: &str) -> Result<Option<String>> {
+        let tid: Option<String> = sqlx::query_scalar(
+            "SELECT tenant_id FROM conversations WHERE id = ?",
+        )
+        .bind(conversation_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(tid)
+    }
+
+    pub async fn friend_tenant_id(&self, friend_id: &str) -> Result<Option<String>> {
+        let tid: Option<String> = sqlx::query_scalar(
+            "SELECT tenant_id FROM friends WHERE id = ?",
+        )
+        .bind(friend_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(tid)
     }
 
     pub fn friend_kind_from_str(s: &str) -> Option<BackendKind> {

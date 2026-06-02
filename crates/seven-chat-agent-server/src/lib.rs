@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod cli_relay_ws;
 pub mod routes;
 pub mod state;

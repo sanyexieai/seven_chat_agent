@@ -46,6 +46,7 @@ export function Avatar({ name, kind, size = 36 }: Props) {
 }
 
 function badgeFor(kind?: BackendKind | "user") {
+  if (kind === "user") return null;
   switch (kind) {
     case "pty":
       return { label: "CLI", title: "CLI 接入" };

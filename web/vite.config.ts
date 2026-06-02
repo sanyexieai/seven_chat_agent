@@ -21,6 +21,11 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      "/cli-relay": {
+        target: "ws://127.0.0.1:18737",
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 });

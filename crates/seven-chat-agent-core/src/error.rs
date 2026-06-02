@@ -34,11 +34,17 @@ pub enum Error {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("other: {0}")]
     Other(#[from] anyhow::Error),
 }
 
 impl Error {
+    pub fn unauthorized<S: Into<String>>(s: S) -> Self {
+        Self::Unauthorized(s.into())
+    }
     pub fn provider<S: Into<String>>(s: S) -> Self {
         Self::Provider(s.into())
     }

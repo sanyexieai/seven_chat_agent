@@ -16,6 +16,8 @@ pub struct RelayNodeInfo {
     pub relay_id: String,
     pub name: String,
     pub host_label: Option<String>,
+    /// 转发端上报的工作区根目录（绝对路径）。
+    pub workspace_root: Option<String>,
     pub online: bool,
     pub connected_at: String,
 }
@@ -24,7 +26,10 @@ pub struct RelayNodeInfo {
 pub struct RelayJobSpec {
     pub preset: String,
     pub prompt: String,
-    pub cwd: Option<String>,
+    pub friend_id: String,
+    pub group_id: Option<String>,
+    /// 群成员 binding.local_path 等显式覆盖；留空则由转发端按约定解析。
+    pub cwd_override: Option<String>,
     pub cli_session_mode: Option<String>,
     pub cli_session_id: Option<String>,
     pub env: Vec<(String, String)>,
@@ -39,6 +44,7 @@ pub struct RelayJobResult {
 struct ActiveRelay {
     name: String,
     host_label: Option<String>,
+    workspace_root: Option<String>,
     connected_at: chrono::DateTime<chrono::Utc>,
     outbound: mpsc::Sender<RelayMessage>,
 }
@@ -87,10 +93,31 @@ impl RelayHub {
                 relay_id: e.key().clone(),
                 name: e.value().name.clone(),
                 host_label: e.value().host_label.clone(),
+                workspace_root: e.value().workspace_root.clone(),
                 online: true,
                 connected_at: e.value().connected_at.to_rfc3339(),
             })
             .collect()
+    }
+
+    /// 转发端约定的好友工作区路径（仅展示；实际目录由转发端创建）。
+    pub fn workspace_path_for_friend(&self, relay_id: &str, friend_id: &str) -> Option<String> {
+        let relay = self.relays.get(relay_id)?;
+        let root = relay.workspace_root.as_deref()?.trim();
+        if root.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{}/friends/{}",
+            root.trim_end_matches('/'),
+            friend_id.trim()
+        ))
+    }
+
+    pub fn set_workspace_root(&self, relay_id: &str, workspace_root: String) {
+        if let Some(mut relay) = self.relays.get_mut(relay_id) {
+            relay.workspace_root = Some(workspace_root);
+        }
     }
 
     pub fn register_connection(
@@ -98,6 +125,7 @@ impl RelayHub {
         pairing_token: String,
         name: String,
         host_label: Option<String>,
+        workspace_root: Option<String>,
     ) -> Result<(String, mpsc::Receiver<RelayMessage>), String> {
         if !self.consume_pairing_token(&pairing_token) {
             return Err("配对码无效或已过期".into());
@@ -109,6 +137,7 @@ impl RelayHub {
             ActiveRelay {
                 name,
                 host_label,
+                workspace_root,
                 connected_at: chrono::Utc::now(),
                 outbound: tx,
             },
@@ -148,7 +177,9 @@ impl RelayHub {
             job_id: job_id.clone(),
             preset: spec.preset,
             prompt: spec.prompt,
-            cwd: spec.cwd,
+            friend_id: Some(spec.friend_id),
+            group_id: spec.group_id,
+            cwd: spec.cwd_override,
             cli_session_mode: spec.cli_session_mode,
             cli_session_id: spec.cli_session_id,
             env: spec.env,

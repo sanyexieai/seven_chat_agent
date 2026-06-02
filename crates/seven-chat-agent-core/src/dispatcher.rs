@@ -183,6 +183,23 @@ impl MessageDispatcher {
         }
     }
 
+    /// 当前 dispatch 任务绑定的 tenant store（无绑定时用进程默认 tenant）。
+    pub(crate) fn dispatch_store(&self) -> SqliteStore {
+        let tid = crate::tenant_context::active_tenant_or(self.store.tenant_id());
+        let mut scoped = self.store.for_tenant(&tid);
+        if let Some(uid) = crate::tenant_context::active_user_id() {
+            scoped = scoped.for_user(uid);
+        }
+        scoped
+    }
+
+    async fn conversation_tenant_id(&self, conversation_id: &str) -> Result<String> {
+        if let Some(tid) = self.store.conversation_tenant_id(conversation_id).await? {
+            return Ok(tid);
+        }
+        Ok(self.store.tenant_id().to_string())
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<BusEvent> {
         self.tx.subscribe()
     }
@@ -201,6 +218,20 @@ impl MessageDispatcher {
     }
 
     pub async fn send_user_message_with_attachments(
+        &self,
+        conversation_id: &str,
+        content: &str,
+        attachments: &[MessageAttachment],
+    ) -> Result<Message> {
+        let tenant_id = self.conversation_tenant_id(conversation_id).await?;
+        let user_id = crate::tenant_context::active_user_id();
+        crate::tenant_context::with_active_scope(&tenant_id, user_id.as_deref(), || {
+            self.send_user_message_with_attachments_scoped(conversation_id, content, attachments)
+        })
+        .await
+    }
+
+    async fn send_user_message_with_attachments_scoped(
         &self,
         conversation_id: &str,
         content: &str,
@@ -229,18 +260,23 @@ impl MessageDispatcher {
         human_friend_id: &str,
         content: &str,
     ) -> Result<Message> {
-        let friend = self
-            .store
-            .get_friend(human_friend_id)
-            .await?
-            .ok_or_else(|| Error::not_found("human friend"))?;
-        self.send_message_from(
-            conversation_id,
-            SenderKind::Friend,
-            human_friend_id,
-            &friend.name,
-            content,
-        )
+        let tenant_id = self.conversation_tenant_id(conversation_id).await?;
+        crate::tenant_context::with_active_tenant(&tenant_id, || async {
+            let friend = self
+                .dispatch_store()
+                .get_friend(human_friend_id)
+                .await?
+                .ok_or_else(|| Error::not_found("human friend"))?;
+            self.send_message_from_with_attachments(
+                conversation_id,
+                SenderKind::Friend,
+                human_friend_id,
+                &friend.name,
+                content,
+                &[],
+            )
+            .await
+        })
         .await
     }
 
@@ -272,14 +308,43 @@ impl MessageDispatcher {
         content: &str,
         attachments: &[MessageAttachment],
     ) -> Result<Message> {
+        let tenant_id = self.conversation_tenant_id(conversation_id).await?;
         let conv = self
             .store
-            .get_conversation(conversation_id)
+            .for_tenant(&tenant_id)
+            .get_conversation_internal(conversation_id)
             .await?
             .ok_or_else(|| Error::not_found("conversation"))?;
+        let scope_user = conv.scope_user_id.clone();
+        crate::tenant_context::with_active_scope(
+            &tenant_id,
+            scope_user.as_deref(),
+            || {
+                self.send_message_from_with_attachments_scoped(
+                    &conv,
+                    sender_kind,
+                    sender_id,
+                    sender_name,
+                    content,
+                    attachments,
+                )
+            },
+        )
+        .await
+    }
+
+    async fn send_message_from_with_attachments_scoped(
+        &self,
+        conv: &Conversation,
+        sender_kind: SenderKind,
+        sender_id: &str,
+        sender_name: &str,
+        content: &str,
+        attachments: &[MessageAttachment],
+    ) -> Result<Message> {
         let turn_id = Uuid::new_v4().to_string();
-        let msg = self
-            .store
+        let store = self.dispatch_store();
+        let msg = store
             .insert_message(NewMessage {
                 conversation_id: &conv.id,
                 turn_id: &turn_id,
@@ -316,7 +381,7 @@ impl MessageDispatcher {
                     {
                         self.scheduler.reset_turn(&turn_id);
                         self.emit(BusEvent::TurnEnded {
-                            conversation_id: conv.id,
+                            conversation_id: conv.id.clone(),
                             turn_id,
                         });
                         return Ok(msg);
@@ -332,7 +397,7 @@ impl MessageDispatcher {
         }
         self.scheduler.reset_turn(&turn_id);
         self.emit(BusEvent::TurnEnded {
-            conversation_id: conv.id,
+            conversation_id: conv.id.clone(),
             turn_id,
         });
         Ok(msg)
@@ -344,7 +409,7 @@ impl MessageDispatcher {
         turn_id: &str,
         content: &str,
     ) -> Result<bool> {
-        let Some(builtin_id) = self.store.builtin_assistant_id().await? else {
+        let Some(builtin_id) = self.dispatch_store().builtin_assistant_id().await? else {
             return Ok(false);
         };
         if conv.target_id != builtin_id {
@@ -407,7 +472,7 @@ impl MessageDispatcher {
                         "schedule": schedule_json,
                         "todo_id": created_todo.as_ref().map(|t| t.id.clone()),
                     });
-                    self.store
+                    self.dispatch_store()
                         .enqueue_assistant_job(
                             "todo_reminder",
                             Some(&payload.to_string()),
@@ -453,12 +518,12 @@ impl MessageDispatcher {
     ) -> Result<()> {
         let friend_id = conv.target_id.clone();
         let friend = self
-            .store
+            .dispatch_store()
             .get_friend(&friend_id)
             .await?
             .ok_or_else(|| Error::not_found("friend"))?;
         let agent = self.agents.get(&friend_id).await?;
-        let history = self.store.recent_messages(&conv.id, 40).await?;
+        let history = self.dispatch_store().recent_messages(&conv.id, 40).await?;
         let ctx = ChatContext {
             conversation_id: conv.id.clone(),
             group_id: None,
@@ -467,6 +532,7 @@ impl MessageDispatcher {
             self_friend: friend.clone(),
             peers: vec![],
             user_attachments: user_msg.attachments.clone(),
+            member_group_local_path: None,
         };
         self.stream_one_reply(&conv, &user_msg, &turn_id, &friend, agent, ctx, &user_msg.content, 0)
             .await?;
@@ -487,7 +553,7 @@ impl MessageDispatcher {
         let settings = group.settings.clone();
 
         if user_msg.sender_kind == SenderKind::User && settings.task_flow.enabled {
-            let members = expert_friends_for_group(&self.store, &group.id).await?;
+            let members = expert_friends_for_group(&self.dispatch_store(), &group.id).await?;
             if self
                 .run_task_flow(&conv, &user_msg, &turn_id, &settings, &members)
                 .await?
@@ -508,7 +574,7 @@ impl MessageDispatcher {
 
         while !frontier.is_empty() {
             let trigger = frontier.remove(0);
-            let member_configs = self.store.list_group_member_configs(&group.id).await?;
+            let member_configs = self.dispatch_store().list_group_member_configs(&group.id).await?;
             let override_by_friend: std::collections::HashMap<_, _> = member_configs
                 .iter()
                 .map(|c| (c.friend_id.clone(), c.judge_override.clone()))
@@ -518,14 +584,14 @@ impl MessageDispatcher {
                 if !c.role.participates_in_expert_scheduling() {
                     continue;
                 }
-                if let Some(f) = self.store.get_friend(&c.friend_id).await? {
+                if let Some(f) = self.dispatch_store().get_friend(&c.friend_id).await? {
                     if f.enabled {
                         members.push(f);
                     }
                 }
             }
 
-            let history = self.store.recent_messages(&conv.id, 60).await?;
+            let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
             let triggers_self =
                 trigger.sender_kind == SenderKind::User || matches!(trigger.sender_kind, SenderKind::Friend);
 
@@ -636,7 +702,7 @@ impl MessageDispatcher {
             });
 
             for d in decisions {
-                let friend = match self.store.get_friend(&d.friend_id).await? {
+                let friend = match self.dispatch_store().get_friend(&d.friend_id).await? {
                     Some(f) => f,
                     None => continue,
                 };
@@ -646,7 +712,7 @@ impl MessageDispatcher {
                     .filter(|m| m.id != friend.id)
                     .cloned()
                     .collect();
-                let history = self.store.recent_messages(&conv.id, 60).await?;
+                let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
                 let ctx = ChatContext {
                     conversation_id: conv.id.clone(),
                     group_id: Some(group.id.clone()),
@@ -655,6 +721,7 @@ impl MessageDispatcher {
                     self_friend: friend.clone(),
                     peers,
                     user_attachments: trigger.attachments.clone(),
+                    member_group_local_path: None,
                 };
                 if d.delay_ms > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(d.delay_ms)).await;
@@ -757,7 +824,7 @@ impl MessageDispatcher {
                 *counts.entry(m.sender_id.clone()).or_insert(0) += 1;
             }
             cur = match m.parent_id {
-                Some(pid) => self.store.get_message(&pid).await.ok().flatten(),
+                Some(pid) => self.dispatch_store().get_message(&pid).await.ok().flatten(),
                 None => None,
             };
         }
@@ -773,7 +840,7 @@ impl MessageDispatcher {
         if human_ids.is_empty() {
             return false;
         }
-        let typing = self.store.list_typing_humans().await.unwrap_or_default();
+        let typing = self.dispatch_store().list_typing_humans().await.unwrap_or_default();
         typing.into_iter().any(|id| human_ids.contains(&id))
     }
 
@@ -959,7 +1026,7 @@ impl MessageDispatcher {
                 blocks_for_store,
             )
             .await;
-        if let Ok(Some(m)) = self.store.get_message(&placeholder.id).await {
+        if let Ok(Some(m)) = self.dispatch_store().get_message(&placeholder.id).await {
             self.emit(BusEvent::MessageDone {
                 message: m.clone(),
             });
@@ -976,58 +1043,56 @@ impl MessageDispatcher {
         approve: bool,
         content_override: Option<String>,
     ) -> Result<Message> {
-        let msg = self
-            .store
-            .get_message(message_id)
-            .await?
-            .ok_or_else(|| Error::not_found("message"))?;
-        if msg.conversation_id != conversation_id {
-            return Err(Error::bad_request("消息不属于该会话"));
-        }
-        let updated = self
-            .store
-            .resolve_delegate_message(
-                message_id,
-                approve,
-                content_override.as_deref(),
-            )
-            .await?;
-        self.emit(BusEvent::MessageDone {
-            message: updated.clone(),
-        });
+        let tenant_id = self.conversation_tenant_id(conversation_id).await?;
+        crate::tenant_context::with_active_tenant(&tenant_id, || async {
+            let store = self.dispatch_store();
+            let msg = store
+                .get_message(message_id)
+                .await?
+                .ok_or_else(|| Error::not_found("message"))?;
+            if msg.conversation_id != conversation_id {
+                return Err(Error::bad_request("消息不属于该会话"));
+            }
+            let updated = store
+                .resolve_delegate_message(message_id, approve, content_override.as_deref())
+                .await?;
+            self.emit(BusEvent::MessageDone {
+                message: updated.clone(),
+            });
 
-        if let Ok(Some(conv)) = self.store.get_conversation(conversation_id).await {
-            if conv.kind == ConvKind::Group {
-                if let Ok(Some(group)) = self.store.get_group(&conv.target_id).await {
-                    let ast = self
-                        .store
-                        .resolve_group_assistant_settings(&group.settings.assistant)
-                        .await
-                        .unwrap_or_else(|_| group.settings.assistant.clone());
-                    let event = if approve {
-                        ImWritebackEvent::DelegateApproved
-                    } else {
-                        ImWritebackEvent::DelegateRejected
-                    };
-                    im_writeback::spawn_im_writeback_notify(
-                        group,
-                        ast,
-                        conversation_id.to_string(),
-                        updated.clone(),
-                        event,
-                    );
+            if let Ok(Some(conv)) = store.get_conversation(conversation_id).await {
+                if conv.kind == ConvKind::Group {
+                    if let Ok(Some(group)) = store.get_group(&conv.target_id).await {
+                        let ast = store
+                            .resolve_group_assistant_settings(&group.settings.assistant)
+                            .await
+                            .unwrap_or_else(|_| group.settings.assistant.clone());
+                        let event = if approve {
+                            ImWritebackEvent::DelegateApproved
+                        } else {
+                            ImWritebackEvent::DelegateRejected
+                        };
+                        im_writeback::spawn_im_writeback_notify(
+                            group,
+                            ast,
+                            conversation_id.to_string(),
+                            updated.clone(),
+                            event,
+                        );
+                    }
                 }
             }
-        }
 
-        Ok(updated)
+            Ok(updated)
+        })
+        .await
     }
 
     async fn observe_user_message_for_builtin_assistant(&self, conv: &Conversation, msg: &Message) {
-        let Ok(Some(assistant_id)) = self.store.builtin_assistant_id().await else {
+        let Ok(Some(assistant_id)) = self.dispatch_store().builtin_assistant_id().await else {
             return;
         };
-        let Ok(global) = self.store.get_assistant_global_settings().await else {
+        let Ok(global) = self.dispatch_store().get_assistant_global_settings().await else {
             return;
         };
         let allowed = match conv.kind {
@@ -1156,7 +1221,7 @@ impl MessageDispatcher {
             return Err(Error::bad_request("IM 入站密钥无效"));
         }
 
-        let conv = self.store.get_or_create_group_conversation(group_id).await?;
+        let conv = self.dispatch_store().get_or_create_group_conversation(group_id).await?;
 
         match action {
             "user_message" => {

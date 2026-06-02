@@ -11,6 +11,13 @@ pub enum RelayMessage {
         name: String,
         #[serde(default)]
         host_label: Option<String>,
+        /// 转发端本机工作区根目录（绝对路径）；由转发程序自行决定。
+        #[serde(default)]
+        workspace_root: Option<String>,
+    },
+    /// 转发端 → 服务端：工作区根目录变更（可选，连接后更新）
+    WorkspaceReport {
+        workspace_root: String,
     },
     /// 服务端 → 转发端：注册成功
     Registered {
@@ -22,6 +29,13 @@ pub enum RelayMessage {
         job_id: String,
         preset: String,
         prompt: String,
+        /// 好友 id；转发端据此解析 `{workspace_root}/friends/{friend_id}`。
+        #[serde(default)]
+        friend_id: Option<String>,
+        /// 群 id；转发端据此解析 `{workspace_root}/groups/{group_id}`（优先于 friend）。
+        #[serde(default)]
+        group_id: Option<String>,
+        /// 显式 cwd 覆盖（群成员 binding.local_path 等）；留空则由转发端按约定解析。
         #[serde(default)]
         cwd: Option<String>,
         #[serde(default)]

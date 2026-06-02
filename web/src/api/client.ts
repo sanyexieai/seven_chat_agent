@@ -93,13 +93,19 @@ async function ensureWsApi(): Promise<void> {
   return wsApiReady;
 }
 
-async function wsInvoke<T>(method: string, params?: Record<string, any>): Promise<T> {
+export async function wsInvoke<T>(method: string, params?: Record<string, any>): Promise<T> {
   await ensureWsApi();
+  const token =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("seven_chat_agent_token")
+      : null;
+  const merged = { ...(params ?? {}) };
+  if (token && !merged.auth_token) merged.auth_token = token;
   if (!wsApi || wsApi.readyState !== WebSocket.OPEN) {
     throw new Error("ws-api not connected");
   }
   const id = `req-${Date.now()}-${++wsReqSeq}`;
-  const payload = JSON.stringify({ id, method, params: params ?? {} });
+  const payload = JSON.stringify({ id, method, params: merged });
   const out = new Promise<T>((resolve, reject) => {
     wsPending.set(id, {
       resolve: (v) => resolve(v as T),
@@ -641,6 +647,22 @@ export const api = {
     settings: GroupSettings;
     members: GroupMemberConfig[];
     member_ids?: string[];
+    workspaces?: Array<{
+      id?: string;
+      name: string;
+      kind?: string;
+      git_url?: string | null;
+      default_branch?: string | null;
+      logical_key?: string | null;
+    }>;
+    member_bindings?: Array<{
+      id?: string;
+      group_workspace_id: string;
+      friend_id: string;
+      execution_mode?: string | null;
+      relay_id?: string | null;
+      local_path?: string | null;
+    }>;
   }) =>
     jsonFetch<{
       group: GroupBundle["group"];
@@ -837,7 +859,9 @@ export const api = {
       body: JSON.stringify({ duration_ms }),
     }),
   createCliRelayPairingToken: () =>
-    wsInvoke<{ pairing_token: string }>("createCliRelayPairingToken"),
+    wsInvoke<{ pairing_token: string; relay_ws_url: string }>(
+      "createCliRelayPairingToken",
+    ),
   listCliRelays: () => wsInvoke<{ relays: CliRelayNode[] }>("listCliRelays"),
 };
 

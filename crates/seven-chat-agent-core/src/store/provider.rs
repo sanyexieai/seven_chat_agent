@@ -51,15 +51,17 @@ impl SqliteStore {
     pub async fn list_provider_keys(&self, provider_id: Option<&str>) -> Result<Vec<ProviderKey>> {
         let rows: Vec<ProviderKeyRow> = if let Some(p) = provider_id {
             sqlx::query_as(
-                "SELECT id, provider_id, label, secret_ref, rpm_limit, tpm_limit, monthly_budget_usd, current_spent_usd, status FROM provider_keys WHERE provider_id = ? ORDER BY label",
+                "SELECT id, provider_id, label, secret_ref, rpm_limit, tpm_limit, monthly_budget_usd, current_spent_usd, status FROM provider_keys WHERE tenant_id = ? AND provider_id = ? ORDER BY label",
             )
+            .bind(self.tenant_id())
             .bind(p)
             .fetch_all(self.pool())
             .await?
         } else {
             sqlx::query_as(
-                "SELECT id, provider_id, label, secret_ref, rpm_limit, tpm_limit, monthly_budget_usd, current_spent_usd, status FROM provider_keys ORDER BY provider_id, label",
+                "SELECT id, provider_id, label, secret_ref, rpm_limit, tpm_limit, monthly_budget_usd, current_spent_usd, status FROM provider_keys WHERE tenant_id = ? ORDER BY provider_id, label",
             )
+            .bind(self.tenant_id())
             .fetch_all(self.pool())
             .await?
         };
@@ -68,9 +70,10 @@ impl SqliteStore {
 
     pub async fn get_provider_key(&self, id: &str) -> Result<Option<ProviderKey>> {
         let row: Option<ProviderKeyRow> = sqlx::query_as(
-            "SELECT id, provider_id, label, secret_ref, rpm_limit, tpm_limit, monthly_budget_usd, current_spent_usd, status FROM provider_keys WHERE id = ?",
+            "SELECT id, provider_id, label, secret_ref, rpm_limit, tpm_limit, monthly_budget_usd, current_spent_usd, status FROM provider_keys WHERE id = ? AND tenant_id = ?",
         )
         .bind(id)
+        .bind(self.tenant_id())
         .fetch_optional(self.pool())
         .await?;
         Ok(row.map(Into::into))
@@ -110,9 +113,10 @@ impl SqliteStore {
 
         if exists == 0 {
             sqlx::query(
-                "INSERT INTO provider_keys (id, provider_id, label, secret_ref, rpm_limit, tpm_limit, monthly_budget_usd, current_spent_usd, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'active', ?)",
+                "INSERT INTO provider_keys (id, tenant_id, provider_id, label, secret_ref, rpm_limit, tpm_limit, monthly_budget_usd, current_spent_usd, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'active', ?)",
             )
             .bind(&id)
+            .bind(self.tenant_id())
             .bind(&req.provider_id)
             .bind(&req.label)
             .bind(&secret_ref)

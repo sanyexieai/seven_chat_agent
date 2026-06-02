@@ -66,6 +66,9 @@ const defaultGlobal: AssistantGlobalSettings = {
   embedding_enabled: false,
   ephemeral_ttl_hours: 168,
   evolution_enabled: true,
+  evolution_token_budget_ratio: 0.1,
+  evolution_token_budget_absolute: 0,
+  evolution_tokens_used: 0,
   auto_extract_memories: true,
   proactive_enabled: true,
   proactive_batch_size: 2,
@@ -1753,6 +1756,51 @@ export function AssistantPanel({ friendId, onClose, onAssistChat }: Props) {
                   />
                   回合后反思并写入知识库
                 </label>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="label text-xs">进化池比例（0～1）</label>
+                    <input
+                      className="input text-xs"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={global.evolution_token_budget_ratio ?? 0.1}
+                      onChange={(e) =>
+                        setGlobal({
+                          ...global,
+                          evolution_token_budget_ratio: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-xs">进化池硬顶（0=仅比例）</label>
+                    <input
+                      className="input text-xs"
+                      type="number"
+                      min={0}
+                      value={global.evolution_token_budget_absolute ?? 0}
+                      onChange={(e) =>
+                        setGlobal({
+                          ...global,
+                          evolution_token_budget_absolute: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label text-xs">进化池本月已用</label>
+                    <input
+                      className="input text-xs bg-slate-50"
+                      readOnly
+                      value={global.evolution_tokens_used ?? 0}
+                    />
+                  </div>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  反思/进化任务单独记账，与主对话月度预算隔离。
+                </p>
                 <label className="mt-1 flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"

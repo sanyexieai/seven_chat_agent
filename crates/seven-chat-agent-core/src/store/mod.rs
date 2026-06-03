@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod assistant_global;
 pub mod assistant_policy;
 pub mod assistant_queue;

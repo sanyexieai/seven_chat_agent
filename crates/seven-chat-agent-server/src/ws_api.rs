@@ -1281,6 +1281,231 @@ async fn handle_method(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "user": user }))
         }
+        "getTenantAdminOverview" => {
+            ws_require_admin(&params, &store).await?;
+            let overview = store
+                .tenant_admin_overview(store.tenant_id())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "overview": overview }))
+        }
+        "listTenantUserSessions" => {
+            ws_require_admin(&params, &store).await?;
+            let limit = params
+                .get("limit")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(200);
+            let sessions = store
+                .list_tenant_user_sessions(store.tenant_id(), limit)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "sessions": sessions }))
+        }
+        "revokeTenantUserSession" => {
+            ws_require_admin(&params, &store).await?;
+            let session_id = params
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "session_id required".to_string())?;
+            store
+                .revoke_tenant_user_session(store.tenant_id(), session_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "revokeTenantUserSessions" => {
+            ws_require_admin(&params, &store).await?;
+            let user_id = params
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "user_id required".to_string())?;
+            let keep_current = params
+                .get("keep_current")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let except_session_id = if keep_current {
+                let token = params
+                    .get("auth_token")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                if let Some(tok) = token {
+                    store
+                        .find_session_id_by_token(tok)
+                        .await
+                        .map_err(|e| e.to_string())?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let revoked = store
+                .revoke_all_user_sessions_in_tenant(
+                    store.tenant_id(),
+                    user_id,
+                    except_session_id.as_deref(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true, "revoked": revoked }))
+        }
+        "listTenantConversationsAdmin" => {
+            ws_require_admin(&params, &store).await?;
+            let limit = params
+                .get("limit")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(200);
+            let conversations = store
+                .list_tenant_conversations_admin(store.tenant_id(), limit)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "conversations": conversations }))
+        }
+        "updateTenantProfile" => {
+            ws_require_admin(&params, &store).await?;
+            let name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "name required".to_string())?;
+            let slug = params.get("slug").and_then(|v| v.as_str());
+            let tenant = store
+                .update_tenant_profile(store.tenant_id(), name, slug)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "tenant": tenant }))
+        }
+        "createTenantMember" => {
+            ws_require_admin(&params, &store).await?;
+            let email = params
+                .get("email")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "email required".to_string())?;
+            let username = params
+                .get("username")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "username required".to_string())?;
+            let password = params
+                .get("password")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "password required".to_string())?;
+            let display_name = params
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "display_name required".to_string())?;
+            let role = params.get("role").and_then(|v| v.as_str());
+            let user = store
+                .admin_create_tenant_member(
+                    store.tenant_id(),
+                    email,
+                    username,
+                    password,
+                    display_name,
+                    role,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "user": user }))
+        }
+        "updateTenantMember" => {
+            ws_require_admin(&params, &store).await?;
+            let user_id = params
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "user_id required".to_string())?;
+            let display_name = params.get("display_name").and_then(|v| v.as_str());
+            let email = params.get("email").and_then(|v| v.as_str());
+            let username = params.get("username").and_then(|v| v.as_str());
+            let password = params.get("password").and_then(|v| v.as_str());
+            let role = params.get("role").and_then(|v| v.as_str());
+            let user = store
+                .admin_update_tenant_member(
+                    store.tenant_id(),
+                    user_id,
+                    display_name,
+                    email,
+                    username,
+                    password,
+                    role,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "user": user }))
+        }
+        "deleteTenantMember" => {
+            let session = ws_require_admin(&params, &store).await?;
+            let user_id = params
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "user_id required".to_string())?;
+            store
+                .admin_delete_tenant_member(store.tenant_id(), user_id, &session.user_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "updateTenantInvite" => {
+            ws_require_admin(&params, &store).await?;
+            let id = params
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "id required".to_string())?;
+            let invited_email = match params.get("invited_email") {
+                None => None,
+                Some(v) if v.is_null() => Some(None),
+                Some(v) => Some(Some(
+                    v.as_str()
+                        .ok_or_else(|| "invited_email must be string or null".to_string())?
+                        .to_string(),
+                )),
+            };
+            let role = params.get("role").and_then(|v| v.as_str());
+            let expires_in_hours = params.get("expires_in_hours").and_then(|v| v.as_i64());
+            let invite = store
+                .update_tenant_invite_admin(
+                    store.tenant_id(),
+                    id,
+                    invited_email,
+                    role,
+                    expires_in_hours,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "invite": invite }))
+        }
+        "deleteTenantConversationAdmin" => {
+            ws_require_admin(&params, &store).await?;
+            let conversation_id = params
+                .get("conversation_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "conversation_id required".to_string())?;
+            store
+                .admin_delete_tenant_conversation(store.tenant_id(), conversation_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "updateTenantConversationAdmin" => {
+            ws_require_admin(&params, &store).await?;
+            let conversation_id = params
+                .get("conversation_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "conversation_id required".to_string())?;
+            let title = params.get("title").and_then(|v| v.as_str());
+            let conversation = store
+                .admin_update_tenant_conversation(store.tenant_id(), conversation_id, title)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "conversation": conversation }))
+        }
+        "purgeTenantExpiredSessions" => {
+            ws_require_admin(&params, &store).await?;
+            let purged = store
+                .admin_purge_expired_sessions(store.tenant_id())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true, "purged": purged }))
+        }
         "getAgentDna" => {
             let dna = store.get_agent_dna().await.map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "dna": dna }))

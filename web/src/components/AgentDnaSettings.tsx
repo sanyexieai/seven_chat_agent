@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { wsInvoke } from "../api/client";
 import { useAuth } from "../stores/auth";
+import { isTenantAdmin } from "../tenantAdmin";
 import type { AgentDna } from "../types";
 
 export function AgentDnaSettings() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isTenantAdmin(user?.role);
   const [dna, setDna] = useState<AgentDna | null>(null);
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);

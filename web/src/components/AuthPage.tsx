@@ -13,7 +13,7 @@ interface AuthPageProps {
 }
 
 export function AuthPage({ onSuccess }: AuthPageProps) {
-  const { login, register, authRequired } = useAuth();
+  const { login, register } = useAuth();
   const [mode, setMode] = useState<"login" | "register">(
     inviteCodeFromUrl() ? "register" : "login",
   );
@@ -84,9 +84,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
           <h1 className="text-lg font-semibold text-slate-800">
             Seven Chat Agent
           </h1>
-          <p className="text-sm text-slate-500">
-            {authRequired ? "请登录以继续" : "登录或注册（可选）"}
-          </p>
+          <p className="text-sm text-slate-500">请登录或注册以继续</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -104,6 +102,11 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
             注册
           </button>
         </div>
+        {mode === "register" && !inviteCode.trim() && (
+          <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            在该租户下<strong>首位注册用户</strong>将自动成为管理员，可邀请成员并管理全局配置。
+          </p>
+        )}
         {mode === "register" && (
           <div>
             <label className="label">显示名称</label>

@@ -62,7 +62,7 @@ impl SqliteStore {
         }
     }
 
-    async fn user_exists_by_email(&self, tenant_id: &str, email: &str) -> Result<bool> {
+    pub(crate) async fn user_exists_by_email(&self, tenant_id: &str, email: &str) -> Result<bool> {
         let id: Option<String> = sqlx::query_scalar(
             "SELECT id FROM users WHERE tenant_id = ? AND email = ?",
         )
@@ -73,7 +73,11 @@ impl SqliteStore {
         Ok(id.is_some())
     }
 
-    async fn user_exists_by_username(&self, tenant_id: &str, username: &str) -> Result<bool> {
+    pub(crate) async fn user_exists_by_username(
+        &self,
+        tenant_id: &str,
+        username: &str,
+    ) -> Result<bool> {
         let id: Option<String> = sqlx::query_scalar(
             "SELECT id FROM users WHERE tenant_id = ? AND username = ?",
         )
@@ -153,7 +157,7 @@ impl SqliteStore {
         Ok(n)
     }
 
-    async fn insert_user(
+    pub(crate) async fn insert_user(
         &self,
         tenant_id: &str,
         email: &str,
@@ -232,6 +236,7 @@ impl SqliteStore {
 
         let slug = normalize_tenant_slug(req.tenant_slug.as_deref())?;
         let tenant_id = self.ensure_tenant_by_slug(&slug).await?;
+        // 该租户下首位注册用户为管理员（新租户或尚无成员时 user_count == 0）
         let user_count = self.count_users_in_tenant(&tenant_id).await?;
         let role = if user_count == 0 { "admin" } else { "member" };
         let user_id = self

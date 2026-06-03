@@ -96,6 +96,44 @@ bash remote-up.sh cli-relay
 
 > **说明**：`codex` / `agent` 等 CLI 通常安装在开发者本机；容器内 relay 仅适合服务端同机联调。生产环境更推荐在远程电脑直接运行 `seven-chat-agent-cli-relay` 二进制。
 
+## 本地一键构建并推送
+
+`scripts/push-registry.sh` 会：
+
+1. 读取 `deploy/.image-version`，默认 **patch +1**（也可命令行传入 `2.0.3` 或 `v2.0.3`）
+2. 构建 `server` / `cli-relay` 镜像（默认两者都推，可用 `--server-only`）
+3. 打标签 `:版本` 与 `:latest`，依次 `docker push`
+4. 推送成功后写回 `deploy/.image-version`
+
+在 `deploy/.env` 配置仓库账号（与 compose 共用）：
+
+```env
+REGISTRY=3ye.co:9443
+REGISTRY_USERNAME=你的用户名
+REGISTRY_PASSWORD=你的密码或token
+```
+
+```bash
+# 自动 2.0.0 -> 2.0.1 并推送 server + cli-relay + latest
+bash scripts/push-registry.sh
+
+# 指定版本（不递增文件里的数字，但成功后会写入 2.1.0）
+bash scripts/push-registry.sh 2.1.0
+
+# 只推 server
+bash scripts/push-registry.sh --server-only
+
+# 预览命令
+bash scripts/push-registry.sh --dry-run
+```
+
+部署到服务器：
+
+```bash
+cd deploy
+IMAGE_TAG=2.0.1 bash remote-up.sh server
+```
+
 ## 本地手动构建
 
 ```bash

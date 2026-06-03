@@ -6,12 +6,15 @@ import {
   defaultBaseUrlForProvider,
   providerDisplayName,
 } from "../providerDefaults";
+import { useAuth } from "../stores/auth";
 import { useChat } from "../stores/chat";
+import { isTenantAdmin } from "../tenantAdmin";
 import type { Provider, ProviderKey } from "../types";
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  onOpenAdmin?: () => void;
 }
 
 const PROVIDER_KINDS: { id: string; label: string; hint: string }[] = [
@@ -21,7 +24,8 @@ const PROVIDER_KINDS: { id: string; label: string; hint: string }[] = [
   { id: "ollama", label: "ollama", hint: "Ollama NDJSON 接口" },
 ];
 
-export function SettingsDrawer({ open, onClose }: Props) {
+export function SettingsDrawer({ open, onClose, onOpenAdmin }: Props) {
+  const { user } = useAuth();
   const { providers, providerKeys, reloadProviders } = useChat();
   const [providerId, setProviderId] = useState<string>(providers[0]?.id || "");
   const [label, setLabel] = useState("");
@@ -95,6 +99,24 @@ export function SettingsDrawer({ open, onClose }: Props) {
           </button>
         </header>
         <div className="flex-1 space-y-6 overflow-y-auto px-5 py-4">
+          {isTenantAdmin(user?.role) && onOpenAdmin && (
+            <section className="rounded-md border border-sky-200 bg-sky-50/80 p-3">
+              <h3 className="text-sm font-semibold text-sky-900">管理员</h3>
+              <p className="mt-1 text-xs text-sky-800/90">
+                邀请成员、调整角色，与 Agent DNA 等需管理员权限的操作。
+              </p>
+              <button
+                type="button"
+                className="btn-primary mt-2 text-xs"
+                onClick={() => {
+                  onClose();
+                  onOpenAdmin();
+                }}
+              >
+                打开管理控制台
+              </button>
+            </section>
+          )}
           <section className="space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-slate-700">Providers</h3>

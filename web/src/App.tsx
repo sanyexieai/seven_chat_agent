@@ -6,7 +6,7 @@ import { ChatWindow } from "./components/ChatWindow";
 import { FriendEditor } from "./components/FriendEditor";
 import { GroupEditor } from "./components/GroupEditor";
 import { HumanInvitePanel } from "./components/HumanInvitePanel";
-import { TenantTeamPanel } from "./components/TenantTeamPanel";
+import { AdminManagementPanel } from "./components/AdminManagementPanel";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { Sidebar } from "./components/Sidebar";
 import { useAuth } from "./stores/auth";
@@ -26,7 +26,7 @@ function openAssistantChat(
 }
 
 export default function App() {
-  const { ready: authReady, authRequired, token, init: initAuth } = useAuth();
+  const { ready: authReady, token, init: initAuth } = useAuth();
   const { ready: chatReady, init: initChat } = useChat();
   const [editingFriend, setEditingFriend] = useState<
     string | null | undefined
@@ -40,14 +40,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [invitesOpen, setInvitesOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
-  const [authModalOpen, setAuthModalOpen] = useState(false);
   const { friends } = useChat();
   const humanFriends = useMemo(
     () => friends.filter((f) => f.backend_kind === "human"),
     [friends],
   );
 
-  const canLoadChat = authReady && (!authRequired || !!token);
+  const canLoadChat = authReady && !!token;
 
   useEffect(() => {
     void initAuth().catch((e) => console.error(e));
@@ -66,7 +65,7 @@ export default function App() {
     );
   }
 
-  if (authRequired && !token) {
+  if (!token) {
     return <AuthPage />;
   }
 
@@ -85,7 +84,7 @@ export default function App() {
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenInvites={() => setInvitesOpen(true)}
           onOpenTeam={() => setTeamOpen(true)}
-          onOpenAuth={() => setAuthModalOpen(true)}
+          onOpenAuth={() => {}}
         />
         <div className="flex flex-1 items-center justify-center text-slate-400">
           正在加载会话...
@@ -100,7 +99,7 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenInvites={() => setInvitesOpen(true)}
         onOpenTeam={() => setTeamOpen(true)}
-        onOpenAuth={() => setAuthModalOpen(true)}
+        onOpenAuth={() => {}}
       />
       <div className="flex min-h-0 flex-1">
         <Sidebar
@@ -127,6 +126,7 @@ export default function App() {
       <SettingsDrawer
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        onOpenAdmin={() => setTeamOpen(true)}
       />
       {assistantFriendId && (
         <AssistantPanel
@@ -143,26 +143,7 @@ export default function App() {
         onClose={() => setInvitesOpen(false)}
         humanFriends={humanFriends}
       />
-      <TenantTeamPanel open={teamOpen} onClose={() => setTeamOpen(false)} />
-      {authModalOpen && !token && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="relative max-h-full w-full max-w-md overflow-y-auto">
-            <button
-              type="button"
-              className="absolute right-2 top-2 z-10 rounded-md bg-white/90 px-2 py-1 text-xs text-slate-600 shadow hover:bg-white"
-              onClick={() => setAuthModalOpen(false)}
-            >
-              关闭
-            </button>
-            <AuthPage
-              onSuccess={() => {
-                setAuthModalOpen(false);
-                void initChat().catch((e) => console.error(e));
-              }}
-            />
-          </div>
-        </div>
-      )}
+      <AdminManagementPanel open={teamOpen} onClose={() => setTeamOpen(false)} />
     </div>
   );
 }

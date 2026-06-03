@@ -38,7 +38,7 @@ impl From<TenantInviteRow> for TenantInvite {
     }
 }
 
-fn normalize_invite_role(role: Option<&str>) -> Result<String> {
+pub(crate) fn normalize_invite_role(role: Option<&str>) -> Result<String> {
     let role = role.unwrap_or("member").trim().to_lowercase();
     match role.as_str() {
         "admin" | "member" => Ok(role),

@@ -109,6 +109,56 @@ pub struct TenantInvite {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantAdminOverview {
+    pub tenant_id: String,
+    pub tenant_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_slug: Option<String>,
+    pub user_count: i64,
+    pub admin_count: i64,
+    pub active_session_count: i64,
+    pub conversation_count: i64,
+    pub pending_invite_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminUserSession {
+    pub id: String,
+    pub user_id: String,
+    pub user_email: String,
+    pub user_display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_username: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub is_expired: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminConversationSummary {
+    pub id: String,
+    pub kind: String,
+    pub target_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub message_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenantInvitePreview {
     pub tenant_id: String,
     pub tenant_name: String,

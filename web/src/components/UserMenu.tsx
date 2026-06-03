@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "../stores/auth";
+import { isTenantAdmin, tenantRoleLabel } from "../tenantAdmin";
 import { Avatar } from "./Avatar";
 
 interface Props {
@@ -84,11 +85,11 @@ export function UserMenu({
             )}
             <div className="truncate text-xs text-slate-500">{user.email}</div>
             <div className="mt-0.5 text-[11px] text-slate-400">
-              {user.role === "admin" ? "管理员" : "成员"}
+              {tenantRoleLabel(user.role)}
             </div>
           </div>
           <MenuItem onClick={() => { setOpen(false); onOpenTeam(); }}>
-            团队与邀请
+            {isTenantAdmin(user.role) ? "管理控制台" : "团队成员"}
           </MenuItem>
           <MenuItem onClick={() => { setOpen(false); onOpenInvites(); }}>
             真人好友邀请

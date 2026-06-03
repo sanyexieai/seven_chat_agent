@@ -1,0 +1,41 @@
+# 本地开发：镜像仅为运行时；server 二进制与 web/dist 由宿主机挂载，改代码后只需重新编译并 restart。
+# 用法: ../scripts/local-docker.sh up | refresh | restart | down
+
+services:
+  server:
+    image: seven-chat-agent/server:local-runtime
+    build:
+      context: ..
+      dockerfile: docker/server/Dockerfile.local
+    container_name: seven-chat-agent-server-local
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    ports:
+      # HOST_BIND=0.0.0.0 表示局域网/外网可访问宿主机端口（需防火墙放行）
+      - target: 18737
+        published: ${SERVER_PORT:-18737}
+        host_ip: ${HOST_BIND:-0.0.0.0}
+        protocol: tcp
+      - target: 18743
+        published: ${SERVER_HTTPS_PORT:-18743}
+        host_ip: ${HOST_BIND:-0.0.0.0}
+        protocol: tcp
+    volumes:
+      # 挂载 staging 副本，避免直接挂载 target/ 导致 cargo 报 Text file busy
+      - ${SERVER_BINARY:-.local-docker/bin/seven-chat-agent-server}:/usr/local/bin/seven-chat-agent-server:ro
+      - ../web/dist:/app/web/dist:ro
+      - server-data-local:/app/data
+    environment:
+      HONEYCOMB_BIND: ${HONEYCOMB_BIND:-0.0.0.0:18737}
+      HONEYCOMB_DATA: ${HONEYCOMB_DATA:-/app/data}
+      HONEYCOMB_DB: ${HONEYCOMB_DB:-sqlite:///app/data/seven_chat_agent.db}
+      SEVEN_CHAT_AGENT_STATIC_DIR: ${SEVEN_CHAT_AGENT_STATIC_DIR:-/app/web/dist}
+      SEVEN_CHAT_AGENT_VAULT: ${SEVEN_CHAT_AGENT_VAULT:-/app/data/vault.json}
+      SEVEN_CHAT_AGENT_SKILLS_DIR: ${SEVEN_CHAT_AGENT_SKILLS_DIR:-/app/data/skills}
+      SEVEN_CHAT_AGENT_CLI_WORKSPACE_ROOT: ${SEVEN_CHAT_AGENT_CLI_WORKSPACE_ROOT:-/app/data/cli-workspaces}
+      SEVEN_CHAT_AGENT_ASSISTANT_PROVIDER: ${SEVEN_CHAT_AGENT_ASSISTANT_PROVIDER:-deepseek}
+      SEVEN_CHAT_AGENT_ASSISTANT_MODEL: ${SEVEN_CHAT_AGENT_ASSISTANT_MODEL:-deepseek-v4-flash}
+
+volumes:
+  server-data-local:

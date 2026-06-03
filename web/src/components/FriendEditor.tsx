@@ -794,10 +794,12 @@ function cliApiKeyEnvHint(preset: string): string {
 function CliRelayConfigPanel({
   executionMode,
   relayId,
+  cliPreset,
   onChange,
 }: {
   executionMode: "local" | "relay";
   relayId: string;
+  cliPreset: string;
   onChange: (patch: Partial<FriendDraft["pty"]>) => void;
 }) {
   const [relays, setRelays] = useState<CliRelayNode[]>([]);
@@ -807,6 +809,7 @@ function CliRelayConfigPanel({
   const [pairingBusy, setPairingBusy] = useState(false);
   const [relayError, setRelayError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [cmdCopied, setCmdCopied] = useState(false);
 
   const refreshRelays = () => {
     setRelaysBusy(true);
@@ -854,9 +857,20 @@ function CliRelayConfigPanel({
     }
   }
 
+  async function copyRelayCmd() {
+    if (!relayCmd) return;
+    try {
+      await navigator.clipboard.writeText(relayCmd);
+      setCmdCopied(true);
+      window.setTimeout(() => setCmdCopied(false), 2000);
+    } catch {
+      setRelayError("无法写入剪贴板，请手动复制命令");
+    }
+  }
+
   const relayCmd =
     pairingToken && relayWsUrl
-      ? `cargo run -p seven-chat-agent-cli-relay -- --url '${relayWsUrl}' --pairing-token ${pairingToken} --name my-pc`
+      ? `seven-chat-agent-cli-relay --url '${relayWsUrl}' --pairing-token ${pairingToken} --name my-pc`
       : null;
 
   return (
@@ -907,35 +921,30 @@ function CliRelayConfigPanel({
           {relayError && (
             <p className="text-xs text-red-700">{relayError}</p>
           )}
-          {pairingToken && (
+          {pairingToken && relayWsUrl && relayCmd && (
             <div className="space-y-2 rounded border border-sky-300/70 bg-white/70 p-2">
               <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-sky-900">配对码</span>
                 <code className="break-all text-xs text-sky-950">{pairingToken}</code>
                 <button type="button" className="btn-ghost text-xs" onClick={copyToken}>
                   {copied ? "已复制" : "复制"}
                 </button>
               </div>
-              <p className="text-xs text-sky-900">
-                在<strong>远程电脑</strong>项目目录执行（需已安装 Rust 与本机 CLI）。
-                请使用下面<strong>后端直连</strong>地址（开发时浏览器可能是 18738，CLI 须连 18737）：
-              </p>
               <p className="break-all font-mono text-[11px] text-sky-800">{relayWsUrl}</p>
-              <pre className="overflow-x-auto rounded bg-slate-900 p-2 text-[11px] text-slate-100">
-                {relayCmd}
-              </pre>
-              <p className="text-xs text-amber-800">
-                配对码一次性且约 15 分钟有效；服务端重启后需重新生成。终端应出现{" "}
-                <code>paired with server</code>，再在下方点「刷新在线节点」。
-              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <pre className="min-w-0 flex-1 overflow-x-auto rounded bg-slate-900 p-2 text-[11px] text-slate-100">
+                  {relayCmd}
+                </pre>
+                <button type="button" className="btn-ghost text-xs" onClick={copyRelayCmd}>
+                  {cmdCopied ? "已复制" : "复制命令"}
+                </button>
+              </div>
             </div>
           )}
           <div>
             <label className="label">绑定转发节点</label>
             {relays.length === 0 ? (
-              <p className="text-xs text-amber-800">
-                暂无在线节点。请先生成配对码并在远程电脑启动{" "}
-                <code>seven-chat-agent-cli-relay</code>。
-              </p>
+              <p className="text-xs text-amber-800">暂无在线节点。</p>
             ) : (
               <select
                 className="input font-mono text-xs"
@@ -951,6 +960,19 @@ function CliRelayConfigPanel({
                 ))}
               </select>
             )}
+            {relayId &&
+              (() => {
+                const node = relays.find((r) => r.relay_id === relayId);
+                const auth = cliPreset ? node?.cli_auth?.[cliPreset] : undefined;
+                if (!auth) return null;
+                return (
+                  <p
+                    className={`mt-2 text-xs ${auth.authenticated ? "text-green-800" : "text-amber-900"}`}
+                  >
+                    节点 CLI 探测：{auth.authenticated ? "✓" : "✗"} {auth.detail}
+                  </p>
+                );
+              })()}
             {relayId && !relays.some((r) => r.relay_id === relayId) && (
               <p className="mt-1 text-xs text-amber-800">
                 当前绑定的节点未在线，对话将失败直至重新连接。
@@ -1094,6 +1116,7 @@ function ExternalCliAuthFields({
           className={`text-xs ${status.authenticated ? "text-green-800" : "text-amber-900"}`}
         >
           {status.authenticated ? "✓ 已就绪" : "✗ 未登录"}
+          {status.auth_source === "relay" ? "（远程转发）" : ""}
           {status.api_key_configured ? "（API Key）" : ""}
           {status.oauth_phase === "succeeded" ? "（OAuth）" : ""}
           ：{status.oauth_message || status.detail || "—"}
@@ -1123,7 +1146,12 @@ function ExternalCliAuthFields({
             <button
               type="button"
               className="btn-primary text-xs"
-              disabled={oauthBusy || oauthPending}
+              disabled={oauthBusy || oauthPending || executionMode === "relay"}
+              title={
+                executionMode === "relay"
+                  ? "远程转发请在运行 cli-relay 的电脑上执行 agent login"
+                  : undefined
+              }
               onClick={startOAuth}
             >
               {oauthBusy ? "启动中…" : "开始 OAuth 登录"}
@@ -1383,6 +1411,7 @@ function PtyConfigEditor({
         <CliRelayConfigPanel
           executionMode={draft.pty.execution_mode}
           relayId={draft.pty.relay_id}
+          cliPreset={draft.pty.preset}
           onChange={(patch) =>
             setDraft({
               ...draft,

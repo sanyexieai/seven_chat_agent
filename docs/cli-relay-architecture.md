@@ -39,15 +39,20 @@ CLI（codex / claude / cursor / worker-bee）
 2. 在远程电脑运行：
 
 ```bash
+# 仅 HTTP：ws://<host>:18737/cli-relay
+# 已启用 HTTPS（示例站）：wss://3ye.co:18743/cli-relay
 cargo run -p seven-chat-agent-cli-relay -- \
-  --url ws://<server-host>:18737/cli-relay \
+  --url wss://<server-host>:18743/cli-relay \
   --pairing-token pair_xxx \
   --name my-laptop
 ```
 
-3. 转发端 `register` 携带 `workspace_root`；服务端返回 `relay_*` 节点 id。
-4. Web 调用 `listCliRelays` 查看在线节点及远程工作区根目录。
-5. 编辑 CLI 好友：设置 `execution_mode: "relay"` 与 `relay_id`。
+3. 转发端 `register` 携带 `workspace_root` 与本机 `cli_auth` 探测结果；服务端返回 `relay_*` 节点 id。
+4. 转发端每 60s 及每次任务结束后发送 `auth_report` 更新登录状态。
+5. Web 调用 `listCliRelays` 查看在线节点、工作区与远程 CLI 鉴权。
+6. 编辑 CLI 好友：设置 `execution_mode: "relay"` 与 `relay_id`；**鉴权以转发端为准**，勿在服务器点 OAuth。
+
+配对 WebSocket 地址优先级：Web **设置 → CLI 转发**（全局 `cli_relay_ws_url` + `cli_relay_ws_scheme`：`auto`/`ws`/`wss`）→ `SEVEN_CHAT_AGENT_RELAY_WS_URL` → `SEVEN_CHAT_AGENT_PUBLIC_ORIGIN` → HTTPS 绑定 + `PUBLIC_HOST`。`auto` 在已启用 TLS 时将 `ws://` 升级为 `wss://`。
 
 ## 协议（`seven-chat-agent-cli-relay-protocol`）
 

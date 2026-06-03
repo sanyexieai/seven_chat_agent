@@ -47,12 +47,21 @@ export interface ProviderKey {
 }
 
 /** 在线 CLI 转发节点（远程电脑上的 seven-chat-agent-cli-relay） */
+export interface CliRelayAuthProbe {
+  preset: string;
+  authenticated: boolean;
+  detail: string;
+  api_key_configured: boolean;
+}
+
 export interface CliRelayNode {
   relay_id: string;
   name: string;
   host_label: string | null;
   /** 转发端上报的工作区根目录 */
   workspace_root?: string | null;
+  /** 转发端本机 CLI 登录探测（preset → 状态） */
+  cli_auth?: Record<string, CliRelayAuthProbe>;
   online: boolean;
   connected_at: string;
 }
@@ -244,6 +253,10 @@ export interface AssistantGlobalSettings {
   monthly_tokens_used: number;
   budget_period_ym?: string | null;
   tool_whitelist: string[];
+  /** CLI 转发 WebSocket；空则服务端按环境变量推导 */
+  cli_relay_ws_url?: string | null;
+  /** `auto` | `ws` | `wss` */
+  cli_relay_ws_scheme?: string;
   observe_streak?: number;
   updated_at?: string | null;
 }

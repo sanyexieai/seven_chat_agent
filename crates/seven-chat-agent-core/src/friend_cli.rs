@@ -163,10 +163,94 @@ pub fn apply_cli_auth_env(
     }
 }
 
+/// OAuth / 鉴权探测用的可执行文件路径（解析 `agent` 别名与 `~/.local/bin`）。
+pub fn resolve_external_cli_executable(
+    preset: &str,
+    cfg: &PtyBackendConfig,
+) -> crate::Result<String> {
+    let launch = launch_from_pty(cfg);
+    seven_chat_agent_cli::ensure_executable(preset, &launch)
+        .map_err(|e| crate::Error::agent(e.to_string()))
+}
+
+/// 按好友配置探测 CLI 鉴权：远程转发读 relay 上报，本机执行则在服务端探测。
+pub async fn probe_friend_cli_auth(
+    store: &crate::store::SqliteStore,
+    hub: &crate::cli_relay::RelayHub,
+    friend_id: &str,
+) -> crate::Result<CliAuthProbe> {
+    use crate::domain::{BackendKind, PtyBackendConfig};
+    use crate::Error;
+
+    let friend = store
+        .get_friend(friend_id)
+        .await?
+        .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
+    if friend.backend_kind != BackendKind::Pty {
+        return Err(Error::bad_request("仅 Pty 好友支持 CLI 鉴权探测"));
+    }
+    let cfg: PtyBackendConfig =
+        serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
+    if !is_external_cli_preset(&cfg) {
+        return Err(Error::bad_request("仅外部 CLI 好友支持鉴权探测"));
+    }
+    let preset = cfg.preset.clone().unwrap_or_default();
+
+    if pty_execution_is_relay(&cfg) {
+        let relay_id = pty_relay_id(&cfg).ok_or_else(|| {
+            Error::bad_request("远程转发未选择在线节点（relay_id）")
+        })?;
+        if !hub.is_online(relay_id) {
+            return Ok(CliAuthProbe {
+                preset,
+                authenticated: false,
+                detail: format!(
+                    "转发节点 {relay_id} 未在线，请在本机启动 seven-chat-agent-cli-relay"
+                ),
+                api_key_configured: relay_api_key_configured(&cfg, &store.vault),
+            });
+        }
+        let api_key_configured = relay_api_key_configured(&cfg, &store.vault);
+        if let Some(mut probe) = hub.auth_for_preset(relay_id, &preset) {
+            probe.api_key_configured = api_key_configured;
+            if api_key_configured && !probe.authenticated {
+                probe.authenticated = true;
+                if probe.detail.is_empty() {
+                    probe.detail = "已配置 API Key（vault，将下发到远程）".into();
+                }
+            }
+            let node = hub.node_name(relay_id).unwrap_or_else(|| relay_id.to_string());
+            if !probe.detail.starts_with("远程节点") {
+                probe.detail = format!("远程节点 {node}：{}", probe.detail);
+            }
+            return Ok(probe);
+        }
+        return Ok(CliAuthProbe {
+            preset,
+            authenticated: api_key_configured,
+            detail: if api_key_configured {
+                "已配置 API Key；转发节点尚未上报 CLI 登录状态，请更新 cli-relay 并重连".into()
+            } else {
+                format!(
+                    "转发节点 {relay_id} 尚未上报登录状态。请在本机执行 agent login / codex login 后保持 cli-relay 连接"
+                )
+            },
+            api_key_configured,
+        });
+    }
+
+    Ok(probe_external_cli_auth(&preset, &cfg, &store.vault).await)
+}
+
+fn relay_api_key_configured(cfg: &PtyBackendConfig, vault: &SecretVault) -> bool {
+    cfg.cli_api_key_ref
+        .as_ref()
+        .is_some_and(|r| vault.get(r).is_some())
+}
+
 /// 探测外部 CLI 登录状态（供 Web 展示；不返回密钥）。
 pub async fn probe_external_cli_auth(
     preset: &str,
-    cmd: &str,
     cfg: &PtyBackendConfig,
     vault: &SecretVault,
 ) -> CliAuthProbe {
@@ -174,7 +258,18 @@ pub async fn probe_external_cli_auth(
         .cli_api_key_ref
         .as_ref()
         .is_some_and(|r| vault.get(r).is_some());
-    seven_chat_agent_cli::probe_auth(preset, cmd, api_key_configured).await
+    let cmd = match resolve_external_cli_executable(preset, cfg) {
+        Ok(path) => path,
+        Err(e) => {
+            return CliAuthProbe {
+                preset: preset.to_string(),
+                authenticated: false,
+                detail: e.to_string(),
+                api_key_configured,
+            };
+        }
+    };
+    seven_chat_agent_cli::probe_auth(preset, &cmd, api_key_configured).await
 }
 
 pub fn clear_pty_cli_api_key(vault: &SecretVault, cfg: &mut PtyBackendConfig) -> crate::Result<()> {

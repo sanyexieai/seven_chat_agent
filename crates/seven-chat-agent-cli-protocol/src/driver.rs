@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crate::config::CliLaunchConfig;
 use crate::error::Result;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CliAuthProbe {
     pub preset: String,
     pub authenticated: bool,

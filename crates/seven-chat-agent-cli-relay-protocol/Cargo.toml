@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+seven-chat-agent-cli-protocol = { path = "../seven-chat-agent-cli-protocol" }

@@ -14,6 +14,8 @@ dist/
 # env
 .env
 .env.local
+deploy/.local-docker/
+deploy/.local-docker/bin/
 
 # editor
 .idea/

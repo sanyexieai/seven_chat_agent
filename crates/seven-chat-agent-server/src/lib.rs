@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod cli_relay_ws;
+pub mod public_urls;
 pub mod routes;
 pub mod state;
 pub mod static_assets;

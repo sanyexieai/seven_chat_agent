@@ -224,34 +224,6 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// 更新 Pty 好友 `backend_config.cli_session_id`（外部 CLI 续接会话）。
-    pub async fn probe_friend_cli_auth(&self, friend_id: &str) -> Result<crate::friend_cli::CliAuthProbe> {
-        let friend = self
-            .get_friend(friend_id)
-            .await?
-            .ok_or_else(|| Error::not_found(format!("friend {friend_id}")))?;
-        if friend.backend_kind != BackendKind::Pty {
-            return Err(Error::bad_request("仅 Pty 好友支持 CLI 鉴权探测"));
-        }
-        let cfg: PtyBackendConfig =
-            serde_json::from_value(friend.backend_config.clone()).unwrap_or_default();
-        if !crate::friend_cli::is_external_cli_preset(&cfg) {
-            return Err(Error::bad_request("仅外部 CLI 好友支持鉴权探测"));
-        }
-        let preset = cfg.preset.clone().unwrap();
-        let cmd = if cfg.cmd.is_empty() {
-            match preset.as_str() {
-                "cursor" => crate::friend_cli::resolve_cursor_agent_executable(),
-                "codex-exec" => "codex".into(),
-                "claude" => "claude".into(),
-                _ => cfg.cmd.clone(),
-            }
-        } else {
-            cfg.cmd.clone()
-        };
-        Ok(crate::friend_cli::probe_external_cli_auth(&preset, &cmd, &cfg, &self.vault).await)
-    }
-
     pub async fn patch_friend_cli_session_id(
         &self,
         friend_id: &str,

@@ -186,7 +186,11 @@ async fn friend_cli_auth(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = tenant_store_from_request(&s, &headers).await?;
-    let status = s.core.cli_oauth.full_status(&store, &id).await?;
+    let status = s
+        .core
+        .cli_oauth
+        .full_status(&store, &s.core.cli_relay, &id)
+        .await?;
     Ok(Json(serde_json::json!({ "cli_auth": status })))
 }
 
@@ -196,8 +200,16 @@ async fn friend_cli_oauth_start(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = tenant_store_from_request(&s, &headers).await?;
-    let snap = s.core.cli_oauth.start(&store, &id).await?;
-    let status = s.core.cli_oauth.full_status(&store, &id).await?;
+    let snap = s
+        .core
+        .cli_oauth
+        .start(&store, &s.core.cli_relay, &id)
+        .await?;
+    let status = s
+        .core
+        .cli_oauth
+        .full_status(&store, &s.core.cli_relay, &id)
+        .await?;
     Ok(Json(serde_json::json!({ "oauth": snap, "cli_auth": status })))
 }
 
@@ -208,7 +220,11 @@ async fn friend_cli_oauth_cancel(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = tenant_store_from_request(&s, &headers).await?;
     s.core.cli_oauth.cancel(&id).await?;
-    let status = s.core.cli_oauth.full_status(&store, &id).await?;
+    let status = s
+        .core
+        .cli_oauth
+        .full_status(&store, &s.core.cli_relay, &id)
+        .await?;
     Ok(Json(serde_json::json!({ "cli_auth": status })))
 }
 
@@ -218,7 +234,11 @@ async fn friend_cli_logout(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = tenant_store_from_request(&s, &headers).await?;
-    let status = s.core.cli_oauth.logout(&store, &id).await?;
+    let status = s
+        .core
+        .cli_oauth
+        .logout(&store, &s.core.cli_relay, &id)
+        .await?;
     Ok(Json(serde_json::json!({ "cli_auth": status })))
 }
 

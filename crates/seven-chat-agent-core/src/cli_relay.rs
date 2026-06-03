@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+use seven_chat_agent_cli::CliAuthProbe;
 use seven_chat_agent_cli_relay_protocol::RelayMessage;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -18,6 +19,9 @@ pub struct RelayNodeInfo {
     pub host_label: Option<String>,
     /// 转发端上报的工作区根目录（绝对路径）。
     pub workspace_root: Option<String>,
+    /// 转发端本机探测的外部 CLI 登录状态（按 preset）。
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub cli_auth: std::collections::HashMap<String, CliAuthProbe>,
     pub online: bool,
     pub connected_at: String,
 }
@@ -46,6 +50,7 @@ struct ActiveRelay {
     name: String,
     host_label: Option<String>,
     workspace_root: Option<String>,
+    cli_auth: std::collections::HashMap<String, CliAuthProbe>,
     connected_at: chrono::DateTime<chrono::Utc>,
     outbound: mpsc::Sender<RelayMessage>,
 }
@@ -96,10 +101,32 @@ impl RelayHub {
                 name: e.value().name.clone(),
                 host_label: e.value().host_label.clone(),
                 workspace_root: e.value().workspace_root.clone(),
+                cli_auth: e.value().cli_auth.clone(),
                 online: true,
                 connected_at: e.value().connected_at.to_rfc3339(),
             })
             .collect()
+    }
+
+    pub fn node_name(&self, relay_id: &str) -> Option<String> {
+        self.relays.get(relay_id).map(|r| r.name.clone())
+    }
+
+    pub fn auth_for_preset(&self, relay_id: &str, preset: &str) -> Option<CliAuthProbe> {
+        self.relays
+            .get(relay_id)?
+            .cli_auth
+            .get(preset)
+            .cloned()
+    }
+
+    pub fn set_cli_auth(&self, relay_id: &str, probes: Vec<CliAuthProbe>) {
+        if let Some(mut relay) = self.relays.get_mut(relay_id) {
+            relay.cli_auth = probes
+                .into_iter()
+                .map(|p| (p.preset.clone(), p))
+                .collect();
+        }
     }
 
     /// 转发端约定的好友工作区路径（仅展示；实际目录由转发端创建）。
@@ -128,18 +155,24 @@ impl RelayHub {
         name: String,
         host_label: Option<String>,
         workspace_root: Option<String>,
+        cli_auth: Vec<CliAuthProbe>,
     ) -> Result<(String, mpsc::Receiver<RelayMessage>), String> {
         if !self.consume_pairing_token(&pairing_token) {
             return Err("配对码无效或已过期".into());
         }
         let relay_id = format!("relay_{}", Uuid::new_v4().simple());
         let (tx, rx) = mpsc::channel::<RelayMessage>(32);
+        let auth_map = cli_auth
+            .into_iter()
+            .map(|p| (p.preset.clone(), p))
+            .collect();
         self.relays.insert(
             relay_id.clone(),
             ActiveRelay {
                 name,
                 host_label,
                 workspace_root,
+                cli_auth: auth_map,
                 connected_at: chrono::Utc::now(),
                 outbound: tx,
             },

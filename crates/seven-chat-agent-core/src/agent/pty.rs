@@ -95,7 +95,7 @@ impl PtyAdapter {
         if !cfg.env.is_empty() {
             adapter.env = cfg.env.clone();
         }
-        if adapter.label == "cursor" {
+        if adapter.label == "cursor" && !pty_execution_is_relay(cfg) {
             adapter.cmd = ensure_cursor_agent_executable()?;
         }
         if let Ok(cwd) = resolve_pty_cwd(cfg, friend_id) {

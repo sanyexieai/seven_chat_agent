@@ -2464,6 +2464,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "rustls",
  "serde",
  "serde_json",
  "seven-chat-agent-cli",
@@ -2483,6 +2484,7 @@ version = "2.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "seven-chat-agent-cli-protocol",
 ]
 
 [[package]]

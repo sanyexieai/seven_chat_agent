@@ -3,6 +3,8 @@ export interface CliAuthStatus {
   authenticated: boolean;
   detail: string;
   api_key_configured: boolean;
+  /** server | relay */
+  auth_source?: string | null;
   oauth_pending: boolean;
   oauth_phase: string;
   oauth_url?: string | null;

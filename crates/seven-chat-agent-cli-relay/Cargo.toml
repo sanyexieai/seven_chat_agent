@@ -20,6 +20,7 @@ tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "ring", "std", "tls12"] }
 
 seven-chat-agent-cli = { workspace = true }
 seven-chat-agent-cli-protocol = { workspace = true }

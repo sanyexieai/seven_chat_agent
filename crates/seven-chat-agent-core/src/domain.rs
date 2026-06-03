@@ -656,6 +656,12 @@ pub struct AssistantGlobalSettings {
     /// CLI 工具预设白名单；空列表表示不限制。
     #[serde(default)]
     pub tool_whitelist: Vec<String>,
+    /// CLI 转发 WebSocket 地址（如 `wss://host/cli-relay`）；空则使用服务端环境变量推导。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_relay_ws_url: Option<String>,
+    /// WebSocket 协议：`auto`（按部署推断）| `ws` | `wss`。
+    #[serde(default = "default_cli_relay_ws_scheme")]
+    pub cli_relay_ws_scheme: String,
     /// 服务端维护：距上次整理以来的观察条数。
     #[serde(default)]
     pub observe_streak: u32,
@@ -699,6 +705,10 @@ fn default_evolution_ratio() -> f64 {
     0.1
 }
 
+fn default_cli_relay_ws_scheme() -> String {
+    "auto".to_string()
+}
+
 impl Default for AssistantGlobalSettings {
     fn default() -> Self {
         Self {
@@ -732,6 +742,8 @@ impl Default for AssistantGlobalSettings {
             monthly_tokens_used: 0,
             budget_period_ym: None,
             tool_whitelist: Vec::new(),
+            cli_relay_ws_url: None,
+            cli_relay_ws_scheme: default_cli_relay_ws_scheme(),
             observe_streak: 0,
             updated_at: None,
         }

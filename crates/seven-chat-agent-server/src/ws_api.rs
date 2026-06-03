@@ -5,6 +5,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 
 use crate::state::AppState;
+use seven_chat_agent_core::domain::MessageAttachment;
 use seven_chat_agent_core::group_validate::{
     expert_member_ids_from_upsert, validate_group_task_flow_readiness,
 };
@@ -27,6 +28,38 @@ pub async fn ws_api_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_ws_api(socket, state))
+}
+
+/// 与 HTTP `send_to_dm` 一致：后台派发，避免阻塞 `/ws-api` 单连接（远程 CLI relay 可能耗时数分钟）。
+fn spawn_send_user_message(
+    core: seven_chat_agent_core::SevenChatAgent,
+    tenant_id: String,
+    user_id: Option<String>,
+    conversation_id: String,
+    content: String,
+    attachments: Vec<MessageAttachment>,
+) {
+    tokio::spawn(async move {
+        let run = seven_chat_agent_core::tenant_context::with_active_scope(
+            &tenant_id,
+            user_id.as_deref(),
+            || {
+                core.dispatcher.send_user_message_with_attachments(
+                    &conversation_id,
+                    &content,
+                    &attachments,
+                )
+            },
+        )
+        .await;
+        if let Err(e) = run {
+            tracing::error!(
+                err = %e,
+                conversation_id = %conversation_id,
+                "send_user_message failed (ws-api background)"
+            );
+        }
+    });
 }
 
 async fn handle_ws_api(socket: WebSocket, state: AppState) {
@@ -149,7 +182,7 @@ async fn handle_method(
                 .ok_or_else(|| "id required".to_string())?;
             let cli_auth = core
                 .cli_oauth
-                .full_status(&store, id)
+                .full_status(&store, &core.cli_relay, id)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "cli_auth": cli_auth }))
@@ -161,12 +194,12 @@ async fn handle_method(
                 .ok_or_else(|| "id required".to_string())?;
             let oauth = core
                 .cli_oauth
-                .start(&store, id)
+                .start(&store, &core.cli_relay, id)
                 .await
                 .map_err(|e| e.to_string())?;
             let cli_auth = core
                 .cli_oauth
-                .full_status(&store, id)
+                .full_status(&store, &core.cli_relay, id)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "oauth": oauth, "cli_auth": cli_auth }))
@@ -179,7 +212,7 @@ async fn handle_method(
             core.cli_oauth.cancel(id).await.map_err(|e| e.to_string())?;
             let cli_auth = core
                 .cli_oauth
-                .full_status(&store, id)
+                .full_status(&store, &core.cli_relay, id)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "cli_auth": cli_auth }))
@@ -191,7 +224,7 @@ async fn handle_method(
                 .ok_or_else(|| "id required".to_string())?;
             let cli_auth = core
                 .cli_oauth
-                .logout(&store, id)
+                .logout(&store, &core.cli_relay, id)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "cli_auth": cli_auth }))
@@ -686,19 +719,14 @@ async fn handle_method(
             .map_err(|e| e.to_string())?;
             let tenant_id = store.tenant_id().to_string();
             let user_id = store.user_id().map(str::to_string);
-            seven_chat_agent_core::tenant_context::with_active_scope(
-                &tenant_id,
-                user_id.as_deref(),
-                || {
-                    core.dispatcher.send_user_message_with_attachments(
-                        &conv.id,
-                        &content,
-                        &attachments,
-                    )
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            spawn_send_user_message(
+                core.clone(),
+                tenant_id,
+                user_id,
+                conv.id.clone(),
+                content,
+                attachments,
+            );
             Ok(serde_json::json!({ "ok": true, "conversation_id": conv.id }))
         }
         "listConversationMessages" => {
@@ -733,16 +761,14 @@ async fn handle_method(
                 .map_err(|e| e.to_string())?;
             let tenant_id = store.tenant_id().to_string();
             let user_id = store.user_id().map(str::to_string);
-            seven_chat_agent_core::tenant_context::with_active_scope(
-                &tenant_id,
-                user_id.as_deref(),
-                || {
-                    core.dispatcher
-                        .send_user_message_with_attachments(id, &content, &attachments)
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            spawn_send_user_message(
+                core.clone(),
+                tenant_id,
+                user_id,
+                id.to_string(),
+                content,
+                attachments,
+            );
             Ok(serde_json::json!({ "ok": true, "conversation_id": id }))
         }
         "getAssistantGlobalSettings" => {
@@ -1167,12 +1193,14 @@ async fn handle_method(
         }
         "createCliRelayPairingToken" => {
             let token = core.cli_relay.create_pairing_token();
-            let bind = seven_chat_agent_core::env::var_or(
-                "SEVEN_CHAT_AGENT_BIND",
-                "HONEYCOMB_BIND",
-                "127.0.0.1:18737",
+            let settings = store
+                .get_assistant_global_settings()
+                .await
+                .map_err(|e| e.to_string())?;
+            let relay_ws_url = crate::public_urls::resolve_cli_relay_ws_url(
+                settings.cli_relay_ws_url.as_deref(),
+                &settings.cli_relay_ws_scheme,
             );
-            let relay_ws_url = format!("ws://{bind}/cli-relay");
             Ok(serde_json::json!({
                 "pairing_token": token,
                 "relay_ws_url": relay_ws_url,

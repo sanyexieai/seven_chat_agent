@@ -9,7 +9,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::friend_cli::{probe_external_cli_auth, resolve_cursor_agent_executable};
+use crate::cli_relay::RelayHub;
+use crate::friend_cli::{probe_external_cli_auth, probe_friend_cli_auth, resolve_external_cli_executable};
+use crate::friend_cli::pty_execution_is_relay;
 use crate::store::{SecretVault, SqliteStore};
 use crate::{Error, Result};
 
@@ -52,6 +54,9 @@ pub struct CliAuthStatus {
     pub authenticated: bool,
     pub detail: String,
     pub api_key_configured: bool,
+    /// `server` 本机探测；`relay` 来自转发程序上报。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_source: Option<String>,
     pub oauth_pending: bool,
     pub oauth_phase: CliOAuthPhase,
     pub oauth_url: Option<String>,
@@ -103,9 +108,10 @@ impl CliOAuthManager {
     pub async fn full_status(
         &self,
         store: &SqliteStore,
+        hub: &RelayHub,
         friend_id: &str,
     ) -> Result<CliAuthStatus> {
-        let base = store.probe_friend_cli_auth(friend_id).await?;
+        let base = probe_friend_cli_auth(store, hub, friend_id).await?;
         let snap = self.snapshot(friend_id);
         Ok(merge_auth_status(base, snap))
     }
@@ -113,6 +119,7 @@ impl CliOAuthManager {
     pub async fn start(
         &self,
         store: &SqliteStore,
+        hub: &RelayHub,
         friend_id: &str,
     ) -> Result<CliOAuthSnapshot> {
         if self
@@ -123,7 +130,13 @@ impl CliOAuthManager {
             return Err(Error::bad_request("已有进行中的 OAuth 登录，请先完成或取消"));
         }
 
-        let (preset, cmd, cfg) = load_external_cli(store, friend_id).await?;
+        let (preset, cfg) = load_external_cli(store, friend_id).await?;
+        if pty_execution_is_relay(&cfg) {
+            return Err(Error::bad_request(
+                "远程转发模式下请在运行 cli-relay 的电脑上执行 CLI 登录（如 agent login），登录态由转发程序上报",
+            ));
+        }
+        let cmd = resolve_cli_cmd(&preset, &cfg)?;
         self.cancel(friend_id).await;
 
         let mut session = OAuthSession {
@@ -151,7 +164,7 @@ impl CliOAuthManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| Error::agent(format!("启动 {cmd} 登录失败: {e}")))?;
+            .map_err(|e| Error::agent(spawn_cli_login_error(&cmd, &e)))?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -203,12 +216,19 @@ impl CliOAuthManager {
     pub async fn logout(
         &self,
         store: &SqliteStore,
+        hub: &RelayHub,
         friend_id: &str,
     ) -> Result<CliAuthStatus> {
         self.cancel(friend_id).await?;
-        let (preset, cmd, _) = load_external_cli(store, friend_id).await?;
+        let (preset, cfg) = load_external_cli(store, friend_id).await?;
+        if pty_execution_is_relay(&cfg) {
+            return Err(Error::bad_request(
+                "远程转发请在 cli-relay 所在电脑执行 agent logout / codex logout",
+            ));
+        }
+        let cmd = resolve_cli_cmd(&preset, &cfg)?;
         run_logout(&preset, &cmd).await?;
-        Ok(self.full_status(store, friend_id).await?)
+        Ok(self.full_status(store, hub, friend_id).await?)
     }
 }
 
@@ -225,11 +245,17 @@ fn merge_auth_status(
             base.detail = snap.message.clone();
         }
     }
+    let auth_source = if base.detail.contains("远程节点") {
+        Some("relay".into())
+    } else {
+        Some("server".into())
+    };
     CliAuthStatus {
         preset: base.preset,
         authenticated: base.authenticated,
         detail: base.detail,
         api_key_configured: base.api_key_configured,
+        auth_source,
         oauth_pending,
         oauth_phase: snap.phase,
         oauth_url: snap.auth_url,
@@ -250,7 +276,7 @@ fn merge_auth_status(
 async fn load_external_cli(
     store: &SqliteStore,
     friend_id: &str,
-) -> Result<(String, String, crate::domain::PtyBackendConfig)> {
+) -> Result<(String, crate::domain::PtyBackendConfig)> {
     let friend = store
         .get_friend(friend_id)
         .await?
@@ -261,20 +287,23 @@ async fn load_external_cli(
         return Err(Error::bad_request("仅外部 CLI 好友支持 OAuth"));
     }
     let preset = cfg.preset.clone().unwrap();
-    let cmd = resolve_cli_cmd(&preset, &cfg);
-    Ok((preset, cmd, cfg))
+    Ok((preset, cfg))
 }
 
-fn resolve_cli_cmd(preset: &str, cfg: &crate::domain::PtyBackendConfig) -> String {
-    if !cfg.cmd.is_empty() {
-        return cfg.cmd.clone();
+fn resolve_cli_cmd(preset: &str, cfg: &crate::domain::PtyBackendConfig) -> Result<String> {
+    resolve_external_cli_executable(preset, cfg)
+}
+
+fn spawn_cli_login_error(cmd: &str, err: &std::io::Error) -> String {
+    let base = format!("启动 {cmd} 登录失败: {err}");
+    if err.kind() != std::io::ErrorKind::NotFound {
+        return base;
     }
-    match preset {
-        "cursor" => resolve_cursor_agent_executable(),
-        "codex-exec" => "codex".into(),
-        "claude" => "claude".into(),
-        _ => cfg.cmd.clone(),
-    }
+    format!(
+        "{base}。请确认 Cursor Agent CLI 已安装在 **seven-chat-agent-server 所在机器**（非浏览器本机）：\
+         `curl -fsSL https://cursor.com/install | bash`，或设置环境变量 SEVEN_CHAT_AGENT_CURSOR_AGENT_BIN 为 agent 可执行文件的绝对路径。\
+         若好友使用「远程转发」，请在运行 cli-relay 的电脑上本机执行 `agent login`，或在 Web 里配置 CURSOR_API_KEY。"
+    )
 }
 
 fn oauth_instructions(preset: &str) -> String {
@@ -400,7 +429,7 @@ async fn finish_login(
     sessions: &Arc<DashMap<String, OAuthSession>>,
     friend_id: &str,
     preset: &str,
-    cmd: &str,
+    _cmd: &str,
     cfg: &crate::domain::PtyBackendConfig,
     vault: &SecretVault,
     child_handle: Arc<Mutex<Option<tokio::process::Child>>>,
@@ -418,7 +447,7 @@ async fn finish_login(
         }
     }
 
-    let probed = probe_external_cli_auth(preset, cmd, cfg, vault).await;
+    let probed = probe_external_cli_auth(preset, cfg, vault).await;
     if let Some(mut s) = sessions.get_mut(friend_id) {
         s.run = None;
         if s.phase == CliOAuthPhase::Cancelled {

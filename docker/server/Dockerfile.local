@@ -1,0 +1,18 @@
+# 本地开发运行时镜像：挂载宿主机编译的 server 二进制（须与镜像 glibc 兼容）。
+# 宿主机为 Ubuntu 24.04+ 时请保持与本镜像一致；完整在镜像内编译见 docker/server/Dockerfile。
+
+FROM ubuntu:24.04
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+ENV HONEYCOMB_BIND=0.0.0.0:18737 \
+    HONEYCOMB_HTTPS_BIND= \
+    HONEYCOMB_TLS_CERT= \
+    HONEYCOMB_TLS_KEY= \
+    HONEYCOMB_DATA=/app/data \
+    HONEYCOMB_DB=sqlite:///app/data/seven_chat_agent.db \
+    SEVEN_CHAT_AGENT_STATIC_DIR=/app/web/dist
+EXPOSE 18737 18743
+VOLUME ["/app/data"]
+ENTRYPOINT ["seven-chat-agent-server"]

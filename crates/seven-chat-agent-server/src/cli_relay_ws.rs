@@ -28,7 +28,8 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
             name,
             host_label,
             workspace_root,
-        }) => (pairing_token, name, host_label, workspace_root),
+            cli_auth,
+        }) => (pairing_token, name, host_label, workspace_root, cli_auth),
         Ok(_) => {
             let err = RelayMessage::Error {
                 message: "首条消息必须是 register".into(),
@@ -49,10 +50,15 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
         }
     };
 
-    let (pairing_token, name, host_label, workspace_root) = register;
+    let (pairing_token, name, host_label, workspace_root, cli_auth) = register;
     let display_name = name.clone();
-    let (relay_id, mut outbound_rx) =
-        match hub.register_connection(pairing_token, name, host_label, workspace_root) {
+    let (relay_id, mut outbound_rx) = match hub.register_connection(
+        pairing_token,
+        name,
+        host_label,
+        workspace_root,
+        cli_auth,
+    ) {
         Ok(v) => v,
         Err(message) => {
             tracing::warn!(%message, "cli relay register rejected");
@@ -103,6 +109,14 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
                                     relay_id = %relay_id_in,
                                     %workspace_root,
                                     "cli relay workspace reported"
+                                );
+                            }
+                            RelayMessage::AuthReport { cli_auth } => {
+                                hub_in.set_cli_auth(&relay_id_in, cli_auth.clone());
+                                tracing::debug!(
+                                    relay_id = %relay_id_in,
+                                    count = cli_auth.len(),
+                                    "cli relay auth reported"
                                 );
                             }
                             RelayMessage::Ping => {

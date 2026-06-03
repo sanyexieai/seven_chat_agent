@@ -1,6 +1,7 @@
 //! Web ↔ 服务端 ↔ 转发程序 之间的 CLI 中继协议。
 
 use serde::{Deserialize, Serialize};
+use seven_chat_agent_cli_protocol::CliAuthProbe;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -14,10 +15,17 @@ pub enum RelayMessage {
         /// 转发端本机工作区根目录（绝对路径）；由转发程序自行决定。
         #[serde(default)]
         workspace_root: Option<String>,
+        /// 转发端本机各外部 CLI 登录探测结果（注册时上报）。
+        #[serde(default)]
+        cli_auth: Vec<CliAuthProbe>,
     },
     /// 转发端 → 服务端：工作区根目录变更（可选，连接后更新）
     WorkspaceReport {
         workspace_root: String,
+    },
+    /// 转发端 → 服务端：本机 CLI 鉴权状态更新
+    AuthReport {
+        cli_auth: Vec<CliAuthProbe>,
     },
     /// 服务端 → 转发端：注册成功
     Registered {

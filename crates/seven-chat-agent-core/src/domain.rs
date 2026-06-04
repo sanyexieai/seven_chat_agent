@@ -934,6 +934,33 @@ pub struct MessageAttachment {
     pub url: String,
 }
 
+/// 代理人发言后是否恢复任务流执行。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskFlowResumeAfterDelegateMode {
+    /// 任务未交付且代理人已发言则恢复（不解析关键词）。
+    #[default]
+    NotDelivered,
+    /// 仅执行阶段异常退出（Incomplete）时恢复。
+    IncompleteOnly,
+    /// 由 Judge LLM 判定代理人是否授权继续。
+    Judge,
+    /// 不自动恢复。
+    Off,
+}
+
+fn default_resume_stagnation_suppress_rounds() -> u32 {
+    4
+}
+
+fn default_stagnation_min_leader_rounds() -> u32 {
+    3
+}
+
+fn default_stagnation_reply_similarity() -> f32 {
+    0.88
+}
+
 /// 任务型群聊编排：竞选负责人 → 负责人执行（替代「接一句闲聊」）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GroupTaskFlowSettings {
@@ -958,6 +985,37 @@ pub struct GroupTaskFlowSettings {
     /// 用户 @ 成员或消息 mentions 含成员 id/名时，跳过竞选直接任命。
     #[serde(default = "default_true")]
     pub appoint_by_mention_enabled: bool,
+    /// 本群已有负责人时，后续用户消息沿用该负责人（跳过竞选/选举/计划）。
+    #[serde(default = "default_true")]
+    pub reuse_persisted_leader: bool,
+    /// 复用负责人时是否跳过计划阶段（直接执行）。
+    #[serde(default = "default_true")]
+    pub skip_plan_when_reuse_leader: bool,
+    /// 服务端持久化：当前任务流负责人 id（群设置保存时自动保留）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted_leader_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted_leader_reason: Option<String>,
+    /// 最近一次计划摘要（复用负责人时带入执行上下文）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted_plan_excerpt: Option<String>,
+    /// 执行后须 LLM/启发式判定「明确交付」才结束本轮；否则负责人继续引导。
+    #[serde(default = "default_true")]
+    pub require_clear_delivery: bool,
+    /// 任务流暂停/未交付后，是否在代理人发言后自动恢复执行。
+    #[serde(default = "default_true")]
+    pub resume_after_delegate_enabled: bool,
+    #[serde(default)]
+    pub resume_after_delegate_mode: TaskFlowResumeAfterDelegateMode,
+    /// 代理人授权恢复后，跳过空转判定的负责人轮数。
+    #[serde(default = "default_resume_stagnation_suppress_rounds")]
+    pub resume_stagnation_suppress_rounds: u32,
+    /// 至少多少轮负责人回复后才允许判空转暂停。
+    #[serde(default = "default_stagnation_min_leader_rounds")]
+    pub stagnation_min_leader_rounds: u32,
+    /// 最近两轮负责人回复相似度 ≥ 此值且满足最少轮数时，启发式可判空转。
+    #[serde(default = "default_stagnation_reply_similarity")]
+    pub stagnation_reply_similarity: f32,
 }
 
 fn default_true() -> bool {
@@ -974,6 +1032,17 @@ impl Default for GroupTaskFlowSettings {
             plan_review_enabled: true,
             peer_vote_enabled: true,
             appoint_by_mention_enabled: true,
+            reuse_persisted_leader: true,
+            skip_plan_when_reuse_leader: true,
+            persisted_leader_id: None,
+            persisted_leader_reason: None,
+            persisted_plan_excerpt: None,
+            require_clear_delivery: true,
+            resume_after_delegate_enabled: true,
+            resume_after_delegate_mode: TaskFlowResumeAfterDelegateMode::default(),
+            resume_stagnation_suppress_rounds: default_resume_stagnation_suppress_rounds(),
+            stagnation_min_leader_rounds: default_stagnation_min_leader_rounds(),
+            stagnation_reply_similarity: default_stagnation_reply_similarity(),
         }
     }
 }

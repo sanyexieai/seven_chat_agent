@@ -90,6 +90,19 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
     let hub_in = hub.clone();
     let relay_id_in = relay_id.clone();
 
+    let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<RelayWsWrite>();
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = write_rx.recv().await {
+            let ok = match msg {
+                RelayWsWrite::Text(t) => sender.send(Message::Text(t)).await.is_ok(),
+                RelayWsWrite::Pong(p) => sender.send(Message::Pong(p)).await.is_ok(),
+            };
+            if !ok {
+                break;
+            }
+        }
+    });
+
     loop {
         tokio::select! {
             inbound = receiver.next() => {
@@ -120,15 +133,15 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
                                 );
                             }
                             RelayMessage::Ping => {
-                                let _ = sender.send(Message::Text(
+                                let _ = write_tx.send(RelayWsWrite::Text(
                                     RelayMessage::Pong.to_json().unwrap_or_default(),
-                                )).await;
+                                ));
                             }
                             _ => {}
                         }
                     }
                     Some(Ok(Message::Ping(p))) => {
-                        let _ = sender.send(Message::Pong(p)).await;
+                        let _ = write_tx.send(RelayWsWrite::Pong(p));
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
@@ -141,7 +154,7 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
                             Ok(t) => t,
                             Err(_) => continue,
                         };
-                        if sender.send(Message::Text(text)).await.is_err() {
+                        if write_tx.send(RelayWsWrite::Text(text)).is_err() {
                             break;
                         }
                     }
@@ -151,5 +164,13 @@ async fn handle_cli_relay(socket: WebSocket, state: AppState) {
         }
     }
 
+    drop(write_tx);
+    let _ = writer.await;
+
     hub.unregister(&relay_id_in);
+}
+
+enum RelayWsWrite {
+    Text(String),
+    Pong(Vec<u8>),
 }

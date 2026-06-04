@@ -1,12 +1,19 @@
 use std::sync::Arc;
 
 use seven_chat_agent_judge::{
-    build_election_prompt, parse_election_response, resolve_effective_judge, resolve_llm_target,
-    HistoryLine, JudgeEngine, JudgeMember, JudgeRequest, Judgment, LlmJudgeInput, LlmJudgePort,
-    LlmJudgeTarget, ELECTION_SYSTEM, TriggerSenderKind,
+    build_delegate_resume_prompt, build_delivery_check_prompt, build_election_prompt,
+    build_stagnation_check_prompt, heuristic_delegate_resume, heuristic_delivery_check,
+    heuristic_stagnation_check, parse_delegate_resume_response, parse_delivery_check_response,
+    parse_election_response, parse_stagnation_check_response, resolve_effective_judge,
+    resolve_llm_target, DelegateResumeRaw, DeliveryCheckRaw, HistoryLine, JudgeEngine,
+    JudgeMember, JudgeRequest, Judgment, LlmJudgeInput, LlmJudgePort, LlmJudgeTarget,
+    StagnationCheckRaw, ELECTION_SYSTEM, TriggerSenderKind, DELEGATE_RESUME_SYSTEM,
+    DELIVERY_CHECK_SYSTEM, STAGNATION_CHECK_SYSTEM,
 };
 
-use crate::domain::{Friend, GroupSettings, Message, SenderKind};
+use crate::domain::{
+    Friend, GroupSettings, Message, SenderKind, TaskFlowResumeAfterDelegateMode,
+};
 use crate::provider::ProviderRegistry;
 
 use super::bridge::ProviderLlmJudgePort;
@@ -214,6 +221,234 @@ impl JudgeService {
         }
         let reason = parsed.reason.unwrap_or_else(|| "互投".into());
         Ok((endorse_id, reason))
+    }
+
+    /// 判断负责人回复是否已形成对用户的明确交付。
+    pub async fn check_task_delivery(
+        &self,
+        group: &GroupSettings,
+        user_task: &str,
+        plan_text: &str,
+        leader_name: &str,
+        leader_reply: &str,
+    ) -> DeliveryCheckRaw {
+        match self
+            .check_task_delivery_llm(group, user_task, plan_text, leader_name, leader_reply)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(err = %e, "delivery check LLM failed, using heuristic");
+                heuristic_delivery_check(leader_reply)
+            }
+        }
+    }
+
+    async fn check_task_delivery_llm(
+        &self,
+        group: &GroupSettings,
+        user_task: &str,
+        plan_text: &str,
+        leader_name: &str,
+        leader_reply: &str,
+    ) -> std::result::Result<DeliveryCheckRaw, String> {
+        let target = self.resolve_judge_llm_target(group)?;
+        let prompt = build_delivery_check_prompt(
+            &group.judge,
+            user_task,
+            plan_text,
+            leader_name,
+            leader_reply,
+            group.extra_system_prompt.as_deref(),
+        );
+        let raw = self
+            .port
+            .as_ref()
+            .complete_json(LlmJudgeInput {
+                provider_id: target.provider_id,
+                model: target.model,
+                api_key_id: target.api_key_id,
+                system: DELIVERY_CHECK_SYSTEM.into(),
+                user_prompt: prompt,
+                max_tokens: Some(384),
+            })
+            .await?;
+        parse_delivery_check_response(&raw).ok_or_else(|| {
+            format!("交付判定解析失败: {}", truncate_err(&raw, 300))
+        })
+    }
+
+    /// 内置助理：判断负责人引导是否陷入空转，应暂停循环。
+    pub async fn check_guidance_stagnation(
+        &self,
+        group: &GroupSettings,
+        user_task: &str,
+        plan_text: &str,
+        leader_name: &str,
+        leader_replies: &[String],
+        last_missing: &str,
+        delegate_autonomous_directive: Option<&str>,
+        skip_stagnation: bool,
+    ) -> StagnationCheckRaw {
+        let tf = &group.task_flow;
+        if skip_stagnation {
+            return StagnationCheckRaw {
+                should_stop: false,
+                reason: Some("代理人已授权自主推进，暂不判空转".into()),
+                suggestion: None,
+                confidence: Some(0.2),
+            };
+        }
+        let min_rounds = tf.stagnation_min_leader_rounds.max(2);
+        if (leader_replies.len() as u32) < min_rounds {
+            return StagnationCheckRaw {
+                should_stop: false,
+                reason: Some("轮次不足".into()),
+                suggestion: None,
+                confidence: Some(0.2),
+            };
+        }
+        match self
+            .check_guidance_stagnation_llm(
+                group,
+                user_task,
+                plan_text,
+                leader_name,
+                leader_replies,
+                last_missing,
+                delegate_autonomous_directive,
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(err = %e, "stagnation check LLM failed, using heuristic");
+                heuristic_stagnation_check(
+                    leader_replies,
+                    min_rounds,
+                    tf.stagnation_reply_similarity,
+                )
+            }
+        }
+    }
+
+    /// 判定代理人发言后是否应恢复任务流执行。
+    pub async fn check_delegate_resume(
+        &self,
+        group: &GroupSettings,
+        user_task: &str,
+        task_outcome_label: &str,
+        delegate_reply: &str,
+        mode: TaskFlowResumeAfterDelegateMode,
+    ) -> DelegateResumeRaw {
+        if !group.task_flow.resume_after_delegate_enabled
+            || mode == TaskFlowResumeAfterDelegateMode::Off
+        {
+            return DelegateResumeRaw {
+                should_resume: false,
+                reason: Some("群配置未启用代理人后恢复".into()),
+                confidence: Some(1.0),
+            };
+        }
+        let task_not_delivered = task_outcome_label != "delivered";
+        match mode {
+            TaskFlowResumeAfterDelegateMode::NotDelivered => DelegateResumeRaw {
+                should_resume: task_not_delivered && !delegate_reply.trim().is_empty(),
+                reason: Some("按配置：任务未交付则恢复".into()),
+                confidence: Some(0.7),
+            },
+            TaskFlowResumeAfterDelegateMode::IncompleteOnly => DelegateResumeRaw {
+                should_resume: task_outcome_label == "incomplete"
+                    && !delegate_reply.trim().is_empty(),
+                reason: Some("按配置：仅 incomplete 时恢复".into()),
+                confidence: Some(0.7),
+            },
+            TaskFlowResumeAfterDelegateMode::Off => DelegateResumeRaw {
+                should_resume: false,
+                reason: None,
+                confidence: Some(1.0),
+            },
+            TaskFlowResumeAfterDelegateMode::Judge => match self
+                .check_delegate_resume_llm(group, user_task, task_outcome_label, delegate_reply)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(err = %e, "delegate resume LLM failed, using heuristic");
+                    heuristic_delegate_resume(task_not_delivered, delegate_reply)
+                }
+            },
+        }
+    }
+
+    async fn check_delegate_resume_llm(
+        &self,
+        group: &GroupSettings,
+        user_task: &str,
+        task_outcome_label: &str,
+        delegate_reply: &str,
+    ) -> std::result::Result<DelegateResumeRaw, String> {
+        let target = self.resolve_judge_llm_target(group)?;
+        let prompt = build_delegate_resume_prompt(
+            &group.judge,
+            user_task,
+            task_outcome_label,
+            delegate_reply,
+            group.extra_system_prompt.as_deref(),
+        );
+        let raw = self
+            .port
+            .as_ref()
+            .complete_json(LlmJudgeInput {
+                provider_id: target.provider_id,
+                model: target.model,
+                api_key_id: target.api_key_id,
+                system: DELEGATE_RESUME_SYSTEM.into(),
+                user_prompt: prompt,
+                max_tokens: Some(256),
+            })
+            .await?;
+        parse_delegate_resume_response(&raw).ok_or_else(|| {
+            format!("代理人恢复判定解析失败: {}", truncate_err(&raw, 300))
+        })
+    }
+
+    async fn check_guidance_stagnation_llm(
+        &self,
+        group: &GroupSettings,
+        user_task: &str,
+        plan_text: &str,
+        leader_name: &str,
+        leader_replies: &[String],
+        last_missing: &str,
+        delegate_autonomous_directive: Option<&str>,
+    ) -> std::result::Result<StagnationCheckRaw, String> {
+        let target = self.resolve_judge_llm_target(group)?;
+        let prompt = build_stagnation_check_prompt(
+            &group.judge,
+            user_task,
+            plan_text,
+            leader_name,
+            leader_replies,
+            last_missing,
+            group.extra_system_prompt.as_deref(),
+            delegate_autonomous_directive,
+        );
+        let raw = self
+            .port
+            .as_ref()
+            .complete_json(LlmJudgeInput {
+                provider_id: target.provider_id,
+                model: target.model,
+                api_key_id: target.api_key_id,
+                system: STAGNATION_CHECK_SYSTEM.into(),
+                user_prompt: prompt,
+                max_tokens: Some(384),
+            })
+            .await?;
+        parse_stagnation_check_response(&raw).ok_or_else(|| {
+            format!("空转判定解析失败: {}", truncate_err(&raw, 300))
+        })
     }
 }
 

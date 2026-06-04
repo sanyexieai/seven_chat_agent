@@ -80,15 +80,29 @@ async fn main() -> Result<()> {
         .await
         .context("send register")?;
 
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(64);
+    let (outbound_tx, outbound_rx) = mpsc::channel::<WsOutbound>(256);
     let mut auth_tick = tokio::time::interval(std::time::Duration::from_secs(60));
+
+    // 独立 writer：JobOutput 积压时不阻塞读循环，避免无法接收新 RunJob
+    let writer = tokio::spawn(async move {
+        let mut rx = outbound_rx;
+        while let Some(msg) = rx.recv().await {
+            let send = match msg {
+                WsOutbound::Text(t) => write.send(Message::Text(t)).await,
+                WsOutbound::Pong(p) => write.send(Message::Pong(p)).await,
+            };
+            if send.is_err() {
+                break;
+            }
+        }
+    });
 
     loop {
         tokio::select! {
             _ = auth_tick.tick() => {
                 let probes = auth::probe_local_cli_auth().await;
                 let report = RelayMessage::AuthReport { cli_auth: probes };
-                if write.send(Message::Text(report.to_json()?)).await.is_err() {
+                if outbound_tx.send(WsOutbound::Text(report.to_json()?)).await.is_err() {
                     break;
                 }
             }
@@ -98,7 +112,7 @@ async fn main() -> Result<()> {
                 let text = match msg {
                     Message::Text(t) => t,
                     Message::Ping(p) => {
-                        write.send(Message::Pong(p)).await.ok();
+                        let _ = outbound_tx.send(WsOutbound::Pong(p)).await;
                         continue;
                     }
                     Message::Close(_) => break,
@@ -136,22 +150,24 @@ async fn main() -> Result<()> {
                             )
                             .await;
                             for line in outputs {
-                                let _ = tx.send(line).await;
+                                let _ = tx.send(WsOutbound::Text(line)).await;
                             }
                             let _ = tx
-                                .send(
+                                .send(WsOutbound::Text(
                                     RelayMessage::AuthReport {
                                         cli_auth: auth::probe_local_cli_auth().await,
                                     }
                                     .to_json()
                                     .unwrap_or_default(),
-                                )
+                                ))
                                 .await;
                         });
                     }
                     RelayMessage::Ping => {
                         let _ = outbound_tx
-                            .send(RelayMessage::Pong.to_json().unwrap_or_default())
+                            .send(WsOutbound::Text(
+                                RelayMessage::Pong.to_json().unwrap_or_default(),
+                            ))
                             .await;
                     }
                     RelayMessage::Error { message } => {
@@ -160,20 +176,18 @@ async fn main() -> Result<()> {
                     _ => {}
                 }
             }
-            out = outbound_rx.recv() => {
-                match out {
-                    Some(text) => {
-                        if write.send(Message::Text(text)).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => break,
-                }
-            }
         }
     }
 
+    drop(outbound_tx);
+    let _ = writer.await;
+
     Ok(())
+}
+
+enum WsOutbound {
+    Text(String),
+    Pong(Vec<u8>),
 }
 
 fn ensure_rustls_crypto_provider() -> Result<()> {

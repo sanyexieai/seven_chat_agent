@@ -161,7 +161,7 @@ impl RelayHub {
             return Err("配对码无效或已过期".into());
         }
         let relay_id = format!("relay_{}", Uuid::new_v4().simple());
-        let (tx, rx) = mpsc::channel::<RelayMessage>(32);
+        let (tx, rx) = mpsc::channel::<RelayMessage>(128);
         let auth_map = cli_auth
             .into_iter()
             .map(|p| (p.preset.clone(), p))

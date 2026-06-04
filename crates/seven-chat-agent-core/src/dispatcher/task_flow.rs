@@ -1,4 +1,5 @@
-use super::{BusEvent, MessageDispatcher};
+use super::assistant_delegate::DelegateTaskHint;
+use super::{BusEvent, ExpertReplyMode, MessageDispatcher};
 use crate::agent::ChatContext;
 use crate::domain::{
     BackendKind, Conversation, Friend, GroupSettings, Message, MessageStatus, SenderKind,
@@ -7,6 +8,43 @@ use crate::group_validate::validate_group_task_flow_readiness;
 use crate::store::message::NewMessage;
 use seven_chat_agent_judge::format_peer_vote_tally;
 use crate::Result;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskFlowExecuteOutcome {
+    Delivered,
+    Stalled,
+    Incomplete,
+}
+
+pub(super) struct TaskFlowCheckpoint {
+    pub outcome: TaskFlowExecuteOutcome,
+    pub leader: Friend,
+    pub plan_text: String,
+    pub campaign_summary: String,
+    pub elect_reason: String,
+    pub agents: Vec<Friend>,
+}
+
+pub(super) struct TaskFlowRunResult {
+    pub handled: bool,
+    pub checkpoint: Option<TaskFlowCheckpoint>,
+}
+
+#[derive(Default, Clone)]
+struct ExecuteLoopParams {
+    autonomous_directive: Option<String>,
+    stagnation_suppress_rounds: u32,
+}
+
+struct ResolvedLeader {
+    leader_id: String,
+    leader_name: String,
+    elect_reason: String,
+    confidence: f32,
+    peer_vote_pairs: Vec<(String, String)>,
+    pitches: Vec<(String, String, String)>,
+    reused: bool,
+}
 
 impl MessageDispatcher {
     /// 任务流：任命/竞选 → 互投 → 选举 → 计划 → 评议 → 执行。
@@ -17,9 +55,12 @@ impl MessageDispatcher {
         turn_id: &str,
         settings: &GroupSettings,
         members: &[Friend],
-    ) -> Result<bool> {
+    ) -> Result<TaskFlowRunResult> {
         if !settings.task_flow.enabled {
-            return Ok(false);
+            return Ok(TaskFlowRunResult {
+                handled: false,
+                checkpoint: None,
+            });
         }
 
         let member_ids: Vec<String> = members.iter().map(|m| m.id.clone()).collect();
@@ -38,7 +79,10 @@ impl MessageDispatcher {
             );
             self.emit_task_flow_config_notice(conv, &readiness.errors)
                 .await?;
-            return Ok(true);
+            return Ok(TaskFlowRunResult {
+                handled: true,
+                checkpoint: None,
+            });
         }
 
         let agents: Vec<Friend> = members
@@ -48,42 +92,36 @@ impl MessageDispatcher {
             .collect();
         if agents.is_empty() {
             tracing::warn!(turn_id = %turn_id, "task_flow: no agent members, skip");
-            return Ok(false);
+            return Ok(TaskFlowRunResult {
+                handled: false,
+                checkpoint: None,
+            });
         }
 
         let tf = &settings.task_flow;
-        let mut pitches: Vec<(String, String, String)> = Vec::new();
-        let elected = if tf.appoint_by_mention_enabled {
-            if let Some((id, name, reason)) = resolve_appointed_leader(user_msg, &agents) {
-                self.emit(BusEvent::TaskFlowPhase {
-                    conversation_id: conv.id.clone(),
-                    turn_id: turn_id.to_string(),
-                    phase: "appoint".into(),
-                    detail: Some(format!("用户指定 {} 为负责人", name)),
-                });
-                tracing::info!(turn_id = %turn_id, leader = %name, "task_flow: appointed by mention");
-                Ok((id, name, reason, 1.0, Vec::new()))
-            } else {
-                self.run_campaign_and_elect(
-                    conv, user_msg, turn_id, settings, &agents, tf, &mut pitches,
-                )
-                .await
-            }
-        } else {
-            self.run_campaign_and_elect(
-                conv, user_msg, turn_id, settings, &agents, tf, &mut pitches,
-            )
+        let resolved = match self
+            .resolve_task_flow_leader(conv, user_msg, turn_id, settings, &agents, tf)
             .await
-        };
-        let (leader_id, leader_name, elect_reason, confidence, peer_vote_pairs) = match elected {
+        {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(turn_id = %turn_id, err = %e, "task_flow: campaign/elect aborted");
-                return Ok(false);
+                tracing::warn!(turn_id = %turn_id, err = %e, "task_flow: leader resolve aborted");
+                return Ok(TaskFlowRunResult {
+                    handled: false,
+                    checkpoint: None,
+                });
             }
         };
 
-        let election_ok = elect_reason.contains("用户 @ 指定")
+        let leader_id = resolved.leader_id.clone();
+        let leader_name = resolved.leader_name.clone();
+        let elect_reason = resolved.elect_reason.clone();
+        let confidence = resolved.confidence;
+        let peer_vote_pairs = resolved.peer_vote_pairs;
+        let pitches = resolved.pitches;
+
+        let election_ok = resolved.reused
+            || elect_reason.contains("用户 @ 指定")
             || elect_reason.contains("用户消息包含")
             || (confidence >= 0.55
                 && !elect_reason.contains("失败")
@@ -91,7 +129,11 @@ impl MessageDispatcher {
                 && !elect_reason.contains("互投均未")
                 && !elect_reason.contains("API 失败"));
         let peer_votes_summary = if peer_vote_pairs.is_empty() {
-            Some("互投：均未成功（请检查群 Judge 的 Provider/模型，如 deepseek 需 deepseek-v4-flash）".into())
+            if resolved.reused {
+                None
+            } else {
+                Some("互投：均未成功（请检查群 Judge 的 Provider/模型，如 deepseek 需 deepseek-v4-flash）".into())
+            }
         } else {
             Some(format_peer_vote_tally(
                 &peer_vote_pairs,
@@ -107,10 +149,11 @@ impl MessageDispatcher {
             leader = %leader_name,
             confidence = confidence,
             election_ok = election_ok,
+            reused = resolved.reused,
             reason = %elect_reason,
             peer_votes = ?peer_votes_summary,
             campaign_pitches = pitches.len(),
-            "task_flow: leader_elected"
+            "task_flow: leader_resolved"
         );
         self.emit(BusEvent::LeaderElected {
             conversation_id: conv.id.clone(),
@@ -145,7 +188,13 @@ impl MessageDispatcher {
         };
 
         let mut plan_text = String::new();
-        if tf.plan_enabled {
+        if resolved.reused && tf.skip_plan_when_reuse_leader {
+            if let Some(ref excerpt) = tf.persisted_plan_excerpt {
+                if !excerpt.trim().is_empty() {
+                    plan_text = format!("（沿用本群已定计划）\n{excerpt}");
+                }
+            }
+        } else if tf.plan_enabled {
             plan_text = self
                 .run_plan_phase(
                     conv,
@@ -161,6 +210,24 @@ impl MessageDispatcher {
                 .await?;
         }
 
+        let plan_excerpt: String = plan_text.chars().take(240).collect();
+        if let Err(e) = self
+            .dispatch_store()
+            .persist_group_task_flow_leader(
+                &conv.target_id,
+                &leader_id,
+                &elect_reason,
+                if plan_excerpt.is_empty() {
+                    None
+                } else {
+                    Some(plan_excerpt.as_str())
+                },
+            )
+            .await
+        {
+            tracing::warn!(err = %e, group_id = %conv.target_id, "task_flow: persist leader failed");
+        }
+
         self.emit(BusEvent::TaskFlowPhase {
             conversation_id: conv.id.clone(),
             turn_id: turn_id.to_string(),
@@ -168,33 +235,474 @@ impl MessageDispatcher {
             detail: Some(format!("负责人 {} 按计划在执行", leader.name)),
         });
 
-        let agent = self.agents.get(&leader.id).await?;
-        let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
-        let ctx = ChatContext {
+        let outcome = self
+            .run_execute_until_delivered(
+                conv,
+                user_msg,
+                turn_id,
+                settings,
+                &agents,
+                &leader,
+                &plan_text,
+                &campaign_summary,
+                &elect_reason,
+                tf,
+                ExecuteLoopParams::default(),
+            )
+            .await?;
+
+        Ok(TaskFlowRunResult {
+            handled: true,
+            checkpoint: Some(TaskFlowCheckpoint {
+                outcome,
+                leader,
+                plan_text,
+                campaign_summary,
+                elect_reason,
+                agents,
+            }),
+        })
+    }
+
+    async fn resolve_task_flow_leader(
+        &self,
+        conv: &Conversation,
+        user_msg: &Message,
+        turn_id: &str,
+        settings: &GroupSettings,
+        agents: &[Friend],
+        tf: &crate::domain::GroupTaskFlowSettings,
+    ) -> Result<ResolvedLeader> {
+        if tf.appoint_by_mention_enabled {
+            if let Some((id, name, reason)) = resolve_appointed_leader(user_msg, agents) {
+                self.emit(BusEvent::TaskFlowPhase {
+                    conversation_id: conv.id.clone(),
+                    turn_id: turn_id.to_string(),
+                    phase: "appoint".into(),
+                    detail: Some(format!("用户指定 {} 为负责人", name)),
+                });
+                tracing::info!(turn_id = %turn_id, leader = %name, "task_flow: appointed by mention");
+                return Ok(ResolvedLeader {
+                    leader_id: id,
+                    leader_name: name,
+                    elect_reason: reason,
+                    confidence: 1.0,
+                    peer_vote_pairs: Vec::new(),
+                    pitches: Vec::new(),
+                    reused: false,
+                });
+            }
+        }
+
+        if tf.reuse_persisted_leader {
+            if let Some(ref pid) = tf.persisted_leader_id {
+                if let Some(f) = agents.iter().find(|m| m.id == *pid) {
+                    let reason = tf
+                        .persisted_leader_reason
+                        .clone()
+                        .unwrap_or_else(|| "本群已选定负责人".into());
+                    let elect_reason =
+                        format!("沿用负责人「{}」：{reason}（按职责继续，跳过竞选/选举/计划）", f.name);
+                    self.emit(BusEvent::TaskFlowPhase {
+                        conversation_id: conv.id.clone(),
+                        turn_id: turn_id.to_string(),
+                        phase: "reuse_leader".into(),
+                        detail: Some(format!("沿用负责人 {}，按职责继续", f.name)),
+                    });
+                    tracing::info!(
+                        turn_id = %turn_id,
+                        leader = %f.name,
+                        "task_flow: reuse persisted leader"
+                    );
+                    return Ok(ResolvedLeader {
+                        leader_id: f.id.clone(),
+                        leader_name: f.name.clone(),
+                        elect_reason,
+                        confidence: 1.0,
+                        peer_vote_pairs: Vec::new(),
+                        pitches: Vec::new(),
+                        reused: true,
+                    });
+                }
+            }
+        }
+
+        let mut pitches: Vec<(String, String, String)> = Vec::new();
+        let (leader_id, leader_name, elect_reason, confidence, peer_vote_pairs) = self
+            .run_campaign_and_elect(conv, user_msg, turn_id, settings, agents, tf, &mut pitches)
+            .await?;
+        Ok(ResolvedLeader {
+            leader_id,
+            leader_name,
+            elect_reason,
+            confidence,
+            peer_vote_pairs,
+            pitches,
+            reused: false,
+        })
+    }
+
+    /// 代理人授权后恢复执行（衔接「继续推进、不用每轮确认」）。
+    pub(super) async fn resume_task_flow_after_delegate(
+        &self,
+        conv: &Conversation,
+        user_msg: &Message,
+        turn_id: &str,
+        settings: &GroupSettings,
+        checkpoint: &TaskFlowCheckpoint,
+        delegate_directive: &str,
+    ) -> Result<TaskFlowExecuteOutcome> {
+        let tf = &settings.task_flow;
+        self.emit(BusEvent::TaskFlowPhase {
             conversation_id: conv.id.clone(),
-            group_id: Some(conv.target_id.clone()),
-            group_settings: Some(settings.clone()),
-            history,
-            self_friend: leader.clone(),
-            peers: agents.iter().filter(|m| m.id != leader.id).cloned().collect(),
-            user_attachments: user_msg.attachments.clone(),
-            member_group_local_path: None,
-        };
+            turn_id: turn_id.to_string(),
+            phase: "execute".into(),
+            detail: Some("代理人授权：恢复任务执行".into()),
+        });
+        self.run_execute_until_delivered(
+            conv,
+            user_msg,
+            turn_id,
+            settings,
+            &checkpoint.agents,
+            &checkpoint.leader,
+            &checkpoint.plan_text,
+            &checkpoint.campaign_summary,
+            &checkpoint.elect_reason,
+            tf,
+            ExecuteLoopParams {
+                autonomous_directive: Some(delegate_directive.to_string()),
+                stagnation_suppress_rounds: tf.resume_stagnation_suppress_rounds,
+            },
+        )
+        .await
+    }
+
+    /// 负责人执行/引导循环：直到明确交付，或由内置助理判定空转暂停。
+    async fn run_execute_until_delivered(
+        &self,
+        conv: &Conversation,
+        user_msg: &Message,
+        turn_id: &str,
+        settings: &GroupSettings,
+        agents: &[Friend],
+        leader: &Friend,
+        plan_text: &str,
+        campaign_summary: &str,
+        elect_reason: &str,
+        tf: &crate::domain::GroupTaskFlowSettings,
+        mut loop_params: ExecuteLoopParams,
+    ) -> Result<TaskFlowExecuteOutcome> {
         let plan_block = if plan_text.is_empty() {
             "（无单独计划稿，请边计划边执行）".to_string()
         } else {
             format!("已发布计划：\n{plan_text}")
         };
-        let prompt = format!(
-            "你是本轮任务负责人「{}」。选举/任命理由：{}\n\n用户任务：\n{}\n\n竞选摘要：\n{}\n\n{plan_block}\n\n\
-            请进入执行阶段：按已定计划使用工具完成任务（查代码、跑命令等），可多步；完成后给用户清晰总结。",
-            leader.name, elect_reason, user_msg.content, campaign_summary, plan_block = plan_block
-        );
-        let _ = self
-            .stream_one_reply(conv, user_msg, turn_id, &leader, agent, ctx, &prompt, 0)
-            .await?;
 
-        Ok(true)
+        let agent = self.agents.get(&leader.id).await?;
+        let mut last_reply: Option<Message> = None;
+        let mut last_missing = String::from("尚未形成可验收的明确交付");
+        let mut leader_replies: Vec<String> = Vec::new();
+        let mut round_idx: u32 = 0;
+
+        loop {
+            let is_first = round_idx == 0;
+            let trigger = if is_first {
+                user_msg.clone()
+            } else {
+                last_reply
+                    .clone()
+                    .unwrap_or_else(|| user_msg.clone())
+            };
+
+            let prompt = if is_first {
+                if let Some(ref directive) = loop_params.autonomous_directive {
+                    format!(
+                        "你是本轮任务负责人「{}」。用户任务：\n{}\n\n{plan_block}\n\n\
+                        **用户代理人已代主人定调（无需等主人每轮确认）**：\n{directive}\n\n\
+                        请立即按此协调成员（@ 需要配合的人）、推进执行并产出可验收进展；\
+                        不要等待主人再次确认才行动。",
+                        leader.name,
+                        user_msg.content,
+                        plan_block = plan_block,
+                        directive = directive.trim()
+                    )
+                } else {
+                    format!(
+                        "你是本轮任务负责人「{}」。选举/任命理由：{}\n\n用户任务：\n{}\n\n竞选摘要：\n{}\n\n{plan_block}\n\n\
+                        请进入执行阶段：按已定计划使用工具完成任务（查代码、跑命令等），可多步。\n\
+                        **重要**：只有形成对用户的「明确交付」（可验收的产出/结论/变更说明）才能结束；\
+                        若信息不足或任务未完成，应继续推进或向用户/成员提出具体问题，不要空泛收尾。",
+                        leader.name,
+                        elect_reason,
+                        user_msg.content,
+                        campaign_summary,
+                        plan_block = plan_block
+                    )
+                }
+            } else {
+                let prev = last_reply
+                    .as_ref()
+                    .map(|m| m.content.as_str())
+                    .unwrap_or("");
+                format!(
+                    "你是本轮任务负责人「{}」。用户任务：\n{}\n\n{plan_block}\n\n\
+                    你上一轮回复：\n{prev}\n\n\
+                    **验收判定**：尚未形成明确交付。缺口：{last_missing}\n\n\
+                    请继续引导讨论或推进执行（本阶段可多轮）：\n\
+                    - 信息不足 → 向用户或群成员提出具体、可回答的问题\n\
+                    - 可部分执行 → 说明当前进度、已完成部分与下一步\n\
+                    - 接近完成 → 给出清晰交付摘要与验收标准\n\
+                    不要假装已完成；直到用户能明确知道「得到了什么」再收尾。",
+                    leader.name,
+                    user_msg.content,
+                    plan_block = plan_block,
+                    prev = prev,
+                    last_missing = last_missing
+                )
+            };
+
+            if !is_first {
+                self.emit(BusEvent::TaskFlowPhase {
+                    conversation_id: conv.id.clone(),
+                    turn_id: turn_id.to_string(),
+                    phase: "guide".into(),
+                    detail: Some(format!(
+                        "第 {} 轮引导（{}）",
+                        round_idx + 1,
+                        last_missing
+                    )),
+                });
+            }
+
+            let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
+            let ctx = ChatContext {
+                conversation_id: conv.id.clone(),
+                group_id: Some(conv.target_id.clone()),
+                group_settings: Some(settings.clone()),
+                history,
+                self_friend: leader.clone(),
+                peers: agents.iter().filter(|m| m.id != leader.id).cloned().collect(),
+                user_attachments: user_msg.attachments.clone(),
+                member_group_local_path: None,
+            };
+
+            let reply = self
+                .stream_one_reply(
+                    conv,
+                    &trigger,
+                    turn_id,
+                    leader,
+                    agent.clone(),
+                    ctx,
+                    &prompt,
+                    0,
+                )
+                .await?;
+
+            let Some(msg) = reply else {
+                tracing::warn!(turn_id = %turn_id, round = round_idx, "task_flow: leader reply empty");
+                return Ok(TaskFlowExecuteOutcome::Incomplete);
+            };
+            last_reply = Some(msg.clone());
+            leader_replies.push(msg.content.clone());
+            round_idx += 1;
+
+            if agents.len() > 1 {
+                if let Some(group) = self.dispatch_store().get_group(&conv.target_id).await? {
+                    let mut peer_trigger = msg.clone();
+                    peer_trigger.mentions = enrich_leader_delegation_mentions(
+                        &peer_trigger.content,
+                        agents,
+                        &leader.id,
+                    );
+                    let peer_replies = self
+                        .dispatch_expert_round(
+                            conv,
+                            &group,
+                            settings,
+                            &peer_trigger,
+                            turn_id,
+                            ExpertReplyMode::TaskFlowExecute,
+                        )
+                        .await?;
+                    if !peer_replies.is_empty() {
+                        tracing::info!(
+                            turn_id = %turn_id,
+                            round = round_idx,
+                            peers = peer_replies.len(),
+                            "task_flow: peer_collaboration_round"
+                        );
+                    }
+                }
+            }
+
+            if !tf.require_clear_delivery {
+                return Ok(TaskFlowExecuteOutcome::Delivered);
+            }
+
+            let check = self
+                .judge
+                .check_task_delivery(
+                    settings,
+                    &user_msg.content,
+                    plan_text,
+                    &leader.name,
+                    &msg.content,
+                )
+                .await;
+
+            tracing::info!(
+                turn_id = %turn_id,
+                round = round_idx,
+                delivered = check.delivered,
+                confidence = ?check.confidence,
+                reason = ?check.reason,
+                "task_flow: delivery_check"
+            );
+
+            let conf = check.confidence.unwrap_or(if check.delivered { 0.7 } else { 0.3 });
+            if check.delivered && conf >= 0.5 {
+                self.emit(BusEvent::TaskFlowPhase {
+                    conversation_id: conv.id.clone(),
+                    turn_id: turn_id.to_string(),
+                    phase: "delivered".into(),
+                    detail: check
+                        .reason
+                        .or_else(|| Some("已形成明确交付，本轮结束".into())),
+                });
+                return Ok(TaskFlowExecuteOutcome::Delivered);
+            }
+
+            last_missing = check
+                .missing
+                .filter(|s| !s.trim().is_empty())
+                .or(check.reason.clone())
+                .unwrap_or_else(|| "需继续推进任务或向用户澄清".into());
+
+            let skip_stagnation = loop_params.stagnation_suppress_rounds > 0;
+            if skip_stagnation {
+                loop_params.stagnation_suppress_rounds -= 1;
+            }
+            let stagnation = self
+                .judge
+                .check_guidance_stagnation(
+                    settings,
+                    &user_msg.content,
+                    plan_text,
+                    &leader.name,
+                    &leader_replies,
+                    &last_missing,
+                    loop_params.autonomous_directive.as_deref(),
+                    skip_stagnation,
+                )
+                .await;
+
+            tracing::info!(
+                turn_id = %turn_id,
+                round = round_idx,
+                should_stop = stagnation.should_stop,
+                confidence = ?stagnation.confidence,
+                reason = ?stagnation.reason,
+                "task_flow: assistant_stagnation_check"
+            );
+
+            let stall_conf = stagnation
+                .confidence
+                .unwrap_or(if stagnation.should_stop { 0.65 } else { 0.35 });
+            if stagnation.should_stop && stall_conf >= 0.5 {
+                let reason = stagnation
+                    .reason
+                    .unwrap_or_else(|| "助理判定引导陷入空转".into());
+                let suggestion = stagnation
+                    .suggestion
+                    .unwrap_or_else(|| "请补充信息或调整任务后再 @ 负责人".into());
+                self.emit(BusEvent::TaskFlowPhase {
+                    conversation_id: conv.id.clone(),
+                    turn_id: turn_id.to_string(),
+                    phase: "stalled".into(),
+                    detail: Some(format!("助理暂停引导：{reason}")),
+                });
+                self.emit_assistant_loop_guard_notice(conv, &reason, &suggestion)
+                    .await?;
+                return Ok(TaskFlowExecuteOutcome::Stalled);
+            }
+        }
+    }
+
+    pub(super) async fn should_resume_task_flow_after_delegate(
+        &self,
+        settings: &GroupSettings,
+        outcome: TaskFlowExecuteOutcome,
+        assistant_reply: Option<&Message>,
+        user_task: &str,
+    ) -> Result<bool> {
+        let Some(reply) = assistant_reply else {
+            return Ok(false);
+        };
+        if reply.content.trim().is_empty() || outcome == TaskFlowExecuteOutcome::Delivered {
+            return Ok(false);
+        }
+        let check = self
+            .judge
+            .check_delegate_resume(
+                settings,
+                user_task,
+                Self::task_outcome_label(outcome),
+                &reply.content,
+                settings.task_flow.resume_after_delegate_mode.clone(),
+            )
+            .await;
+        let conf = check.confidence.unwrap_or(0.5);
+        Ok(check.should_resume && conf >= 0.4)
+    }
+
+    fn task_outcome_label(outcome: TaskFlowExecuteOutcome) -> &'static str {
+        match outcome {
+            TaskFlowExecuteOutcome::Delivered => "delivered",
+            TaskFlowExecuteOutcome::Stalled => "stalled",
+            TaskFlowExecuteOutcome::Incomplete => "incomplete",
+        }
+    }
+
+    pub(super) fn delegate_task_hint(outcome: TaskFlowExecuteOutcome) -> DelegateTaskHint {
+        match outcome {
+            TaskFlowExecuteOutcome::Delivered => DelegateTaskHint::Unknown,
+            TaskFlowExecuteOutcome::Stalled => DelegateTaskHint::Stalled,
+            TaskFlowExecuteOutcome::Incomplete => DelegateTaskHint::Incomplete,
+        }
+    }
+
+    async fn emit_assistant_loop_guard_notice(
+        &self,
+        conv: &Conversation,
+        reason: &str,
+        suggestion: &str,
+    ) -> Result<()> {
+        let content = format!(
+            "⏸️ **助理监测**：引导循环已暂停。\n\n原因：{reason}\n\n建议：{suggestion}\n\n\
+            （任务尚未确认明确交付；你补充信息或调整需求后，可再次 @ 负责人继续。）"
+        );
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let msg = self
+            .dispatch_store()
+            .insert_message(NewMessage {
+                conversation_id: &conv.id,
+                turn_id: &turn_id,
+                parent_id: None,
+                sender_kind: SenderKind::System,
+                sender_id: "system",
+                sender_name: "助理",
+                content: &content,
+                mentions: &[],
+                status: MessageStatus::Done,
+                on_behalf_of_user: false,
+                workspace_id: None,
+                attachments: &[],
+            })
+            .await?;
+        self.emit(BusEvent::MessageCreated { message: msg });
+        Ok(())
     }
 
     async fn run_campaign_and_elect(
@@ -536,6 +1044,23 @@ impl MessageDispatcher {
         self.emit(BusEvent::MessageCreated { message: msg });
         Ok(())
     }
+}
+
+/// 从负责人正文解析 @ 或「请/麻烦 + 名字」式委派，供 judge 识别点名接话。
+fn enrich_leader_delegation_mentions(
+    content: &str,
+    agents: &[Friend],
+    leader_id: &str,
+) -> Vec<String> {
+    let mut ids: Vec<String> = agents
+        .iter()
+        .filter(|a| a.id != leader_id)
+        .filter(|a| content.contains(&format!("@{}", a.name)))
+        .map(|a| a.id.clone())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// 从 mentions 或正文 @名字 解析指定负责人。

@@ -41,6 +41,14 @@ const defaultTaskFlow = {
   plan_review_enabled: true,
   peer_vote_enabled: true,
   appoint_by_mention_enabled: true,
+  reuse_persisted_leader: true,
+  skip_plan_when_reuse_leader: true,
+  require_clear_delivery: true,
+  resume_after_delegate_enabled: true,
+  resume_after_delegate_mode: "not_delivered",
+  resume_stagnation_suppress_rounds: 4,
+  stagnation_min_leader_rounds: 3,
+  stagnation_reply_similarity: 0.88,
 };
 
 const defaultImWriteback = {
@@ -932,6 +940,65 @@ export function GroupEditor({ groupId, onClose }: Props) {
                 <label className="flex cursor-pointer items-center gap-2 text-sm">
                   <input
                     type="checkbox"
+                    checked={settings.task_flow?.require_clear_delivery ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          require_clear_delivery: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  须明确交付才结束（未交付时负责人继续引导；助理监测空转并暂停）
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settings.task_flow?.resume_after_delegate_enabled ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          resume_after_delegate_enabled: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  代理人发言后自动恢复执行（未交付时）
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">恢复策略</span>
+                  <select
+                    className="rounded border border-input bg-background px-2 py-1"
+                    value={settings.task_flow?.resume_after_delegate_mode ?? "not_delivered"}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          resume_after_delegate_mode: e.target.value,
+                        },
+                      })
+                    }
+                  >
+                    <option value="not_delivered">未交付即恢复</option>
+                    <option value="incomplete_only">仅异常退出时恢复</option>
+                    <option value="judge">Judge LLM 判定</option>
+                    <option value="off">不恢复</option>
+                  </select>
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
                     checked={settings.task_flow?.peer_vote_enabled ?? true}
                     onChange={(e) =>
                       setSettings({
@@ -1000,6 +1067,24 @@ export function GroupEditor({ groupId, onClose }: Props) {
                     }
                   />
                   用户 @成员 时跳过竞选直接任命
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settings.task_flow?.reuse_persisted_leader ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        task_flow: {
+                          ...defaultTaskFlow,
+                          ...settings.task_flow,
+                          enabled: true,
+                          reuse_persisted_leader: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  沿用本群已选负责人（后续消息跳过竞选/选举/计划）
                 </label>
                 <div
                   className={`mt-3 rounded-md border p-3 text-sm ${

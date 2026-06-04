@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { api } from "../api/client";
 import type { MessageAttachment } from "../types";
 import {
@@ -7,11 +8,12 @@ import {
   memberVerdictShort,
   scheduleModeLabel,
 } from "../judgeLabels";
-import { useChat } from "../stores/chat";
+import { mergeMessages, useChat } from "../stores/chat";
 import { MessageBubble } from "./MessageBubble";
 import { MessageTimeDivider } from "./MessageTimeDivider";
 import { shouldShowMessageTime } from "../messageTime";
 import { TaskFlowPanel } from "./TaskFlowPanel";
+import { Collapsible } from "./Collapsible";
 import { Avatar } from "./Avatar";
 import { ChatWorkspaceSwitcher } from "./ChatWorkspaceSwitcher";
 
@@ -27,7 +29,20 @@ export function ChatWindow() {
     judgeBanner,
     ownerNotify,
     taskFlow,
-  } = useChat();
+  } = useChat(
+    useShallow((s) => ({
+      friends: s.friends,
+      groups: s.groups,
+      target: s.target,
+      conversation: s.conversation,
+      messages: s.messages,
+      sendMessage: s.sendMessage,
+      thinking: s.thinking,
+      judgeBanner: s.judgeBanner,
+      ownerNotify: s.ownerNotify,
+      taskFlow: s.taskFlow,
+    })),
+  );
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
@@ -96,11 +111,15 @@ export function ChatWindow() {
     if (conversation?.id) return conversation.id;
     if (target?.kind !== "friend") return null;
     const opened = await api.openDm(target.id);
+    const state = useChat.getState();
+    const cid = opened.conversation.id;
+    const merged = mergeMessages(opened.messages, state.messageCache[cid]);
     useChat.setState({
       conversation: opened.conversation,
-      messages: opened.messages,
+      messages: merged,
+      messageCache: { ...state.messageCache, [cid]: merged },
     });
-    return opened.conversation.id;
+    return cid;
   }
 
   async function onSend(e?: React.FormEvent) {
@@ -162,53 +181,74 @@ export function ChatWindow() {
         )}
       {target.kind === "group" && judgeBanner && (
         <div
-          className={`border-b px-4 py-2 text-xs leading-relaxed ${
+          className={`border-b px-3 py-1.5 ${
             judgeBanner.scheduleMode === "fallback"
-              ? "border-amber-200 bg-amber-50 text-amber-950"
+              ? "border-amber-200 bg-amber-50/90"
               : judgeBanner.scheduleMode === "none"
-                ? "border-slate-200 bg-slate-50 text-slate-600"
+                ? "border-slate-200 bg-slate-50/90"
                 : judgeBanner.scheduleMode === "pending"
-                  ? "border-slate-200 bg-slate-50 text-slate-600"
-                  : "border-emerald-200 bg-emerald-50/80 text-emerald-950"
+                  ? "border-slate-200 bg-slate-50/90"
+                  : "border-emerald-200 bg-emerald-50/70"
           }`}
         >
-          <div>
-            <span className="font-medium">Judge 本轮</span>
-            <span className="mx-1 text-slate-400">·</span>
-            配置 {configuredJudgeModeLabel(judgeBanner.configuredMode)}
-            <span className="mx-1 text-slate-400">·</span>
-            {scheduleModeLabel(judgeBanner.scheduleMode)}
-            <span className="mx-1 text-slate-400">·</span>
-            愿接话且过阈值 {judgeBanner.willingToReply} 人（阈值{" "}
-            {judgeBanner.threshold.toFixed(2)}）
-            <span className="mx-1 text-slate-400">·</span>
-            {judgeBanner.pickedViaFallback ? "兜底点名" : "将发言"}：
-            {judgeBanner.pickedNames.length > 0
-              ? judgeBanner.pickedNames.join("、")
-              : "（无）"}
-          </div>
-          {judgeBanner.verdicts.length > 0 && (
-            <div className="mt-1 text-[11px] text-slate-600">
-              LLM 判定：
-              {judgeBanner.verdicts
-                .map((v) =>
-                  memberVerdictShort(
-                    v.friendName,
-                    v.shouldReply,
-                    v.confidence,
-                    v.judgeSource,
-                  ),
-                )
-                .join(" · ")}
+          <Collapsible
+            defaultOpen={false}
+            tone={
+              judgeBanner.scheduleMode === "fallback" ? "neutral" : "neutral"
+            }
+            summary={
+              <span
+                className={`font-sans text-xs font-medium ${
+                  judgeBanner.scheduleMode === "fallback"
+                    ? "text-amber-950"
+                    : "text-slate-800"
+                }`}
+              >
+                Judge · {configuredJudgeModeLabel(judgeBanner.configuredMode)} ·{" "}
+                {scheduleModeLabel(judgeBanner.scheduleMode)} · 过阈值{" "}
+                {judgeBanner.willingToReply} 人 ·{" "}
+                {judgeBanner.pickedViaFallback ? "兜底" : "发言"}：
+                {judgeBanner.pickedNames.length > 0
+                  ? judgeBanner.pickedNames.join("、")
+                  : "（无）"}
+              </span>
+            }
+          >
+            <div className="space-y-1 text-xs leading-relaxed text-slate-700">
+              <p>
+                配置 {configuredJudgeModeLabel(judgeBanner.configuredMode)} ·{" "}
+                {scheduleModeLabel(judgeBanner.scheduleMode)} · 愿接话且过阈值{" "}
+                {judgeBanner.willingToReply} 人（阈值{" "}
+                {judgeBanner.threshold.toFixed(2)}）·{" "}
+                {judgeBanner.pickedViaFallback ? "兜底点名" : "将发言"}：
+                {judgeBanner.pickedNames.length > 0
+                  ? judgeBanner.pickedNames.join("、")
+                  : "（无）"}
+              </p>
+              {judgeBanner.verdicts.length > 0 && (
+                <p className="text-[11px] text-slate-600">
+                  LLM 判定：
+                  {judgeBanner.verdicts
+                    .map((v) =>
+                      memberVerdictShort(
+                        v.friendName,
+                        v.shouldReply,
+                        v.confidence,
+                        v.judgeSource,
+                      ),
+                    )
+                    .join(" · ")}
+                </p>
+              )}
+              {judgeBanner.scheduleMode === "fallback" &&
+                judgeBanner.verdicts.every((v) => !v.shouldReply) && (
+                  <p className="text-[11px] text-amber-800">
+                    LLM 认为大家都不该接话，但群设置开启了「未过线兜底」，仍会强制选
+                    1 人发言。若希望尊重 LLM 判断，可在群设置关闭该选项。
+                  </p>
+                )}
             </div>
-          )}
-          {judgeBanner.scheduleMode === "fallback" &&
-            judgeBanner.verdicts.every((v) => !v.shouldReply) && (
-              <div className="mt-1 text-[11px] text-amber-800">
-                LLM 认为大家都不该接话，但群设置开启了「未过线兜底」，仍会强制选 1
-                人发言。若希望尊重 LLM 判断，可在群设置关闭该选项。
-              </div>
-            )}
+          </Collapsible>
         </div>
       )}
       {target.kind === "group" && (

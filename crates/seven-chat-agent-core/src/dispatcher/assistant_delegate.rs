@@ -89,12 +89,20 @@ pub enum GroupAssistantPhase {
     AfterExperts,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DelegateTaskHint {
+    Unknown,
+    Incomplete,
+    Stalled,
+}
+
 pub fn build_delegate_prompt(
     group: &Group,
     user_msg: &Message,
     phase: GroupAssistantPhase,
     expert_summary: &str,
     owner_attention: bool,
+    task_hint: DelegateTaskHint,
 ) -> String {
     let attention_hint = if owner_attention {
         "本条涉及较高风险或超出默认可拍板范围：你仍须在群内给出**代理立场与可执行方向**（让专家继续推进），\
@@ -111,24 +119,32 @@ pub fn build_delegate_prompt(
              请一条简短回应：确认收到、代为定调或协调专家，语气自然，可用「我代主人」。",
             group.name, user_msg.sender_name, user_msg.content
         ),
-        GroupAssistantPhase::AfterExperts => format!(
-            "你是群「{}」中用户的代理人（替身），不是普通技术专家。\n\
-             {attention_hint}\n\n\
-             用户原话 [{}]：\n{}\n\n\
-             本轮专家/负责人发言摘要：\n{}\n\n\
-             请综合后输出一条群内回复（代主人）：\n\
-             1. 明确立场或下一步指令（能拍板则拍板）\n\
-             2. 如需主人后续确认，仅标注「已同步主人备忘录」勿阻断讨论\n\
-             3. 避免复述全文，聚焦决策与行动",
-            group.name,
-            user_msg.sender_name,
-            user_msg.content,
-            if expert_summary.trim().is_empty() {
-                "（暂无其他专家发言）"
-            } else {
-                expert_summary
-            }
-        ),
+        GroupAssistantPhase::AfterExperts => {
+            let task_push = match task_hint {
+                DelegateTaskHint::Incomplete | DelegateTaskHint::Stalled => "\n\
+                     **任务尚未交付**：你必须向负责人与成员给出可执行分工与推进授权（明确是否需主人每轮确认），\
+                     不要只表态不落地，也不要用空泛措辞阻断执行。\n",
+                DelegateTaskHint::Unknown => "",
+            };
+            format!(
+                "你是群「{}」中用户的代理人（替身），不是普通技术专家。\n\
+                 {attention_hint}{task_push}\n\n\
+                 用户原话 [{}]：\n{}\n\n\
+                 本轮专家/负责人发言摘要：\n{}\n\n\
+                 请综合后输出一条群内回复（代主人）：\n\
+                 1. 明确立场或下一步指令（能拍板则拍板）\n\
+                 2. 如需主人后续确认，仅标注「已同步主人备忘录」勿阻断讨论\n\
+                 3. 避免复述全文，聚焦决策与行动",
+                group.name,
+                user_msg.sender_name,
+                user_msg.content,
+                if expert_summary.trim().is_empty() {
+                    "（暂无其他专家发言）"
+                } else {
+                    expert_summary
+                }
+            )
+        }
     }
 }
 
@@ -165,9 +181,10 @@ impl MessageDispatcher {
         user_msg: &Message,
         turn_id: &str,
         phase: GroupAssistantPhase,
-    ) -> Result<()> {
+        task_hint: DelegateTaskHint,
+    ) -> Result<Option<Message>> {
         if user_msg.sender_kind != SenderKind::User {
-            return Ok(());
+            return Ok(None);
         }
         let settings = &group.settings;
         let ast = self
@@ -175,13 +192,13 @@ impl MessageDispatcher {
             .resolve_group_assistant_settings(&settings.assistant)
             .await?;
         if !ast.enabled {
-            return Ok(());
+            return Ok(None);
         }
         match ast.mode {
-            AssistantMode::Observe => return Ok(()),
+            AssistantMode::Observe => return Ok(None),
             AssistantMode::Moderate => {
                 if !user_mentions_assistant(&user_msg.content) {
-                    return Ok(());
+                    return Ok(None);
                 }
             }
             AssistantMode::Delegate => {}
@@ -189,11 +206,11 @@ impl MessageDispatcher {
 
         let assistant_id = match self.dispatch_store().group_assistant_member_id(&group.id).await? {
             Some(id) => id,
-            None => return Ok(()),
+            None => return Ok(None),
         };
         let friend = match self.dispatch_store().get_friend(&assistant_id).await? {
             Some(f) if f.enabled => f,
-            _ => return Ok(()),
+            _ => return Ok(None),
         };
 
         let force = user_mentions_assistant(&user_msg.content);
@@ -202,7 +219,7 @@ impl MessageDispatcher {
             && !force
             && phase == GroupAssistantPhase::OnUserMessage
         {
-            return Ok(());
+            return Ok(None);
         }
 
         let member_configs = self.dispatch_store().list_group_member_configs(&group.id).await?;
@@ -245,6 +262,7 @@ impl MessageDispatcher {
             phase,
             &expert_summary,
             owner_attention,
+            task_hint,
         );
 
         // 代理人代发：DNA strict 时改为 waiting_human，需主人确认（L3 动作门）。
@@ -257,7 +275,7 @@ impl MessageDispatcher {
             MessageStatus::Done
         };
 
-        if let Some(reply) = self
+        let reply = self
             .stream_one_reply_with_options(
                 &conv,
                 user_msg,
@@ -271,13 +289,14 @@ impl MessageDispatcher {
                     final_status,
                 },
             )
-            .await?
-        {
+            .await?;
+
+        if let Some(ref reply) = reply {
             record_group_delegate_memory(
                 &self.dispatch_store(),
                 group,
                 user_msg,
-                &reply,
+                reply,
                 &friend.id,
                 owner_attention,
                 detected,
@@ -292,7 +311,7 @@ impl MessageDispatcher {
                     &conv.id,
                     turn_id,
                     &friend.id,
-                    &reply,
+                    reply,
                     detected,
                 )
                 .await;
@@ -301,12 +320,12 @@ impl MessageDispatcher {
                     group.clone(),
                     ast.clone(),
                     conv.id.clone(),
-                    reply,
+                    reply.clone(),
                     ImWritebackEvent::DelegatePosted,
                 );
             }
         }
-        Ok(())
+        Ok(reply)
     }
 }
 

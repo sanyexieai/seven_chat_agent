@@ -12,9 +12,16 @@ use crate::assistant_intent::parse_quick_intent;
 use crate::assistant_task_planner::{PlannedTaskAction, ReminderSchedule, plan_from_intent};
 use crate::judge::{JudgeMode, JudgeService, JudgeSource, Judgment};
 use crate::domain::{
-    BackendKind, CliBlockDelta, ConvKind, Conversation, Friend, GroupSettings, Message,
+    BackendKind, CliBlockDelta, ConvKind, Conversation, Friend, Group, GroupSettings, Message,
     MessageStatus, SenderKind,
 };
+
+/// 专家接话 prompt 场景（群聊自由讨论 vs 任务流执行协作）。
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ExpertReplyMode {
+    GroupChat,
+    TaskFlowExecute,
+}
 use worker_bee_cli::{apply_cli_block_delta, cli_blocks_to_plain};
 use crate::scheduler::{CandidateInfo, ScheduleDecision, SpeakerScheduler};
 use crate::store::memory::NewMemory;
@@ -31,7 +38,10 @@ mod task_flow;
 
 pub use im_writeback::ImWritebackEvent;
 
-use assistant_delegate::{expert_friends_for_group, GroupAssistantPhase, StreamReplyOptions};
+use assistant_delegate::{
+    expert_friends_for_group, DelegateTaskHint, GroupAssistantPhase, StreamReplyOptions,
+};
+use task_flow::TaskFlowExecuteOutcome;
 use crate::provider::ProviderRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -554,18 +564,59 @@ impl MessageDispatcher {
 
         if user_msg.sender_kind == SenderKind::User && settings.task_flow.enabled {
             let members = expert_friends_for_group(&self.dispatch_store(), &group.id).await?;
-            if self
+            let flow = self
                 .run_task_flow(&conv, &user_msg, &turn_id, &settings, &members)
-                .await?
-            {
-                self.maybe_dispatch_group_assistant(
-                    &conv.id,
-                    &group,
-                    &user_msg,
-                    &turn_id,
-                    GroupAssistantPhase::AfterExperts,
-                )
                 .await?;
+            if flow.handled {
+                if let Some(checkpoint) = flow.checkpoint {
+                    let task_hint = Self::delegate_task_hint(checkpoint.outcome);
+                    let assistant_reply = self
+                        .maybe_dispatch_group_assistant(
+                            &conv.id,
+                            &group,
+                            &user_msg,
+                            &turn_id,
+                            GroupAssistantPhase::AfterExperts,
+                            task_hint,
+                        )
+                        .await?;
+                    if self
+                        .should_resume_task_flow_after_delegate(
+                            &settings,
+                            checkpoint.outcome,
+                            assistant_reply.as_ref(),
+                            &user_msg.content,
+                        )
+                        .await?
+                    {
+                        let directive = assistant_reply
+                            .as_ref()
+                            .map(|m| m.content.as_str())
+                            .unwrap_or("");
+                        tracing::info!(
+                            turn_id = %turn_id,
+                            prior_outcome = ?checkpoint.outcome,
+                            "task_flow: resuming after delegate autonomous continue"
+                        );
+                        let final_outcome = self
+                            .resume_task_flow_after_delegate(
+                                &conv,
+                                &user_msg,
+                                &turn_id,
+                                &settings,
+                                &checkpoint,
+                                directive,
+                            )
+                            .await?;
+                        if final_outcome != TaskFlowExecuteOutcome::Delivered {
+                            tracing::info!(
+                                turn_id = %turn_id,
+                                final_outcome = ?final_outcome,
+                                "task_flow: resume ended without delivery"
+                            );
+                        }
+                    }
+                }
                 return Ok(());
             }
         }
@@ -574,171 +625,18 @@ impl MessageDispatcher {
 
         while !frontier.is_empty() {
             let trigger = frontier.remove(0);
-            let member_configs = self.dispatch_store().list_group_member_configs(&group.id).await?;
-            let override_by_friend: std::collections::HashMap<_, _> = member_configs
-                .iter()
-                .map(|c| (c.friend_id.clone(), c.judge_override.clone()))
-                .collect();
-            let mut members = Vec::new();
-            for c in &member_configs {
-                if !c.role.participates_in_expert_scheduling() {
-                    continue;
-                }
-                if let Some(f) = self.dispatch_store().get_friend(&c.friend_id).await? {
-                    if f.enabled {
-                        members.push(f);
-                    }
-                }
-            }
-
-            let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
-            let triggers_self =
-                trigger.sender_kind == SenderKind::User || matches!(trigger.sender_kind, SenderKind::Friend);
-
-            let candidates = self
-                .judge_members(
+            let replies = self
+                .dispatch_expert_round(
                     &conv,
+                    &group,
                     &settings,
-                    &history,
-                    &members,
-                    &override_by_friend,
                     &trigger,
+                    &turn_id,
+                    ExpertReplyMode::GroupChat,
                 )
-                .await;
-
-            let configured_mode = judge_mode_label(settings.judge.mode);
-            for c in &candidates {
-                let src = judge_source_label(c.judgment.source);
-                tracing::info!(
-                    conversation_id = %conv.id,
-                    turn_id = %turn_id,
-                    friend = %c.friend_name,
-                    configured_judge_mode = configured_mode,
-                    judge_source = src.as_deref().unwrap_or("unknown"),
-                    should_reply = c.judgment.should_reply,
-                    confidence = c.judgment.confidence,
-                    reason = ?c.judgment.reason,
-                    "group: judgment_decided"
-                );
-                self.emit(BusEvent::JudgmentDecided {
-                    conversation_id: conv.id.clone(),
-                    turn_id: turn_id.clone(),
-                    friend_id: c.friend_id.clone(),
-                    friend_name: c.friend_name.clone(),
-                    should_reply: c.judgment.should_reply,
-                    confidence: c.judgment.confidence,
-                    reason: c.judgment.reason.clone(),
-                    judge_source: src,
-                    configured_judge_mode: configured_mode.to_string(),
-                });
-            }
-
-            let parent_chain = self.chain_actors(&trigger).await;
-            let has_typing_human = self.has_typing_human(&members).await;
-            let threshold = settings.effective_judge_threshold();
-            let willing = candidates
-                .iter()
-                .filter(|c| c.judgment.should_reply && c.judgment.confidence >= threshold)
-                .count() as u32;
-            let decisions = self.scheduler.rank(
-                &turn_id,
-                &settings,
-                &trigger,
-                candidates,
-                &parent_chain,
-                has_typing_human,
-            );
-            let schedule_mode = if decisions.is_empty() {
-                "none"
-            } else if decisions[0]
-                .reason
-                .as_deref()
-                .is_some_and(|r| r.contains("兜底"))
-            {
-                "fallback"
-            } else {
-                "strict"
-            };
-            if decisions.is_empty() {
-                tracing::info!(
-                    conversation_id = %conv.id,
-                    group_id = %group.id,
-                    member_count = members.len(),
-                    configured_judge_mode = configured_mode,
-                    willing_to_reply = willing,
-                    judge_threshold = threshold,
-                    schedule_mode,
-                    "group: no member scheduled to reply (strict + fallback both empty)"
-                );
-                self.emit(BusEvent::SchedulerPicked {
-                    conversation_id: conv.id.clone(),
-                    turn_id: turn_id.clone(),
-                    decisions: vec![],
-                    schedule_mode: schedule_mode.to_string(),
-                    configured_judge_mode: configured_mode.to_string(),
-                    willing_to_reply: willing,
-                    judge_threshold: threshold,
-                });
-                let _ = triggers_self;
-                continue;
-            }
-            tracing::info!(
-                conversation_id = %conv.id,
-                turn_id = %turn_id,
-                configured_judge_mode = configured_mode,
-                schedule_mode,
-                willing_to_reply = willing,
-                picked = ?decisions.iter().map(|d| &d.friend_name).collect::<Vec<_>>(),
-                "group: scheduler_picked"
-            );
-            self.emit(BusEvent::SchedulerPicked {
-                conversation_id: conv.id.clone(),
-                turn_id: turn_id.clone(),
-                decisions: decisions.clone(),
-                schedule_mode: schedule_mode.to_string(),
-                configured_judge_mode: configured_mode.to_string(),
-                willing_to_reply: willing,
-                judge_threshold: threshold,
-            });
-
-            for d in decisions {
-                let friend = match self.dispatch_store().get_friend(&d.friend_id).await? {
-                    Some(f) => f,
-                    None => continue,
-                };
-                let agent = self.agents.get(&friend.id).await?;
-                let peers: Vec<Friend> = members
-                    .iter()
-                    .filter(|m| m.id != friend.id)
-                    .cloned()
-                    .collect();
-                let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
-                let ctx = ChatContext {
-                    conversation_id: conv.id.clone(),
-                    group_id: Some(group.id.clone()),
-                    group_settings: Some(settings.clone()),
-                    history,
-                    self_friend: friend.clone(),
-                    peers,
-                    user_attachments: trigger.attachments.clone(),
-                    member_group_local_path: None,
-                };
-                if d.delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(d.delay_ms)).await;
-                }
-                let prompt = format!(
-                    "群里 [{}] 刚说：{}\n请按你的人设给出一句自然回应。",
-                    trigger.sender_name, trigger.content
-                );
-                let reply = self
-                    .stream_one_reply(&conv, &trigger, &turn_id, &friend, agent, ctx, &prompt, 0)
-                    .await?;
-                if let Some(reply_msg) = reply {
-                    self.scheduler.record_reply(&turn_id, &reply_msg.content);
-                    if settings.allow_agent_to_agent {
-                        frontier.push(reply_msg);
-                    }
-                }
+                .await?;
+            if settings.allow_agent_to_agent {
+                frontier.extend(replies);
             }
         }
 
@@ -749,10 +647,210 @@ impl MessageDispatcher {
                 &user_msg,
                 &turn_id,
                 GroupAssistantPhase::AfterExperts,
+                DelegateTaskHint::Unknown,
             )
             .await?;
         }
         Ok(())
+    }
+
+    /// 对一条触发消息调度专家接话（judge → scheduler → 生成回复）。
+    pub(super) async fn dispatch_expert_round(
+        &self,
+        conv: &Conversation,
+        group: &Group,
+        settings: &GroupSettings,
+        trigger: &Message,
+        turn_id: &str,
+        mode: ExpertReplyMode,
+    ) -> Result<Vec<Message>> {
+        let member_configs = self
+            .dispatch_store()
+            .list_group_member_configs(&group.id)
+            .await?;
+        let override_by_friend: std::collections::HashMap<_, _> = member_configs
+            .iter()
+            .map(|c| (c.friend_id.clone(), c.judge_override.clone()))
+            .collect();
+        let mut members = Vec::new();
+        for c in &member_configs {
+            if !c.role.participates_in_expert_scheduling() {
+                continue;
+            }
+            if let Some(f) = self.dispatch_store().get_friend(&c.friend_id).await? {
+                if f.enabled {
+                    members.push(f);
+                }
+            }
+        }
+
+        let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
+
+        let candidates = self
+            .judge_members(
+                conv,
+                settings,
+                &history,
+                &members,
+                &override_by_friend,
+                trigger,
+            )
+            .await;
+
+        let configured_mode = judge_mode_label(settings.judge.mode);
+        for c in &candidates {
+            let src = judge_source_label(c.judgment.source);
+            tracing::info!(
+                conversation_id = %conv.id,
+                turn_id = %turn_id,
+                friend = %c.friend_name,
+                configured_judge_mode = configured_mode,
+                judge_source = src.as_deref().unwrap_or("unknown"),
+                should_reply = c.judgment.should_reply,
+                confidence = c.judgment.confidence,
+                reason = ?c.judgment.reason,
+                mode = ?mode,
+                "group: judgment_decided"
+            );
+            self.emit(BusEvent::JudgmentDecided {
+                conversation_id: conv.id.clone(),
+                turn_id: turn_id.to_string(),
+                friend_id: c.friend_id.clone(),
+                friend_name: c.friend_name.clone(),
+                should_reply: c.judgment.should_reply,
+                confidence: c.judgment.confidence,
+                reason: c.judgment.reason.clone(),
+                judge_source: src,
+                configured_judge_mode: configured_mode.to_string(),
+            });
+        }
+
+        let parent_chain = self.chain_actors(trigger).await;
+        let has_typing_human = self.has_typing_human(&members).await;
+        let threshold = settings.effective_judge_threshold();
+        let willing = candidates
+            .iter()
+            .filter(|c| c.judgment.should_reply && c.judgment.confidence >= threshold)
+            .count() as u32;
+        let recent_texts: Vec<String> = history.iter().map(|m| m.content.clone()).collect();
+        let decisions = self.scheduler.rank(
+            turn_id,
+            settings,
+            trigger,
+            candidates,
+            &parent_chain,
+            has_typing_human,
+            &recent_texts,
+        );
+        let schedule_mode = if decisions.is_empty() {
+            "none"
+        } else if decisions[0]
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("兜底"))
+        {
+            "fallback"
+        } else {
+            "strict"
+        };
+        if decisions.is_empty() {
+            tracing::info!(
+                conversation_id = %conv.id,
+                group_id = %group.id,
+                member_count = members.len(),
+                configured_judge_mode = configured_mode,
+                willing_to_reply = willing,
+                judge_threshold = threshold,
+                schedule_mode,
+                mode = ?mode,
+                "group: no member scheduled to reply (strict + fallback both empty)"
+            );
+            self.emit(BusEvent::SchedulerPicked {
+                conversation_id: conv.id.clone(),
+                turn_id: turn_id.to_string(),
+                decisions: vec![],
+                schedule_mode: schedule_mode.to_string(),
+                configured_judge_mode: configured_mode.to_string(),
+                willing_to_reply: willing,
+                judge_threshold: threshold,
+            });
+            return Ok(vec![]);
+        }
+        tracing::info!(
+            conversation_id = %conv.id,
+            turn_id = %turn_id,
+            configured_judge_mode = configured_mode,
+            schedule_mode,
+            willing_to_reply = willing,
+            picked = ?decisions.iter().map(|d| &d.friend_name).collect::<Vec<_>>(),
+            mode = ?mode,
+            "group: scheduler_picked"
+        );
+        self.emit(BusEvent::SchedulerPicked {
+            conversation_id: conv.id.clone(),
+            turn_id: turn_id.to_string(),
+            decisions: decisions.clone(),
+            schedule_mode: schedule_mode.to_string(),
+            configured_judge_mode: configured_mode.to_string(),
+            willing_to_reply: willing,
+            judge_threshold: threshold,
+        });
+
+        let mut replies = Vec::new();
+        for d in decisions {
+            let friend = match self.dispatch_store().get_friend(&d.friend_id).await? {
+                Some(f) => f,
+                None => continue,
+            };
+            let agent = self.agents.get(&friend.id).await?;
+            let peers: Vec<Friend> = members
+                .iter()
+                .filter(|m| m.id != friend.id)
+                .cloned()
+                .collect();
+            let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
+            let ctx = ChatContext {
+                conversation_id: conv.id.clone(),
+                group_id: Some(group.id.clone()),
+                group_settings: Some(settings.clone()),
+                history,
+                self_friend: friend.clone(),
+                peers,
+                user_attachments: trigger.attachments.clone(),
+                member_group_local_path: None,
+            };
+            if d.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(d.delay_ms)).await;
+            }
+            let prompt = Self::build_expert_reply_prompt(mode, trigger, &friend);
+            let reply = self
+                .stream_one_reply(conv, trigger, turn_id, &friend, agent, ctx, &prompt, 0)
+                .await?;
+            if let Some(reply_msg) = reply {
+                self.scheduler.record_reply(turn_id, &reply_msg.content);
+                replies.push(reply_msg);
+            }
+        }
+        Ok(replies)
+    }
+
+    fn build_expert_reply_prompt(mode: ExpertReplyMode, trigger: &Message, friend: &Friend) -> String {
+        match mode {
+            ExpertReplyMode::GroupChat => format!(
+                "群里 [{}] 刚说：{}\n\n\
+                接话规则：只有当你有**与上文不同的新进展**、**新观点**或**需要你去回答的具体疑问**时才回应；\
+                若他人已问过/说过同样的事，不要重复换说法。没有新内容则不要硬接。\n\
+                请简短回应。",
+                trigger.sender_name, trigger.content
+            ),
+            ExpertReplyMode::TaskFlowExecute => format!(
+                "【任务流·执行协作】负责人「{}」说：\n{}\n\n\
+                你是「{}」。若负责人 @ 你、向你分配任务或提问，请给出**可执行的具体回应**（查代码、跑命令、提供信息等）；\
+                若你有不同于上文的实质进展也可补充。不要重复空泛表态。\n\
+                请简短回应。",
+                trigger.sender_name, trigger.content, friend.name
+            ),
+        }
     }
 
     async fn judge_members(

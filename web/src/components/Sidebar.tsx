@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { api } from "../api/client";
 import { isWorkerBeeFriend } from "../friendKind";
 import type { Friend } from "../types";
@@ -20,7 +21,15 @@ export function Sidebar({
   onEditGroup,
   onOpenAssistant,
 }: Props) {
-  const { friends, groups, target, selectFriend, selectGroup } = useChat();
+  const { friends, groups, target, selectFriend, selectGroup } = useChat(
+    useShallow((s) => ({
+      friends: s.friends,
+      groups: s.groups,
+      target: s.target,
+      selectFriend: s.selectFriend,
+      selectGroup: s.selectGroup,
+    })),
+  );
   const [onlineByFriend, setOnlineByFriend] = useState<Record<string, boolean>>({});
   const [onlineDetailByFriend, setOnlineDetailByFriend] = useState<Record<string, string>>({});
   const externalCliFriends = useMemo(() => friends.filter(isExternalCliFriend), [friends]);
@@ -29,6 +38,7 @@ export function Sidebar({
     let cancelled = false;
 
     async function refreshOnline() {
+      if (document.hidden) return;
       if (externalCliFriends.length === 0) {
         if (!cancelled) {
           setOnlineByFriend({});

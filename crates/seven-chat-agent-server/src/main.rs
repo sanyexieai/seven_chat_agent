@@ -60,6 +60,8 @@ async fn main() -> anyhow::Result<()> {
     .parse()
     .context("SEVEN_CHAT_AGENT_BIND / HONEYCOMB_BIND")?;
 
+    const PORT_FALLBACK_ATTEMPTS: u16 = 64;
+
     let https_addr = https_bind_addr()?;
     if let Some(https_addr) = https_addr {
         ensure_rustls_crypto_provider()?;
@@ -73,6 +75,17 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("load TLS cert/key")?;
 
+        let (http_listener, addr) =
+            bind_tcp_listener_with_fallback(addr, PORT_FALLBACK_ATTEMPTS).await?;
+        let (https_listener, https_addr) =
+            bind_tcp_listener_with_fallback(https_addr, PORT_FALLBACK_ATTEMPTS).await?;
+        let https_std = https_listener.into_std().context("https listener into_std")?;
+        https_std
+            .set_nonblocking(true)
+            .context("https listener set_nonblocking")?;
+        let https_server =
+            axum_server::tls_rustls::from_tcp_rustls(https_std, tls);
+
         let public_https_port = public_https_port(https_addr.port());
         tracing::info!(
             %addr,
@@ -83,20 +96,21 @@ async fn main() -> anyhow::Result<()> {
         );
         let redirect_app = build_http_redirect_app(public_https_port);
         let http = async move {
-            let listener = tokio::net::TcpListener::bind(addr).await?;
-            axum::serve(listener, redirect_app).await?;
+            axum::serve(http_listener, redirect_app).await?;
             anyhow::Ok(())
         };
         let https = async move {
-            axum_server::bind_rustls(https_addr, tls)
+            https_server
                 .serve(app.into_make_service())
-                .await?;
+                .await
+                .context("https serve")?;
             anyhow::Ok(())
         };
         let (_http, _https) = tokio::try_join!(http, https)?;
     } else {
+        let (listener, addr) =
+            bind_tcp_listener_with_fallback(addr, PORT_FALLBACK_ATTEMPTS).await?;
         tracing::info!(%addr, "seven-chat-agent-server listening (http)");
-        let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await?;
     }
     Ok(())
@@ -208,4 +222,41 @@ async fn http_to_https_redirect(
         format!("https://{host_without_port}:{public_https_port}{uri}")
     };
     Redirect::permanent(&location)
+}
+
+fn is_addr_in_use(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::AddrInUse
+}
+
+/// 端口被占用时依次尝试 port+1、port+2…，最多 `max_attempts` 次。
+async fn bind_tcp_listener_with_fallback(
+    addr: SocketAddr,
+    max_attempts: u16,
+) -> anyhow::Result<(tokio::net::TcpListener, SocketAddr)> {
+    let ip = addr.ip();
+    let requested = addr.port();
+    for offset in 0..max_attempts {
+        let port = requested.saturating_add(offset);
+        if port == 0 {
+            break;
+        }
+        let try_addr = SocketAddr::new(ip, port);
+        match tokio::net::TcpListener::bind(try_addr).await {
+            Ok(listener) => {
+                if port != requested {
+                    tracing::warn!(
+                        requested_port = requested,
+                        bound = %try_addr,
+                        "HTTP 端口已被占用，已自动切换到相邻端口"
+                    );
+                }
+                return Ok((listener, try_addr));
+            }
+            Err(e) if is_addr_in_use(&e) => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    anyhow::bail!(
+        "在 {addr} 起连续 {max_attempts} 个端口内未找到可用 HTTP 端口（Address already in use）"
+    )
 }

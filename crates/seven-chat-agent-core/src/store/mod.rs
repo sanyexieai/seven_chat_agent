@@ -55,7 +55,7 @@ impl SqliteStore {
         }
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(8)
+            .max_connections(16)
             .connect_with(opts)
             .await?;
 

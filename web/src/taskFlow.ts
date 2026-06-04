@@ -7,7 +7,11 @@ export type TaskFlowPhaseKey =
   | "appoint"
   | "plan"
   | "plan_review"
-  | "execute";
+  | "execute"
+  | "reuse_leader"
+  | "guide"
+  | "delivered"
+  | "stalled";
 
 export const TASK_FLOW_PHASES: {
   key: TaskFlowPhaseKey;
@@ -18,7 +22,11 @@ export const TASK_FLOW_PHASES: {
   { key: "election", label: "③ 选举" },
   { key: "plan", label: "④ 计划" },
   { key: "plan_review", label: "⑤ 评议" },
+  { key: "reuse_leader", label: "沿用负责人" },
   { key: "execute", label: "⑥ 执行" },
+  { key: "guide", label: "⑦ 引导" },
+  { key: "delivered", label: "⑧ 交付" },
+  { key: "stalled", label: "⏸ 暂停" },
 ];
 
 export interface TaskFlowVote {
@@ -68,6 +76,10 @@ export function phaseLabel(key: string): string {
   const found = TASK_FLOW_PHASES.find((p) => p.key === key);
   if (found) return found.label;
   if (key === "appoint") return "任命";
+  if (key === "reuse_leader") return "沿用负责人";
+  if (key === "guide") return "继续引导";
+  if (key === "delivered") return "已交付";
+  if (key === "stalled") return "助理暂停";
   return key;
 }
 

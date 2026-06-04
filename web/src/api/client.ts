@@ -124,6 +124,26 @@ function parsePathAndQuery(path: string) {
   return { pathname, params };
 }
 
+async function httpJsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("seven_chat_agent_token")
+      : null;
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const res = await fetch(`/api${path}`, { ...init, headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || res.statusText);
+  }
+  return res.json() as Promise<T>;
+}
+
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method || "GET").toUpperCase();
   const body =
@@ -131,6 +151,46 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
       ? JSON.parse(init.body)
       : undefined;
   const { pathname, params } = parsePathAndQuery(path);
+
+  // 聊天与会话切换走 HTTP，避免与 ws-api 单连接上的慢请求（助理面板、OAuth、导入等）互相排队
+  if (pathname === "/friends" && method === "GET") {
+    return httpJsonFetch<T>(pathname);
+  }
+  if (pathname === "/groups" && method === "GET") {
+    return httpJsonFetch<T>(pathname);
+  }
+  if (/^\/groups\/[^/]+$/.test(pathname) && method === "GET") {
+    return httpJsonFetch<T>(pathname);
+  }
+  if (pathname.startsWith("/conversations/dm/") && method === "GET") {
+    return httpJsonFetch<T>(pathname);
+  }
+  if (pathname.startsWith("/conversations/dm/") && method === "POST") {
+    return httpJsonFetch<T>(pathname, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    });
+  }
+  if (
+    pathname.startsWith("/conversations/") &&
+    pathname.endsWith("/messages") &&
+    method === "GET"
+  ) {
+    return httpJsonFetch<T>(pathname);
+  }
+  if (pathname.startsWith("/conversations/") && pathname.endsWith("/send")) {
+    return httpJsonFetch<T>(pathname, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    });
+  }
+  if (/^\/conversations\/[^/]+\/messages\/[^/]+\/delegate$/.test(pathname)) {
+    return httpJsonFetch<T>(pathname, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    });
+  }
+
   if (pathname === "/health") return wsInvoke<T>("health");
   if (pathname === "/friends" && method === "GET") return wsInvoke<T>("listFriends");
   if (/^\/friends\/[^/]+$/.test(pathname) && method === "GET") {

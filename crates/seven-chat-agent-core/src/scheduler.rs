@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -7,7 +6,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::Judgment;
-use crate::domain::{BackendKind, GroupSettings, Message};
+use crate::domain::{BackendKind, GroupSettings, Message, SenderKind};
+use seven_chat_agent_judge::{has_open_question, judgment_echoes_recent, text_similarity};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandidateInfo {
@@ -57,6 +57,7 @@ impl SpeakerScheduler {
         candidates: Vec<CandidateInfo>,
         parent_chain_actors: &HashMap<String, u32>,
         has_typing_human: bool,
+        recent_conversation: &[String],
     ) -> Vec<ScheduleDecision> {
         let mut turns = self.turns.lock();
         let track = turns.entry(turn_id.to_string()).or_default();
@@ -79,6 +80,7 @@ impl SpeakerScheduler {
             now,
             true,
             threshold,
+            recent_conversation,
         );
 
         let mut used_fallback = false;
@@ -92,6 +94,7 @@ impl SpeakerScheduler {
                 now,
                 false,
                 threshold,
+                recent_conversation,
             );
             if !filtered.is_empty() {
                 filtered.truncate(1);
@@ -141,6 +144,15 @@ impl SpeakerScheduler {
             }
         }
 
+        let max_per_trigger = match triggering.sender_kind {
+            SenderKind::User => 2,
+            SenderKind::Friend => 1,
+            _ => 1,
+        };
+        if decisions.len() > max_per_trigger {
+            decisions.truncate(max_per_trigger);
+        }
+
         decisions
     }
 
@@ -154,7 +166,11 @@ impl SpeakerScheduler {
         now: Instant,
         strict: bool,
         threshold: f32,
+        recent_conversation: &[String],
     ) -> Vec<(CandidateInfo, f32)> {
+        let mut recent_all: Vec<String> = recent_conversation.to_vec();
+        recent_all.extend(track.recent_replies.iter().cloned());
+
         let mut scored: Vec<(CandidateInfo, f32)> = candidates
             .iter()
             .filter(|c| c.backend_kind != BackendKind::Human)
@@ -181,19 +197,35 @@ impl SpeakerScheduler {
                         .unwrap_or(0)
                         < 2
             })
+            .filter(|c| {
+                if triggering.sender_kind != SenderKind::Friend {
+                    return true;
+                }
+                let reason = c.judgment.reason.as_deref().unwrap_or("");
+                if has_open_question(reason) || has_open_question(&triggering.content) {
+                    return true;
+                }
+                !judgment_echoes_recent(reason, &recent_all, 0.68)
+                    && !recent_all
+                        .iter()
+                        .any(|r| text_similarity(r, &triggering.content) >= 0.78)
+            })
             .map(|c| (c.clone(), c.judgment.confidence))
             .filter(|(c, _)| {
                 if !strict {
                     return true;
                 }
-                let new_text = c.judgment.reason.as_deref().unwrap_or("");
-                if new_text.is_empty() {
+                let reason = c.judgment.reason.as_deref().unwrap_or("");
+                if reason.is_empty() {
                     return true;
+                }
+                if judgment_echoes_recent(reason, &recent_all, 0.72) {
+                    return false;
                 }
                 let near_dup = track
                     .recent_replies
                     .iter()
-                    .any(|prev| similarity(prev, new_text) > 0.85);
+                    .any(|prev| text_similarity(prev, reason) > 0.72);
                 !near_dup
             })
             .collect();
@@ -270,7 +302,15 @@ mod tests {
             cand("b", true, 0.45),
             cand("c", false, 0.1),
         ];
-        let picked = sched.rank(turn, &settings, &trigger, candidates, &HashMap::new(), false);
+        let picked = sched.rank(
+            turn,
+            &settings,
+            &trigger,
+            candidates,
+            &HashMap::new(),
+            false,
+            &[],
+        );
         assert_eq!(picked.len(), 1);
         assert_eq!(picked[0].friend_id, "b");
         assert!(
@@ -281,15 +321,4 @@ mod tests {
                 .contains("兜底")
         );
     }
-}
-
-fn similarity(a: &str, b: &str) -> f32 {
-    let bag_a: HashSet<&str> = a.split_whitespace().collect();
-    let bag_b: HashSet<&str> = b.split_whitespace().collect();
-    if bag_a.is_empty() || bag_b.is_empty() {
-        return 0.0;
-    }
-    let inter: usize = bag_a.intersection(&bag_b).count();
-    let uni: usize = bag_a.union(&bag_b).count();
-    inter as f32 / uni as f32
 }

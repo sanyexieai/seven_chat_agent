@@ -328,6 +328,18 @@ export interface GroupTaskFlowSettings {
   plan_review_enabled?: boolean;
   peer_vote_enabled?: boolean;
   appoint_by_mention_enabled?: boolean;
+  /** 沿用本群已选负责人，跳过竞选/选举/计划 */
+  reuse_persisted_leader?: boolean;
+  skip_plan_when_reuse_leader?: boolean;
+  /** 须明确交付才结束；否则负责人继续引导，由助理监测空转 */
+  require_clear_delivery?: boolean;
+  /** 代理人发言后是否恢复任务流 */
+  resume_after_delegate_enabled?: boolean;
+  /** not_delivered | incomplete_only | judge | off */
+  resume_after_delegate_mode?: string;
+  resume_stagnation_suppress_rounds?: number;
+  stagnation_min_leader_rounds?: number;
+  stagnation_reply_similarity?: number;
 }
 
 export interface GroupSettings {

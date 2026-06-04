@@ -166,6 +166,17 @@ impl SqliteStore {
         let id = req.id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let mut settings = req.settings;
         settings.sync_judge_threshold_fields();
+
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(1) FROM groups WHERE id = ?")
+            .bind(&id)
+            .fetch_one(self.pool())
+            .await?;
+        if exists > 0 {
+            if let Some(existing) = self.get_group(&id).await? {
+                merge_persisted_task_flow_leader(&mut settings, &existing.settings);
+            }
+        }
+
         let settings_json = serde_json::to_string(&settings)?;
         let now = Utc::now().to_rfc3339();
 
@@ -175,10 +186,6 @@ impl SqliteStore {
             ensure_assistant_in_members(&mut members, &aid);
         }
 
-        let exists: i64 = sqlx::query_scalar("SELECT COUNT(1) FROM groups WHERE id = ?")
-            .bind(&id)
-            .fetch_one(self.pool())
-            .await?;
         if exists == 0 {
             sqlx::query(
                 "INSERT INTO groups (id, name, avatar, settings, tenant_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -254,6 +261,33 @@ impl SqliteStore {
             .ok_or_else(|| Error::not_found("group after upsert"))
     }
 
+    /// 任务流选出负责人后写入群设置（供后续轮次沿用）。
+    pub async fn persist_group_task_flow_leader(
+        &self,
+        group_id: &str,
+        leader_id: &str,
+        reason: &str,
+        plan_excerpt: Option<&str>,
+    ) -> Result<()> {
+        let Some(mut group) = self.get_group(group_id).await? else {
+            return Ok(());
+        };
+        group.settings.task_flow.persisted_leader_id = Some(leader_id.to_string());
+        group.settings.task_flow.persisted_leader_reason = Some(reason.to_string());
+        if let Some(excerpt) = plan_excerpt.filter(|s| !s.trim().is_empty()) {
+            group.settings.task_flow.persisted_plan_excerpt =
+                Some(truncate_chars(excerpt, 1200));
+        }
+        group.settings.sync_judge_threshold_fields();
+        let settings_json = serde_json::to_string(&group.settings)?;
+        sqlx::query("UPDATE groups SET settings=? WHERE id = ?")
+            .bind(&settings_json)
+            .bind(group_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_or_create_group_conversation(
         &self,
         group_id: &str,
@@ -303,6 +337,29 @@ fn normalize_group_members(
             judge_override: None,
         })
         .collect()
+}
+
+fn merge_persisted_task_flow_leader(settings: &mut GroupSettings, existing: &GroupSettings) {
+    let incoming = &mut settings.task_flow;
+    let old = &existing.task_flow;
+    if incoming.persisted_leader_id.is_none() {
+        incoming.persisted_leader_id = old.persisted_leader_id.clone();
+    }
+    if incoming.persisted_leader_reason.is_none() {
+        incoming.persisted_leader_reason = old.persisted_leader_reason.clone();
+    }
+    if incoming.persisted_plan_excerpt.is_none() {
+        incoming.persisted_plan_excerpt = old.persisted_plan_excerpt.clone();
+    }
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 fn ensure_assistant_in_members(members: &mut Vec<GroupMemberConfig>, assistant_id: &str) {

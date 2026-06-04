@@ -27,7 +27,9 @@ function openAssistantChat(
 
 export default function App() {
   const { ready: authReady, token, init: initAuth } = useAuth();
-  const { ready: chatReady, init: initChat } = useChat();
+  const chatReady = useChat((s) => s.ready);
+  const initChat = useChat((s) => s.init);
+  const friends = useChat((s) => s.friends);
   const [editingFriend, setEditingFriend] = useState<
     string | null | undefined
   >(undefined);
@@ -40,7 +42,6 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [invitesOpen, setInvitesOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
-  const { friends } = useChat();
   const humanFriends = useMemo(
     () => friends.filter((f) => f.backend_kind === "human"),
     [friends],

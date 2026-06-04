@@ -64,6 +64,16 @@ fn spawn_send_user_message(
 
 async fn handle_ws_api(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
+    let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    let writer = tokio::spawn(async move {
+        while let Some(text) = resp_rx.recv().await {
+            if sender.send(Message::Text(text)).await.is_err() {
+                break;
+            }
+        }
+    });
+
     while let Some(Ok(msg)) = receiver.next().await {
         let Message::Text(text) = msg else {
             continue;
@@ -71,24 +81,27 @@ async fn handle_ws_api(socket: WebSocket, state: AppState) {
         let req: WsApiReq = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
-                let _ = sender
-                    .send(Message::Text(
-                        serde_json::json!({"id":"","ok":false,"error":format!("bad request: {e}")})
-                            .to_string(),
-                    ))
-                    .await;
+                let _ = resp_tx.send(
+                    serde_json::json!({"id":"","ok":false,"error":format!("bad request: {e}")})
+                        .to_string(),
+                );
                 continue;
             }
         };
-        let result = handle_method(&state, &req.method, req.params).await;
-        let resp = match result {
-            Ok(v) => serde_json::json!({"id": req.id, "ok": true, "result": v}),
-            Err(e) => serde_json::json!({"id": req.id, "ok": false, "error": e}),
-        };
-        if sender.send(Message::Text(resp.to_string())).await.is_err() {
-            break;
-        }
+        let state = state.clone();
+        let resp_tx = resp_tx.clone();
+        tokio::spawn(async move {
+            let result = handle_method(&state, &req.method, req.params).await;
+            let resp = match result {
+                Ok(v) => serde_json::json!({"id": req.id, "ok": true, "result": v}),
+                Err(e) => serde_json::json!({"id": req.id, "ok": false, "error": e}),
+            };
+            let _ = resp_tx.send(resp.to_string());
+        });
     }
+
+    drop(resp_tx);
+    let _ = writer.await;
 }
 
 async fn handle_method(

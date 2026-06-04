@@ -75,6 +75,14 @@ interface ChatState {
   target: ChatTarget | null;
   conversation: Conversation | null;
   messages: Message[];
+  /** 各会话消息缓存；切换好友/群时仍接收 WS 增量，避免流式回复中途切走丢内容 */
+  messageCache: Record<string, Message[]>;
+  /** friendId → conversationId，切换时先展示缓存避免空白等待 */
+  friendConvIndex: Record<string, string>;
+  /** groupId → conversationId */
+  groupConvIndex: Record<string, string>;
+  /** 切换会话序号，丢弃过期的 openDm/getGroup 响应 */
+  selectSeq: number;
   thinking: Record<string, ThinkingState>;
   judgeBanner: JudgeRoundBanner | null;
   ownerNotify: OwnerNotifyBanner | null;
@@ -101,6 +109,10 @@ export const useChat = create<ChatState>((set, get) => ({
   target: null,
   conversation: null,
   messages: [],
+  messageCache: {},
+  friendConvIndex: {},
+  groupConvIndex: {},
+  selectSeq: 0,
   thinking: {},
   judgeBanner: null,
   ownerNotify: null,
@@ -148,45 +160,120 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ providers, providerKeys: provider_keys });
   },
   async selectFriend(id) {
-    set({
-      target: { kind: "friend", id },
-      conversation: null,
-      messages: [],
-      thinking: {},
-      judgeBanner: null,
-      taskFlow: null,
+    const seq = get().selectSeq + 1;
+    set((s) => {
+      const messageCache = stashActiveMessages(s);
+      const cachedConvId = s.friendConvIndex[id];
+      const cachedMessages = cachedConvId
+        ? messageCache[cachedConvId]
+        : undefined;
+      const cachedConversation =
+        cachedConvId && cachedMessages
+          ? ({
+              id: cachedConvId,
+              kind: "dm" as const,
+              target_id: id,
+              title: null,
+              last_message_at: null,
+              created_at: new Date().toISOString(),
+            } satisfies Conversation)
+          : null;
+      return {
+        selectSeq: seq,
+        messageCache,
+        target: { kind: "friend", id },
+        conversation: cachedConversation,
+        messages: cachedMessages ?? [],
+        thinking: {},
+        judgeBanner: null,
+        taskFlow: null,
+      };
     });
-    const { conversation, messages } = await api.openDm(id);
-    set({ conversation, messages });
+    try {
+      const { conversation, messages } = await api.openDm(id);
+      set((s) => {
+        if (s.selectSeq !== seq) return {};
+        if (s.target?.kind !== "friend" || s.target.id !== id) return {};
+        const merged = mergeMessages(messages, s.messageCache[conversation.id]);
+        return {
+          conversation,
+          messages: merged,
+          messageCache: { ...s.messageCache, [conversation.id]: merged },
+          friendConvIndex: { ...s.friendConvIndex, [id]: conversation.id },
+        };
+      });
+    } catch {
+      if (get().selectSeq === seq && get().target?.id === id && !get().conversation) {
+        set({ messages: [] });
+      }
+    }
   },
   async selectGroup(id) {
-    set({
-      target: { kind: "group", id },
-      conversation: null,
-      messages: [],
-      thinking: {},
-      judgeBanner: null,
-      taskFlow: null,
+    const seq = get().selectSeq + 1;
+    set((s) => {
+      const messageCache = stashActiveMessages(s);
+      const cachedConvId = s.groupConvIndex[id];
+      const cachedMessages = cachedConvId
+        ? messageCache[cachedConvId]
+        : undefined;
+      const cachedConversation =
+        cachedConvId && cachedMessages
+          ? ({
+              id: cachedConvId,
+              kind: "group" as const,
+              target_id: id,
+              title: null,
+              last_message_at: null,
+              created_at: new Date().toISOString(),
+            } satisfies Conversation)
+          : null;
+      return {
+        selectSeq: seq,
+        messageCache,
+        target: { kind: "group", id },
+        conversation: cachedConversation,
+        messages: cachedMessages ?? [],
+        thinking: {},
+        judgeBanner: null,
+        taskFlow: null,
+      };
     });
-    const { conversation_id } = await api.getGroup(id);
-    const conv = await api.listConversationMessages(conversation_id);
-    set({
-      conversation: {
-        id: conversation_id,
-        kind: "group",
-        target_id: id,
-        title: null,
-        last_message_at: null,
-        created_at: new Date().toISOString(),
-      },
-      messages: conv.messages,
-    });
+    try {
+      const { conversation_id } = await api.getGroup(id);
+      const conv = await api.listConversationMessages(conversation_id);
+      set((s) => {
+        if (s.selectSeq !== seq) return {};
+        if (s.target?.kind !== "group" || s.target.id !== id) return {};
+        const conversation: Conversation = {
+          id: conversation_id,
+          kind: "group",
+          target_id: id,
+          title: null,
+          last_message_at: null,
+          created_at: new Date().toISOString(),
+        };
+        const merged = mergeMessages(conv.messages, s.messageCache[conversation_id]);
+        return {
+          conversation,
+          messages: merged,
+          messageCache: { ...s.messageCache, [conversation_id]: merged },
+          groupConvIndex: { ...s.groupConvIndex, [id]: conversation_id },
+        };
+      });
+    } catch {
+      if (get().selectSeq === seq && get().target?.id === id && !get().conversation) {
+        set({ messages: [] });
+      }
+    }
   },
   async sendMessage(content, attachments = []) {
     const t = get().target;
     if (!t) return;
     if (t.kind === "friend") {
-      await api.sendDm(t.id, content, attachments);
+      const res = await api.sendDm(t.id, content, attachments);
+      set((s) => ({
+        friendConvIndex: { ...s.friendConvIndex, [t.id]: res.conversation_id },
+      }));
     } else {
       const conv = get().conversation;
       if (!conv) return;
@@ -194,6 +281,52 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 }));
+
+function stashActiveMessages(s: ChatState): Record<string, Message[]> {
+  const cid = s.conversation?.id;
+  if (!cid) return s.messageCache;
+  return { ...s.messageCache, [cid]: s.messages };
+}
+
+function convMessages(s: ChatState, convId: string): Message[] {
+  if (s.conversation?.id === convId) return s.messages;
+  return s.messageCache[convId] ?? [];
+}
+
+function withConvMessages(
+  s: ChatState,
+  convId: string,
+  updater: (msgs: Message[]) => Message[],
+): Partial<ChatState> {
+  const next = updater(convMessages(s, convId));
+  const messageCache = { ...s.messageCache, [convId]: next };
+  if (s.conversation?.id === convId) {
+    return { messages: next, messageCache };
+  }
+  return { messageCache };
+}
+
+/** API 快照与 WS 缓存合并：流式中途切走时 DB 内容可能滞后于缓存 */
+export function mergeMessages(apiMessages: Message[], cached?: Message[]): Message[] {
+  if (!cached?.length) return apiMessages;
+  const cacheById = new Map(cached.map((m) => [m.id, m]));
+  const merged = apiMessages.map((m) => {
+    const c = cacheById.get(m.id);
+    if (!c) return m;
+    if (c.content.length > m.content.length) return c;
+    if (m.status === "streaming" && c.content.length >= m.content.length) return c;
+    if (c.status === "done" && m.status === "streaming") return c;
+    return m;
+  });
+  for (const c of cached) {
+    if (!merged.some((m) => m.id === c.id)) merged.push(c);
+  }
+  merged.sort(
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+  );
+  return merged;
+}
 
 function applyBusEvent(
   ev: BusEvent,
@@ -207,41 +340,42 @@ function applyBusEvent(
     !!state.conversation && cid === state.conversation.id;
   switch (ev.type) {
     case "message_created": {
-      if (sameConv(ev.message.conversation_id)) {
-        if (state.messages.some((m) => m.id === ev.message.id)) {
-          break;
-        }
-        set({ messages: [...state.messages, ev.message] });
-        if (ev.message.sender_kind === "friend") {
-          set((s) => ({
-            thinking: {
-              ...s.thinking,
-              [ev.message.sender_id]: {
-                status: "speaking",
-                updatedAt: Date.now(),
-              },
+      const convId = ev.message.conversation_id;
+      set((s) => {
+        const prev = convMessages(s, convId);
+        if (prev.some((m) => m.id === ev.message.id)) return {};
+        return withConvMessages(s, convId, (msgs) => [...msgs, ev.message]);
+      });
+      if (sameConv(convId) && ev.message.sender_kind === "friend") {
+        set((s) => ({
+          thinking: {
+            ...s.thinking,
+            [ev.message.sender_id]: {
+              status: "speaking",
+              updatedAt: Date.now(),
             },
-          }));
-        }
+          },
+        }));
       }
       break;
     }
     case "message_delta": {
-      if (sameConv(ev.conversation_id) && !ev.thinking) {
-        set({
-          messages: state.messages.map((m) =>
+      if (ev.thinking) break;
+      set((s) =>
+        withConvMessages(s, ev.conversation_id, (msgs) =>
+          msgs.map((m) =>
             m.id === ev.message_id
               ? { ...m, content: m.content + ev.delta }
               : m,
           ),
-        });
-      }
+        ),
+      );
       break;
     }
     case "message_cli_delta": {
-      if (sameConv(ev.conversation_id)) {
-        set({
-          messages: state.messages.map((m) => {
+      set((s) =>
+        withConvMessages(s, ev.conversation_id, (msgs) =>
+          msgs.map((m) => {
             if (m.id !== ev.message_id) return m;
             const content_blocks = applyCliBlockDelta(
               m.content_blocks ?? [],
@@ -253,17 +387,18 @@ function applyBusEvent(
               content: cliBlocksToPlain(content_blocks),
             };
           }),
-        });
-      }
+        ),
+      );
       break;
     }
     case "message_done": {
-      if (sameConv(ev.message.conversation_id)) {
-        set({
-          messages: state.messages.map((m) =>
-            m.id === ev.message.id ? ev.message : m,
-          ),
-        });
+      const convId = ev.message.conversation_id;
+      set((s) =>
+        withConvMessages(s, convId, (msgs) =>
+          msgs.map((m) => (m.id === ev.message.id ? ev.message : m)),
+        ),
+      );
+      if (sameConv(convId)) {
         set((s) => {
           const next = { ...s.thinking };
           delete next[ev.message.sender_id];
@@ -273,9 +408,9 @@ function applyBusEvent(
       break;
     }
     case "message_failed": {
-      if (sameConv(ev.conversation_id)) {
-        set({
-          messages: state.messages.map((m) =>
+      set((s) =>
+        withConvMessages(s, ev.conversation_id, (msgs) =>
+          msgs.map((m) =>
             m.id === ev.message_id
               ? {
                   ...m,
@@ -284,8 +419,8 @@ function applyBusEvent(
                 }
               : m,
           ),
-        });
-      }
+        ),
+      );
       break;
     }
     case "judgment_decided": {
@@ -548,7 +683,11 @@ const PHASE_ORDER: TaskFlowPhaseKey[] = [
   "election",
   "plan",
   "plan_review",
+  "reuse_leader",
   "execute",
+  "guide",
+  "delivered",
+  "stalled",
 ];
 
 function ensureTaskFlow(

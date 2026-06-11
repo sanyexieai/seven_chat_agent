@@ -483,6 +483,70 @@ pub fn effective_pty_preset(cfg: &PtyBackendConfig) -> String {
     resolve_pty_preset(cfg).unwrap_or_else(|_| seven_chat_agent_cli::PRESET_CLAUDE.into())
 }
 
+pub use worker_bee_cli::is_cli_fatal_stderr;
+
+pub fn cli_fatal_stderr_message(preset: &str, stderr: &str) -> String {
+    let line = stderr.lines().next().unwrap_or(stderr).trim();
+    match preset {
+        "cursor" => format!("Cursor Agent 报错：{line}"),
+        "codex-exec" | "worker-bee-cli" => format!("Codex CLI 报错：{line}"),
+        _ => format!("CLI 报错：{line}"),
+    }
+}
+
+/// 用户可见：CLI 无输出或超时时的提示（按 preset 区分，避免 Cursor 误显示 Codex 文案）。
+pub fn cli_empty_output_user_hint(
+    preset: &str,
+    timed_out: bool,
+    timeout_secs: u64,
+    stderr_snip: Option<&str>,
+) -> String {
+    let stderr_part = stderr_snip
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            let line = s.lines().next().unwrap_or(s).trim();
+            if line.chars().count() > 200 {
+                format!("{}…", line.chars().take(200).collect::<String>())
+            } else {
+                line.to_string()
+            }
+        })
+        .map(|s| format!("\nCLI stderr: {s}"))
+        .unwrap_or_default();
+
+    match preset {
+        "cursor" => {
+            if timed_out {
+                format!(
+                    "Cursor Agent 执行超时（{timeout_secs}s）；复杂群聊任务可能需更久。请确认已登录（agent status）、工作目录可访问；可在 backend_config 设置 idle_seconds 加大超时。{stderr_part}"
+                )
+            } else {
+                format!(
+                    "Cursor Agent 未返回有效输出；请确认已登录（agent status）、SEVEN_CHAT_AGENT_CURSOR_AGENT_BIN 或 agent/cursor-agent 在 PATH 中，且 --workspace 目录存在。{stderr_part}"
+                )
+            }
+        }
+        "codex-exec" | "worker-bee-cli" => {
+            if timed_out {
+                format!(
+                    "Codex CLI 执行超时（{timeout_secs}s）；请确认工作目录在信任列表内，或增大 idle_seconds。{stderr_part}"
+                )
+            } else {
+                format!(
+                    "Codex/CLI 未返回有效输出；请确认工作目录在信任列表内、且 codex exec --json 可正常运行。{stderr_part}"
+                )
+            }
+        }
+        other => {
+            if timed_out {
+                format!("CLI 执行超时（preset={other}, {timeout_secs}s）{stderr_part}")
+            } else {
+                format!("CLI 未返回有效输出（preset={other}）{stderr_part}")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,6 +585,22 @@ mod tests {
             resolve_cli_workspace(&cfg, "f", None, None, Some("/remote/group-ws")).unwrap(),
             "/remote/group-ws"
         );
+    }
+
+    #[test]
+    fn fatal_stderr_detects_network_timeout() {
+        assert!(super::is_cli_fatal_stderr(
+            "Error: [unavailable] connect ETIMEDOUT 198.18.0.70:443"
+        ));
+    }
+
+    #[test]
+    fn empty_output_hint_cursor_not_codex() {
+        let msg = super::cli_empty_output_user_hint("cursor", false, 300, None);
+        assert!(msg.contains("Cursor Agent"));
+        assert!(!msg.contains("codex exec"));
+        let timeout = super::cli_empty_output_user_hint("cursor", true, 300, Some("hang"));
+        assert!(timeout.contains("超时"));
     }
 
     #[test]

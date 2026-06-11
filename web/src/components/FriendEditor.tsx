@@ -5,6 +5,7 @@ import { FriendAgentMemoryTab } from "./FriendAgentMemoryTab";
 import { FriendAgentDnaTab } from "./FriendAgentDnaTab";
 import { providerDisplayName } from "../providerDefaults";
 import { useChat } from "../stores/chat";
+import { FriendProfileEditor, emptyMemberProfile } from "./FriendProfileEditor";
 import type {
   BackendKind,
   CliRelayNode,
@@ -12,6 +13,7 @@ import type {
   Provider,
   ProviderKey,
 } from "../types";
+import type { MemberProfile } from "../types/profile";
 
 interface Props {
   friendId: string | null;
@@ -87,6 +89,12 @@ export function FriendEditor({ friendId, onClose }: Props) {
       }
       const body = toApi(d);
       const { friend } = await api.upsertFriend(body);
+      if (
+        d.profile?.frameworks?.length &&
+        (friend.id || d.id)
+      ) {
+        await api.upsertFriendProfile(friend.id, d.profile);
+      }
       await reloadFriends();
       const keyWritten = draft.pty.api_key_secret.trim();
       if (keyWritten) {
@@ -212,6 +220,13 @@ export function FriendEditor({ friendId, onClose }: Props) {
               }
             />
           </div>
+          {friendId && !draft.is_builtin && (
+            <FriendProfileEditor
+              friendId={friendId}
+              profile={draft.profile}
+              onChange={(profile) => setDraft({ ...draft, profile })}
+            />
+          )}
           <div>
             <label className="label">后端类型</label>
             <div className="mt-1 flex gap-2">
@@ -355,6 +370,7 @@ interface FriendDraft {
     channel: string;
     endpoint: string;
   };
+  profile: MemberProfile;
 }
 
 function emptyDraft(): FriendDraft {
@@ -387,6 +403,7 @@ function emptyDraft(): FriendDraft {
       relay_id: "",
     },
     human: { channel: "invite", endpoint: "" },
+    profile: emptyMemberProfile(),
   };
 }
 
@@ -398,6 +415,7 @@ function fromFriend(f: Friend): FriendDraft {
   draft.personality = f.personality || "";
   draft.system_prompt = f.system_prompt || "";
   draft.focus_tags = f.focus_tags || [];
+  draft.profile = f.profile ?? emptyMemberProfile();
   draft.backend_kind = f.backend_kind;
   if (f.backend_kind === "api") {
     draft.backend_kind = "pty";

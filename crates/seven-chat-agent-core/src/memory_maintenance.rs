@@ -27,6 +27,7 @@ pub async fn run_memory_maintenance(
         return Ok(MemoryMaintenanceReport::default());
     };
 
+    let _ = store.archive_expired_memories(&assistant_id).await?;
     let expired_deleted = store.purge_expired_memories(&assistant_id).await?;
 
     let ingest = if settings.auto_ingest_raw {

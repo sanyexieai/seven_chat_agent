@@ -889,6 +889,7 @@ async fn handle_method(
                     .and_then(|v| v.as_str())
                     .map(String::from),
                 workspace_id,
+                group_id: None,
             };
             let memories = store
                 .recall_memories_for_turn(friend_id, &prompt, limit, false, &ctx)
@@ -1595,8 +1596,12 @@ async fn group_bundle_json(
     providers: &seven_chat_agent_core::provider::ProviderRegistry,
     g: &seven_chat_agent_core::domain::Group,
 ) -> std::result::Result<serde_json::Value, String> {
-    let members = store
+    let mut members = store
         .list_group_member_configs(&g.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    store
+        .enrich_group_member_profiles(&mut members)
         .await
         .map_err(|e| e.to_string())?;
     let member_ids: Vec<String> = members.iter().map(|m| m.friend_id.clone()).collect();
@@ -1628,6 +1633,12 @@ async fn group_bundle_json(
         .resolve_group_assistant_settings(&g.settings.assistant)
         .await
         .map_err(|e| e.to_string())?;
+    let profile_frameworks = store
+        .all_profile_frameworks()
+        .await
+        .map_err(|e| e.to_string())?;
+    let profile_frameworks_version =
+        seven_chat_agent_core::profile::frameworks_version(&profile_frameworks);
     Ok(serde_json::json!({
         "group": g,
         "member_ids": member_ids,
@@ -1638,5 +1649,6 @@ async fn group_bundle_json(
         "workspaces": workspaces,
         "member_bindings": member_bindings,
         "task_flow_readiness": task_flow_readiness,
+        "profile_frameworks_version": profile_frameworks_version,
     }))
 }

@@ -44,6 +44,25 @@ impl ApiAgent {
             s.push_str("\n性格：");
             s.push_str(per);
         }
+        let eff = crate::profile::resolve_effective_profile(
+            &self.friend,
+            self.friend.profile.as_ref(),
+            None,
+        );
+        if !eff.prompt_persona_block.is_empty() {
+            s.push_str("\n\n[成员画像]\n");
+            s.push_str(&eff.prompt_persona_block);
+        }
+        crate::profile::append_group_public_baseline_prompt(
+            &mut s,
+            ctx.group_public_baseline.as_deref(),
+        );
+        if ctx.group_id.is_some() {
+            s.push_str(
+                "\n\n你在群聊中：请认真阅读对话历史里其他成员与用户的原话，不要臆测未出现的内容；\
+                 回应时先承接上文再补充观点。",
+            );
+        }
         s.push_str(&format!(
             "\n\n你的名字是「{}」。请用第一人称、自然的中文聊天风格回答。",
             self.friend.name
@@ -86,7 +105,7 @@ impl ApiAgent {
             };
             let text = match m.sender_kind {
                 SenderKind::Friend if m.sender_id != self.friend.id => {
-                    format!("[{}]: {}", m.sender_name, m.content)
+                    crate::message_context::format_peer_message_for_context(m)
                 }
                 _ => m.content.clone(),
             };

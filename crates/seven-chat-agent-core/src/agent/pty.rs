@@ -16,7 +16,8 @@ use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment, Provider
 use crate::cli_relay::{RelayHub, RelayJobSpec};
 use crate::domain::{Friend, Message, PtyBackendConfig};
 use crate::friend_cli::{
-    apply_cli_auth_env, cli_auth_env_pairs, ensure_cursor_agent_executable,
+    apply_cli_auth_env, cli_auth_env_pairs,     cli_empty_output_user_hint, cli_fatal_stderr_message, ensure_cursor_agent_executable,
+    is_cli_fatal_stderr,
     ensure_cursor_chat_session,
     effective_pty_preset, external_cli_argv, is_external_cli_preset, launch_from_pty,
     parse_session_id, pty_cli_session_is_resume, pty_execution_is_relay, pty_relay_id,
@@ -164,6 +165,10 @@ impl PtyAdapter {
         uses_codex_jsonl_stream(&self.label) && self.args.iter().any(|a| a == "--json")
     }
 
+    pub(crate) fn uses_cursor_stream_json(&self) -> bool {
+        self.label == "cursor" && self.args.iter().any(|a| a == "stream-json")
+    }
+
     pub fn preset_claude() -> Self {
         Self {
             label: "claude".into(),
@@ -190,7 +195,7 @@ impl PtyAdapter {
             input_mode: InputMode::ArgAppend,
             arg_template_placeholder: "{input}".into(),
             strip_ansi: true,
-            timeout_seconds: 180,
+            timeout_seconds: 300,
         }
     }
 
@@ -326,6 +331,9 @@ impl Agent for PtyAgent {
 
             let composed_prompt = if resume {
                 prompt.clone()
+            } else if ctx.group_id.is_some() {
+                // 群聊 prompt 已由 dispatcher 注入对话摘录/共识，勿再拼全量 history（易超长、加重 API 超时）。
+                prompt.clone()
             } else {
                 let history_excerpt = render_history(&ctx, &friend_id);
                 if history_excerpt.is_empty() {
@@ -334,6 +342,15 @@ impl Agent for PtyAgent {
                     format!("{history_excerpt}\n\n[最新消息]\n{prompt}")
                 }
             };
+
+            tracing::debug!(
+                preset = %adapter.label,
+                group = ctx.group_id.is_some(),
+                resume,
+                prompt_chars = composed_prompt.chars().count(),
+                cwd = ?adapter.cwd,
+                "pty cli composed prompt"
+            );
 
             let raw_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
             let mut retried_fresh = false;
@@ -403,11 +420,62 @@ impl Agent for PtyAgent {
                 {
                     Ok(stream_rx) => {
                         let mut rx = stream_rx;
+                        let mut emitted = false;
                         while let Some(chunk) = rx.recv().await {
+                            emitted = true;
                             match chunk {
                                 PtyStreamChunk::CliDelta(d) => yield AgentEvent::CliDelta(d),
-                                PtyStreamChunk::Text(t) => yield AgentEvent::Token(t),
+                                PtyStreamChunk::Text(t) => {
+                                    if !t.is_empty() {
+                                        yield AgentEvent::Token(t);
+                                    }
+                                }
+                                PtyStreamChunk::Error(msg) => yield AgentEvent::Error(msg),
                             }
+                        }
+                        if !emitted {
+                            let buf = raw_buf.lock().await.clone();
+                            if adapter.uses_codex_exec_jsonl() {
+                                let mut parser =
+                                    worker_bee_cli::CodexExecJsonlBlockParser::default();
+                                for line in String::from_utf8_lossy(&buf).lines() {
+                                    for delta in parser.push_line(line.trim()) {
+                                        emitted = true;
+                                        yield AgentEvent::CliDelta(delta);
+                                    }
+                                }
+                                if !emitted {
+                                    let display =
+                                        worker_bee_cli::parse_codex_exec_jsonl_to_display(&buf);
+                                    if !display.trim().is_empty() {
+                                        yield AgentEvent::Token(display);
+                                        emitted = true;
+                                    }
+                                }
+                            } else if adapter.uses_cursor_stream_json() {
+                                let mut parser =
+                                    worker_bee_cli::CursorStreamJsonParser::default();
+                                for line in String::from_utf8_lossy(&buf).lines() {
+                                    for delta in parser.push_line(line.trim()) {
+                                        emitted = true;
+                                        yield AgentEvent::CliDelta(delta);
+                                    }
+                                }
+                            } else if !buf.is_empty() {
+                                let text = String::from_utf8_lossy(&buf).trim().to_string();
+                                if !text.is_empty() {
+                                    yield AgentEvent::Token(text);
+                                    emitted = true;
+                                }
+                            }
+                        }
+                        if !emitted {
+                            yield AgentEvent::Error(cli_empty_output_user_hint(
+                                &adapter.label,
+                                false,
+                                adapter.timeout_seconds,
+                                None,
+                            ));
                         }
                         yield AgentEvent::Done(ProviderUsageInfo {
                             model: Some(adapter.label.clone()),
@@ -462,7 +530,7 @@ impl Agent for PtyAgent {
         };
         Ok(self
             .judge
-            .evaluate_member(settings, &self.friend, None, &ctx.history, msg)
+            .evaluate_member(settings, &self.friend, None, &ctx.history, msg, None, None)
             .await)
     }
 }
@@ -547,6 +615,7 @@ fn render_history(ctx: &ChatContext, self_id: &str) -> String {
 enum PtyStreamChunk {
     CliDelta(worker_bee_cli::CliBlockDelta),
     Text(String),
+    Error(String),
 }
 
 async fn run_oneshot(
@@ -623,14 +692,20 @@ async fn run_oneshot(
     let strip_ansi = adapter.strip_ansi;
     let raw_buf_inner = raw_buf.clone();
     let codex_exec_jsonl = adapter.uses_codex_exec_jsonl();
+    let cursor_stream_json = adapter.uses_cursor_stream_json();
+    let line_json_stream = codex_exec_jsonl || cursor_stream_json;
+    let preset_label = adapter.label.clone();
+    let timeout_secs = adapter.timeout_seconds;
 
     tokio::spawn(async move {
         let mut buf = [0u8; 4096];
         let mut deadline = tokio::time::Instant::now() + timeout;
         let mut accumulated: Vec<u8> = Vec::new();
         let mut killed = false;
+        let mut streamed = false;
         let mut line_buf = String::new();
         let mut codex_block_parser = worker_bee_cli::CodexExecJsonlBlockParser::default();
+        let mut cursor_block_parser = worker_bee_cli::CursorStreamJsonParser::default();
 
         loop {
             tokio::select! {
@@ -641,13 +716,18 @@ async fn run_oneshot(
                             accumulated.extend_from_slice(&buf[..n]);
                             raw_buf_inner.lock().await.extend_from_slice(&buf[..n]);
                             let chunk = decode_chunk(&buf[..n], strip_ansi);
-                            if codex_exec_jsonl {
+                            if line_json_stream {
                                 line_buf.push_str(&chunk);
                                 while let Some(pos) = line_buf.find('\n') {
                                     let line: String = line_buf.drain(..=pos).collect();
                                     let line = line.trim();
                                     if !line.is_empty() {
-                                        for delta in codex_block_parser.push_line(line) {
+                                        let deltas = if codex_exec_jsonl {
+                                            codex_block_parser.push_line(line)
+                                        } else {
+                                            cursor_block_parser.push_line(line)
+                                        };
+                                        for delta in deltas {
                                             for part in worker_bee_cli::stream_split_cli_delta(
                                                 delta,
                                                 cli_stream_chunk_chars(),
@@ -655,6 +735,7 @@ async fn run_oneshot(
                                                 let _ = tx
                                                     .send(PtyStreamChunk::CliDelta(part))
                                                     .await;
+                                                streamed = true;
                                                 tokio::task::yield_now().await;
                                             }
                                         }
@@ -662,6 +743,7 @@ async fn run_oneshot(
                                 }
                             } else if !chunk.is_empty() {
                                 let _ = tx.send(PtyStreamChunk::Text(chunk)).await;
+                                streamed = true;
                             }
                             deadline = tokio::time::Instant::now() + timeout;
                         }
@@ -669,7 +751,11 @@ async fn run_oneshot(
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
-                    warn!("pty oneshot timeout, killing process");
+                    warn!(
+                        preset = %preset_label,
+                        timeout_seconds = timeout_secs,
+                        "pty oneshot timeout, killing process"
+                    );
                     let _ = child.kill().await;
                     killed = true;
                     break;
@@ -682,8 +768,24 @@ async fn run_oneshot(
                 for part in worker_bee_cli::stream_split_cli_delta(delta, cli_stream_chunk_chars())
                 {
                     let _ = tx.send(PtyStreamChunk::CliDelta(part)).await;
+                    streamed = true;
                     tokio::task::yield_now().await;
                 }
+            }
+        } else if cursor_stream_json && !line_buf.trim().is_empty() {
+            for delta in cursor_block_parser.push_line(line_buf.trim()) {
+                for part in worker_bee_cli::stream_split_cli_delta(delta, cli_stream_chunk_chars())
+                {
+                    let _ = tx.send(PtyStreamChunk::CliDelta(part)).await;
+                    streamed = true;
+                    tokio::task::yield_now().await;
+                }
+            }
+        } else if !line_json_stream && !streamed && !accumulated.is_empty() {
+            let text = decode_chunk(&accumulated, strip_ansi);
+            if !text.trim().is_empty() {
+                let _ = tx.send(PtyStreamChunk::Text(text)).await;
+                streamed = true;
             }
         }
 
@@ -695,22 +797,37 @@ async fn run_oneshot(
             if !trimmed.is_empty() {
                 raw_buf_inner.lock().await.extend_from_slice(b"\n[stderr] ");
                 raw_buf_inner.lock().await.extend_from_slice(&errbuf);
-                if codex_exec_jsonl {
-                    // JSON 模式下 stderr 多为 banner / 非致命提示，不打进聊天气泡。
-                    if is_codex_exec_fatal_stderr(trimmed) {
-                        let _ = tx
-                            .send(PtyStreamChunk::Text(format!(
-                                "\n（Codex CLI 报错：{}）",
-                                trimmed.lines().next().unwrap_or(trimmed)
-                            )))
-                            .await;
+                if codex_exec_jsonl || cursor_stream_json {
+                    if is_cli_fatal_stderr(trimmed) {
+                        let msg = cli_fatal_stderr_message(&preset_label, trimmed);
+                        let _ = tx.send(PtyStreamChunk::Error(msg)).await;
                     } else {
-                        tracing::debug!(stderr = %trimmed, "codex-exec stderr (suppressed from chat)");
+                        tracing::debug!(
+                            preset = %preset_label,
+                            stderr = %trimmed,
+                            "cli stream-json stderr (suppressed from chat)"
+                        );
                     }
                 } else if !trimmed.is_empty() {
                     let _ = tx.send(PtyStreamChunk::Text(format!("\n[stderr] {s}"))).await;
+                    streamed = true;
                 }
             }
+        }
+
+        if killed && !streamed {
+            let err_snip = if errbuf.is_empty() {
+                None
+            } else {
+                Some(decode_chunk(&errbuf, strip_ansi))
+            };
+            let msg = cli_empty_output_user_hint(
+                &preset_label,
+                true,
+                timeout_secs,
+                err_snip.as_deref(),
+            );
+            let _ = tx.send(PtyStreamChunk::Error(msg)).await;
         }
 
         if !killed {
@@ -760,13 +877,4 @@ fn ensure_codex_exec_cd(args: &mut Vec<String>, cwd: &str) {
     args.insert(insert_at, cwd.to_string());
     args.insert(insert_at, "-C".into());
 }
-
-fn is_codex_exec_fatal_stderr(s: &str) -> bool {
-    s.contains("Not inside a trusted directory")
-        || s.contains("No such file or directory")
-        || s.contains("error:")
-        || s.contains("Error:")
-        || s.contains("failed")
-}
-
 

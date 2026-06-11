@@ -73,7 +73,7 @@ impl Agent for UnifiedAgent {
         if let Some(settings) = ctx.group_settings.as_ref() {
             return Ok(self
                 .judge
-                .evaluate_member(settings, &self.friend, None, &ctx.history, msg)
+                .evaluate_member(settings, &self.friend, None, &ctx.history, msg, None, None)
                 .await);
         }
         if matches!(self.friend.backend_kind, BackendKind::Assistant) {

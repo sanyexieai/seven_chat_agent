@@ -39,6 +39,7 @@ import type {
   CliImportReport,
   GroupBundle,
   GroupMemberConfig,
+  GroupPublicMemoriesResponse,
   GroupSettings,
   Message,
   MessageAttachment,
@@ -141,6 +142,7 @@ async function httpJsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { error?: string }).error || res.statusText);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -161,6 +163,24 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (/^\/groups\/[^/]+$/.test(pathname) && method === "GET") {
     return httpJsonFetch<T>(pathname);
+  }
+  if (/^\/groups\/[^/]+\/public-memories\/latest$/.test(pathname)) {
+    return httpJsonFetch<T>(pathname, {
+      method,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  }
+  if (/^\/groups\/[^/]+\/public-memories$/.test(pathname)) {
+    const qs = params.toString();
+    const url = qs ? `${pathname}?${qs}` : pathname;
+    return httpJsonFetch<T>(url, {
+      method,
+      ...(body !== undefined && method !== "GET"
+        ? { body: JSON.stringify(body) }
+        : method !== "GET"
+          ? { body: JSON.stringify({}) }
+          : {}),
+    });
   }
   if (pathname.startsWith("/conversations/dm/") && method === "GET") {
     return httpJsonFetch<T>(pathname);
@@ -188,6 +208,28 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
     return httpJsonFetch<T>(pathname, {
       method: "POST",
       body: JSON.stringify(body ?? {}),
+    });
+  }
+  if (pathname === "/profile-frameworks" && method === "GET") {
+    return httpJsonFetch<T>(pathname);
+  }
+  if (pathname === "/profile-frameworks" && method === "POST") {
+    return httpJsonFetch<T>(pathname, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    });
+  }
+  if (/^\/profile-frameworks\/[^/]+$/.test(pathname) && method === "DELETE") {
+    return httpJsonFetch<T>(pathname, { method: "DELETE" });
+  }
+  if (/^\/friends\/[^/]+\/profile$/.test(pathname)) {
+    return httpJsonFetch<T>(pathname, {
+      method,
+      ...(body !== undefined
+        ? { body: JSON.stringify(body) }
+        : method !== "GET"
+          ? { body: JSON.stringify({}) }
+          : {}),
     });
   }
 
@@ -493,6 +535,37 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  listProfileFrameworks: () =>
+    jsonFetch<{
+      frameworks: import("../types/profile").ProfileFrameworkCatalog[];
+      profile_frameworks_version?: string;
+    }>("/profile-frameworks"),
+  upsertProfileFramework: (body: {
+    id?: string;
+    name: string;
+    catalog: import("../types/profile").ProfileFrameworkCatalog;
+  }) =>
+    jsonFetch<{ framework: import("../types/profile").ProfileFrameworkCatalog }>(
+      "/profile-frameworks",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  deleteProfileFramework: (id: string) =>
+    jsonFetch<void>(`/profile-frameworks/${id}`, { method: "DELETE" }),
+  inferFriendProfile: (id: string) =>
+    jsonFetch<{
+      friend: Friend;
+      profile: import("../types/profile").MemberProfile | null;
+      reasoning: string;
+    }>(`/friends/${id}/profile`, { method: "POST" }),
+  getFriendProfile: (id: string) =>
+    jsonFetch<{ friend_id: string; profile: import("../types/profile").MemberProfile | null }>(
+      `/friends/${id}/profile`,
+    ),
+  upsertFriendProfile: (id: string, profile: import("../types/profile").MemberProfile) =>
+    jsonFetch<{ friend: Friend; profile: import("../types/profile").MemberProfile | null }>(
+      `/friends/${id}/profile`,
+      { method: "PUT", body: JSON.stringify(profile) },
+    ),
   deleteFriend: (id: string) =>
     jsonFetch<{ ok: boolean }>(`/friends/${id}`, { method: "DELETE" }),
   listFriendWorkspaces: (friendId: string) =>
@@ -661,6 +734,52 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getEvolutionSettings: () =>
+    jsonFetch<import("../types/evolution").EvolutionSettings>("/evolution/settings"),
+  putEvolutionSettings: (body: import("../types/evolution").EvolutionSettings) =>
+    jsonFetch<import("../types/evolution").EvolutionSettings>("/evolution/settings", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  listEvolutionRuns: (limit = 30) =>
+    jsonFetch<{ runs: import("../types/evolution").EvolutionRunSummary[] }>(
+      `/evolution/runs?limit=${limit}`,
+    ),
+  getEvolutionRun: (id: string) =>
+    jsonFetch<import("../types/evolution").EvolutionRunLog>(`/evolution/runs/${id}`),
+  evolutionSyncSource: () =>
+    jsonFetch<import("../types/evolution").EvolutionRunLog>(
+      "/evolution/runs/sync-source",
+      { method: "POST", body: "{}" },
+    ),
+  evolutionBuildCli: () =>
+    jsonFetch<import("../types/evolution").EvolutionRunLog>(
+      "/evolution/runs/build-cli",
+      { method: "POST", body: "{}" },
+    ),
+  evolutionPipelineSyncBuild: () =>
+    jsonFetch<import("../types/evolution").EvolutionRunLog>(
+      "/evolution/runs/pipeline-sync-build",
+      { method: "POST", body: "{}" },
+    ),
+  evolutionAnalyzeSource: () =>
+    jsonFetch<import("../types/evolution").EvolutionAnalyzeResponse>(
+      "/evolution/runs/analyze-source",
+      { method: "POST", body: "{}" },
+    ),
+  evolutionSyncIssues: (report?: import("../types/evolution").OptimizationReport) =>
+    jsonFetch<{ run: import("../types/evolution").EvolutionRunLog; sync: import("../types/evolution").IssueSyncReport }>(
+      "/evolution/runs/sync-issues",
+      {
+        method: "POST",
+        body: JSON.stringify(report ? { report } : {}),
+      },
+    ),
+  evolutionPipelineAnalyzeIssues: () =>
+    jsonFetch<import("../types/evolution").EvolutionPipelineAnalyzeResponse>(
+      "/evolution/runs/pipeline-analyze-issues",
+      { method: "POST", body: "{}" },
+    ),
   getAssistantGlobalSettings: () =>
     jsonFetch<{ settings: AssistantGlobalSettings }>(
       "/assistant/global-settings",
@@ -702,6 +821,35 @@ export const api = {
         conversation_id: string;
       }
     >(`/groups/${id}`),
+  getGroupPublicMemories: (
+    groupId: string,
+    opts?: { q?: string; limit?: number; include_raw?: boolean },
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.q) params.set("q", opts.q);
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.include_raw) params.set("include_raw", "true");
+    const qs = params.toString();
+    return jsonFetch<GroupPublicMemoriesResponse>(
+      `/groups/${groupId}/public-memories${qs ? `?${qs}` : ""}`,
+    );
+  },
+  rebuildGroupPublicMemories: (groupId: string) =>
+    jsonFetch<{ ok: boolean; updated: boolean; latest?: { content: string; updated_at: string } }>(
+      `/groups/${groupId}/public-memories`,
+      { method: "POST" },
+    ),
+  patchGroupPublicLatest: (
+    groupId: string,
+    body: { pinned?: boolean; importance?: number },
+  ) =>
+    jsonFetch<{
+      ok: boolean;
+      latest: GroupPublicMemoriesResponse["latest"];
+    }>(`/groups/${groupId}/public-memories/latest`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   upsertGroup: (body: {
     id?: string;
     name: string;

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { AgentDnaSettings } from "./AgentDnaSettings";
 import { CliRelayUrlSettings } from "./CliRelayUrlSettings";
+import { ProfileFrameworkManager } from "./ProfileFrameworkManager";
 import {
   defaultBaseUrlForProvider,
   providerDisplayName,
@@ -264,6 +265,7 @@ export function SettingsDrawer({ open, onClose, onOpenAdmin }: Props) {
             </ul>
           </section>
           <CliRelayUrlSettings open={open} />
+          <ProfileFrameworkManager />
           <AgentDnaSettings />
         </div>
       </div>

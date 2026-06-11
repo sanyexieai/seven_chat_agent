@@ -5,7 +5,11 @@ use seven_chat_agent_judge::MemberJudgeOverride;
 use uuid::Uuid;
 
 use crate::domain::{
-    Group, GroupMemberConfig, GroupMemberRole, GroupSettings, BUILTIN_HEX_ASSISTANT_ID,
+    Friend, Group, GroupMemberConfig, GroupMemberRole, GroupSettings, BUILTIN_HEX_ASSISTANT_ID,
+};
+use crate::profile::{
+    framework_labels_with, resolve_effective_profile_with, MemberProfileOverlay,
+    MemberProfileSummary,
 };
 use crate::store::group_workspace::{UpsertGroupMemberBinding, UpsertGroupWorkspace};
 use crate::store::{parse_dt, SqliteStore};
@@ -102,22 +106,60 @@ impl SqliteStore {
         &self,
         group_id: &str,
     ) -> Result<Vec<GroupMemberConfig>> {
-        let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT friend_id, role, judge_override FROM group_members WHERE group_id = ? AND role <> 'muted'",
+        let rows: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT friend_id, role, judge_override, profile_overlay FROM group_members WHERE group_id = ? AND role <> 'muted'",
         )
         .bind(group_id)
         .fetch_all(self.pool())
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(friend_id, role, judge_raw)| GroupMemberConfig {
+            .map(|(friend_id, role, judge_raw, overlay_raw)| GroupMemberConfig {
                 friend_id,
                 role: GroupMemberRole::parse(&role),
                 judge_override: judge_raw
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok()),
+                profile_overlay: overlay_raw
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok()),
+                effective_profile: None,
             })
             .collect())
+    }
+
+    /// 为群成员配置附加运行时画像摘要（API Bundle 用）。
+    pub async fn enrich_group_member_profiles(
+        &self,
+        members: &mut [GroupMemberConfig],
+    ) -> Result<()> {
+        let catalogs = self.all_profile_frameworks().await?;
+        for m in members.iter_mut() {
+            let Some(friend) = self.get_friend(&m.friend_id).await? else {
+                continue;
+            };
+            m.effective_profile = Some(Self::member_profile_summary(
+                &friend,
+                m.profile_overlay.as_ref(),
+                &catalogs,
+            ));
+        }
+        Ok(())
+    }
+
+    fn member_profile_summary(
+        friend: &Friend,
+        overlay: Option<&MemberProfileOverlay>,
+        catalogs: &[crate::profile::types::ProfileFrameworkCatalog],
+    ) -> MemberProfileSummary {
+        let eff =
+            resolve_effective_profile_with(friend, friend.profile.as_ref(), overlay, catalogs);
+        MemberProfileSummary {
+            friend_id: friend.id.clone(),
+            initiative: eff.initiative,
+            coordination: eff.coordination,
+            framework_labels: framework_labels_with(&eff.frameworks, catalogs),
+        }
     }
 
     pub async fn list_group_expert_friend_ids(&self, group_id: &str) -> Result<Vec<String>> {
@@ -208,11 +250,18 @@ impl SqliteStore {
                 .await?;
         }
 
-        let preserved: HashMap<String, (GroupMemberRole, Option<MemberJudgeOverride>)> = self
+        let preserved: HashMap<
+            String,
+            (
+                GroupMemberRole,
+                Option<MemberJudgeOverride>,
+                Option<MemberProfileOverlay>,
+            ),
+        > = self
             .list_group_member_configs(&id)
             .await?
             .into_iter()
-            .map(|m| (m.friend_id, (m.role, m.judge_override)))
+            .map(|m| (m.friend_id, (m.role, m.judge_override, m.profile_overlay)))
             .collect();
 
         sqlx::query("DELETE FROM group_members WHERE group_id = ?")
@@ -224,27 +273,39 @@ impl SqliteStore {
             let role = if legacy_only {
                 preserved
                     .get(&m.friend_id)
-                    .map(|(r, _)| *r)
+                    .map(|(r, _, _)| *r)
                     .unwrap_or(m.role)
             } else {
                 m.role
             };
             let judge_override = if legacy_only {
-                preserved.get(&m.friend_id).and_then(|(_, j)| j.clone())
+                preserved.get(&m.friend_id).and_then(|(_, j, _)| j.clone())
             } else {
                 m.judge_override.clone()
+            };
+            let profile_overlay = if legacy_only {
+                preserved
+                    .get(&m.friend_id)
+                    .and_then(|(_, _, o)| o.clone())
+            } else {
+                m.profile_overlay.clone()
             };
             let judge_json = judge_override
                 .as_ref()
                 .map(serde_json::to_string)
                 .transpose()?;
+            let overlay_json = profile_overlay
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
             sqlx::query(
-                "INSERT OR IGNORE INTO group_members (group_id, friend_id, role, judge_override) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO group_members (group_id, friend_id, role, judge_override, profile_overlay) VALUES (?, ?, ?, ?, ?)",
             )
             .bind(&id)
             .bind(&m.friend_id)
             .bind(role.as_str())
             .bind(&judge_json)
+            .bind(&overlay_json)
             .execute(self.pool())
             .await?;
         }
@@ -335,6 +396,8 @@ fn normalize_group_members(
             friend_id,
             role: GroupMemberRole::Member,
             judge_override: None,
+            profile_overlay: None,
+            effective_profile: None,
         })
         .collect()
 }
@@ -377,6 +440,8 @@ fn ensure_assistant_in_members(members: &mut Vec<GroupMemberConfig>, assistant_i
             friend_id: assistant_id.to_string(),
             role: GroupMemberRole::Assistant,
             judge_override: None,
+            profile_overlay: None,
+            effective_profile: None,
         });
     }
 }

@@ -1,7 +1,7 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use seven_chat_agent_core::domain::{
     AssistantGlobalSettings, AssistantTodoStatus, Provider, ProviderCapabilities, ProviderPrice,
@@ -25,6 +25,7 @@ use crate::state::AppState;
 pub mod attachments;
 pub mod auth;
 pub mod errors;
+pub mod evolution;
 pub mod tenant;
 
 use errors::ApiError;
@@ -36,6 +37,17 @@ pub fn api_router() -> Router<AppState> {
         .route("/health", get(health))
         .route("/friends", get(list_friends).post(upsert_friend))
         .route("/friends/:id", get(get_friend).delete(delete_friend))
+        .route(
+            "/friends/:id/profile",
+            get(get_friend_profile)
+                .put(upsert_friend_profile)
+                .post(infer_friend_profile),
+        )
+        .route(
+            "/profile-frameworks",
+            get(list_profile_frameworks).post(upsert_profile_framework),
+        )
+        .route("/profile-frameworks/:id", delete(delete_profile_framework))
         .route("/friends/:id/cli_auth", get(friend_cli_auth))
         .route("/friends/:id/cli_auth/oauth/start", post(friend_cli_oauth_start))
         .route("/friends/:id/cli_auth/oauth/cancel", post(friend_cli_oauth_cancel))
@@ -71,6 +83,14 @@ pub fn api_router() -> Router<AppState> {
         )
         .route("/groups", get(list_groups).post(upsert_group))
         .route("/groups/:id", get(get_group))
+        .route(
+            "/groups/:id/public-memories",
+            get(get_group_public_memories).post(rebuild_group_public_memories),
+        )
+        .route(
+            "/groups/:id/public-memories/latest",
+            patch(patch_group_public_latest),
+        )
         .route("/groups/:id/im/inbound", post(group_im_inbound))
         .route(
             "/assistant-policy-templates",
@@ -145,6 +165,7 @@ pub fn api_router() -> Router<AppState> {
         .route("/assistant/queue/jobs", get(list_assistant_queue_jobs))
         .route("/assistant/queue/stats", get(get_assistant_queue_stats))
         .route("/assistant/queue/replay-failed", post(replay_failed_assistant_queue_jobs))
+        .nest("/evolution", evolution::evolution_router())
         .route("/invites", get(list_all_invites).post(create_invite))
         .route("/invites/:id", delete(delete_invite))
         .route("/human/:code/state", get(human_state))
@@ -178,6 +199,93 @@ async fn get_friend(
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
     Ok(Json(serde_json::json!({ "friend": f })))
+}
+
+async fn get_friend_profile(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let f = store
+        .get_friend(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound)?;
+    Ok(Json(serde_json::json!({
+        "friend_id": id,
+        "profile": f.profile,
+    })))
+}
+
+async fn upsert_friend_profile(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<seven_chat_agent_core::profile::MemberProfile>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let f = store.upsert_friend_profile(&id, body).await?;
+    Ok(Json(serde_json::json!({
+        "friend": f,
+        "profile": f.profile,
+    })))
+}
+
+async fn list_profile_frameworks(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let frameworks = store.all_profile_frameworks().await?;
+    let version = seven_chat_agent_core::profile::frameworks_version(&frameworks);
+    Ok(Json(serde_json::json!({
+        "frameworks": frameworks,
+        "profile_frameworks_version": version,
+    })))
+}
+
+async fn upsert_profile_framework(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<seven_chat_agent_core::store::profile_framework::UpsertProfileFramework>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let catalog = store.upsert_custom_profile_framework(body).await?;
+    Ok(Json(serde_json::json!({ "framework": catalog })))
+}
+
+async fn delete_profile_framework(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    store.delete_custom_profile_framework(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn infer_friend_profile(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let friend = store
+        .get_friend(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound)?;
+    let result = seven_chat_agent_core::profile::infer_member_profile(
+        &store,
+        &s.core.providers,
+        &friend,
+    )
+    .await?;
+    let saved = store.upsert_friend_profile(&id, result.profile).await?;
+    Ok(Json(serde_json::json!({
+        "friend": saved,
+        "profile": saved.profile,
+        "reasoning": result.reasoning,
+    })))
 }
 
 async fn friend_cli_auth(
@@ -440,6 +548,185 @@ async fn list_groups(State(s): State<AppState>,
     Ok(Json(serde_json::json!({ "groups": out })))
 }
 
+#[derive(Debug, Deserialize)]
+struct GroupPublicMemoriesQuery {
+    q: Option<String>,
+    #[serde(default = "default_public_memories_limit")]
+    limit: i64,
+    #[serde(default)]
+    include_raw: bool,
+}
+
+fn default_public_memories_limit() -> i64 {
+    20
+}
+
+async fn get_group_public_memories(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<GroupPublicMemoriesQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let assistant_id = store
+        .builtin_assistant_id()
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("内置助理未就绪".into()))?;
+    let latest = store
+        .find_group_public_latest(&assistant_id, &id)
+        .await?;
+    let latest_json = latest.as_ref().map(|m| {
+        serde_json::json!({
+            "id": m.id,
+            "content": m.content,
+            "summary": m.summary,
+            "pinned": m.pinned,
+            "importance": m.importance,
+            "updated_at": m.created_at.to_rfc3339(),
+        })
+    });
+    let mut raw_recent = Vec::new();
+    if q.include_raw {
+        for m in store
+            .list_group_capability_raw(&assistant_id, &id, q.limit)
+            .await?
+        {
+            raw_recent.push(serde_json::json!({
+                "id": m.id,
+                "title": m.title,
+                "content": m.content,
+                "created_at": m.created_at.to_rfc3339(),
+            }));
+        }
+    }
+    let search_hits = if let Some(query) = q.q.as_deref().filter(|s| !s.trim().is_empty()) {
+        let rows = store
+            .search_group_public_memories(&assistant_id, &id, query, q.limit.min(16))
+            .await?;
+        rows.into_iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "content": m.summary.as_deref().unwrap_or(&m.content),
+                    "title": m.title,
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    Ok(Json(serde_json::json!({
+        "latest": latest_json,
+        "raw_recent": raw_recent,
+        "search_hits": search_hits,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchGroupPublicLatest {
+    #[serde(default)]
+    pinned: Option<bool>,
+    #[serde(default)]
+    importance: Option<i32>,
+}
+
+async fn patch_group_public_latest(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<PatchGroupPublicLatest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.pinned.is_none() && body.importance.is_none() {
+        return Err(ApiError::BadRequest("需要 pinned 或 importance".into()));
+    }
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let assistant_id = store
+        .builtin_assistant_id()
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("内置助理未就绪".into()))?;
+    let latest = store
+        .find_group_public_latest(&assistant_id, &id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound)?;
+    let updated = store
+        .update_memory(
+            &latest.id,
+            None,
+            None,
+            None,
+            body.pinned,
+            None,
+            None,
+            None,
+            body.importance,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "latest": {
+            "id": updated.id,
+            "pinned": updated.pinned,
+            "importance": updated.importance,
+            "content": updated.content,
+            "updated_at": updated.created_at.to_rfc3339(),
+        }
+    })))
+}
+
+async fn rebuild_group_public_memories(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = tenant_store_from_request(&s, &headers).await?;
+    let g = store
+        .get_group(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound)?;
+    if !g.settings.orchestration.group_memory_enabled {
+        return Err(ApiError::BadRequest("本群已关闭群共识记忆整理".into()));
+    }
+    let conv = store.get_or_create_group_conversation(&id).await?;
+    let history = store.recent_messages(&conv.id, 60).await?;
+    let turn_id = history
+        .iter()
+        .rev()
+        .find(|m| m.sender_kind == seven_chat_agent_core::domain::SenderKind::User)
+        .map(|m| m.turn_id.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let assistant_id = store
+        .builtin_assistant_id()
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("内置助理未就绪".into()))?;
+    let updated = seven_chat_agent_core::profile::curate_group_public_from_turn(
+        &store,
+        Some(&s.core.providers),
+        &g.settings,
+        &assistant_id,
+        &id,
+        &turn_id,
+        &history,
+        &[],
+    )
+    .await
+    .map_err(ApiError::from)?;
+    let latest = store
+        .find_group_public_latest(&assistant_id, &id)
+        .await?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "updated": updated,
+        "latest": latest.as_ref().map(|m| serde_json::json!({
+            "content": m.content,
+            "updated_at": m.created_at.to_rfc3339(),
+        })),
+    })))
+}
+
 async fn get_group(
     State(s): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -486,7 +773,8 @@ async fn group_bundle_json(
     providers: &seven_chat_agent_core::provider::ProviderRegistry,
     g: &seven_chat_agent_core::domain::Group,
 ) -> Result<serde_json::Value, ApiError> {
-    let members = store.list_group_member_configs(&g.id).await?;
+    let mut members = store.list_group_member_configs(&g.id).await?;
+    store.enrich_group_member_profiles(&mut members).await?;
     let member_ids: Vec<String> = members.iter().map(|m| m.friend_id.clone()).collect();
     let expert_member_ids: Vec<String> = store.list_group_expert_friend_ids(&g.id).await?;
     let assistant_member_id = store.group_assistant_member_id(&g.id).await?;
@@ -502,6 +790,9 @@ async fn group_bundle_json(
     let assistant_resolved = store
         .resolve_group_assistant_settings(&g.settings.assistant)
         .await?;
+    let profile_frameworks = store.all_profile_frameworks().await?;
+    let profile_frameworks_version =
+        seven_chat_agent_core::profile::frameworks_version(&profile_frameworks);
     Ok(serde_json::json!({
         "group": g,
         "member_ids": member_ids,
@@ -512,6 +803,7 @@ async fn group_bundle_json(
         "workspaces": workspaces,
         "member_bindings": member_bindings,
         "task_flow_readiness": task_flow_readiness,
+        "profile_frameworks_version": profile_frameworks_version,
     }))
 }
 
@@ -1070,6 +1362,7 @@ async fn assistant_memory_recall_preview(
         conversation_id: q.conversation_id,
         friend_id: q.friend_id,
         workspace_id,
+        group_id: None,
     };
     let memories = store
         .recall_memories_for_turn(&friend_id, &prompt, limit, false, &ctx)

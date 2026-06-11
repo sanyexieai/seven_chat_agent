@@ -1,4 +1,4 @@
-use crate::types::{GroupJudgeSettings, TriggerSenderKind};
+use crate::types::{GroupJudgeSettings, RoutingHints, TriggerSenderKind};
 
 /// 单条历史消息摘要（与存储层解耦）。
 #[derive(Debug, Clone)]
@@ -30,4 +30,10 @@ pub struct JudgeRequest {
     pub mentions: Vec<String>,
     pub history: Vec<HistoryLine>,
     pub extra_group_prompt: Option<String>,
+    /// 成员画像推导的协作行为；`None` 时与改造前一致。
+    pub routing_hints: Option<RoutingHints>,
+    /// 注入 LLM judge 的人格描述块。
+    pub persona_block: Option<String>,
+    /// 群共识摘录（C 层，≤200 字），含失败记录与分工要点。
+    pub group_context_excerpt: Option<String>,
 }

@@ -7,8 +7,10 @@ use uuid::Uuid;
 use crate::domain::AssistantGlobalSettings;
 use crate::memory_embedding::{cosine_similarity, decode_embedding, encode_embedding};
 use crate::memory_tier::{
-    self, RecallContext, STATUS_ACTIVE, STATUS_ARCHIVED, TIER_CURATED, TIER_RAW,
+    self, RecallContext, MEMORY_KIND_GROUP_PUBLIC, MEMORY_KIND_MEMBER_GROUP_NOTE, STATUS_ACTIVE,
+    STATUS_ARCHIVED, TIER_CURATED, TIER_RAW,
 };
+use crate::profile::{MEMORY_KIND_GROUP_CAPABILITY, SCOPE_GROUP};
 use crate::provider::ProviderRegistry;
 use crate::store::{parse_dt, SqliteStore};
 use crate::{Error, Result};
@@ -338,6 +340,223 @@ impl SqliteStore {
         Ok(out)
     }
 
+    /// 跨成员只读：助理名下某群的 `group_public` curated 记忆。
+    pub async fn list_group_public_memories(
+        &self,
+        assistant_owner_id: &str,
+        group_id: &str,
+        limit: i64,
+    ) -> Result<Vec<Memory>> {
+        let limit = limit.clamp(1, 32);
+        let sql = format!(
+            r#"
+            SELECT {MEMORY_SELECT} FROM memories
+            WHERE tenant_id = ? AND owner_friend_id = ?
+              AND scope = ? AND scope_ref = ?
+              AND kind = ? AND tier = ? AND status = ?
+              AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY
+              CASE WHEN title = 'latest' THEN 0 ELSE 1 END,
+              pinned DESC, importance DESC, created_at DESC
+            LIMIT ?
+            "#
+        );
+        let now = Utc::now().to_rfc3339();
+        let rows: Vec<MemoryRow> = sqlx::query_as::<_, MemoryRow>(&sql)
+            .bind(self.tenant_id())
+            .bind(assistant_owner_id)
+            .bind(SCOPE_GROUP)
+            .bind(group_id)
+            .bind(MEMORY_KIND_GROUP_PUBLIC)
+            .bind(TIER_CURATED)
+            .bind(STATUS_ACTIVE)
+            .bind(&now)
+            .bind(limit)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.into_iter().map(Memory::from).collect())
+    }
+
+    /// 每群一条 `title=latest` 的群共识记忆。
+    pub async fn find_group_public_latest(
+        &self,
+        assistant_owner_id: &str,
+        group_id: &str,
+    ) -> Result<Option<Memory>> {
+        let sql = format!(
+            r#"
+            SELECT {MEMORY_SELECT} FROM memories
+            WHERE tenant_id = ? AND owner_friend_id = ?
+              AND scope = ? AND scope_ref = ?
+              AND kind = ? AND tier = ? AND status = ?
+              AND title = ?
+            LIMIT 1
+            "#
+        );
+        let row: Option<MemoryRow> = sqlx::query_as::<_, MemoryRow>(&sql)
+            .bind(self.tenant_id())
+            .bind(assistant_owner_id)
+            .bind(SCOPE_GROUP)
+            .bind(group_id)
+            .bind(MEMORY_KIND_GROUP_PUBLIC)
+            .bind(TIER_CURATED)
+            .bind(STATUS_ACTIVE)
+            .bind(crate::profile::GROUP_PUBLIC_TITLE_LATEST)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.map(Memory::from))
+    }
+
+    /// 群成员表现 raw 记忆（审计用，默认不进 prompt）。
+    pub async fn list_group_capability_raw(
+        &self,
+        assistant_owner_id: &str,
+        group_id: &str,
+        limit: i64,
+    ) -> Result<Vec<Memory>> {
+        let limit = limit.clamp(1, 64);
+        let sql = format!(
+            r#"
+            SELECT {MEMORY_SELECT} FROM memories
+            WHERE tenant_id = ? AND owner_friend_id = ?
+              AND scope = ? AND scope_ref = ?
+              AND kind = ? AND tier = ? AND status = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#
+        );
+        let rows: Vec<MemoryRow> = sqlx::query_as::<_, MemoryRow>(&sql)
+            .bind(self.tenant_id())
+            .bind(assistant_owner_id)
+            .bind(SCOPE_GROUP)
+            .bind(group_id)
+            .bind(MEMORY_KIND_GROUP_CAPABILITY)
+            .bind(TIER_RAW)
+            .bind(STATUS_ACTIVE)
+            .bind(limit)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.into_iter().map(Memory::from).collect())
+    }
+
+    /// FTS 检索群公共记忆（接话 B 层）。
+    pub async fn search_group_public_memories(
+        &self,
+        assistant_owner_id: &str,
+        group_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<Memory>> {
+        let q = sanitize_fts(query);
+        if q.is_empty() {
+            return Ok(vec![]);
+        }
+        let limit = limit.clamp(1, 16);
+        let sql = format!(
+            r#"
+            SELECT m.id, m.owner_friend_id, m.kind, m.content, m.source_message_id, m.weight, m.pinned,
+                   m.last_used_at, m.decay_score, m.created_at, m.tier, m.scope, m.scope_ref, m.importance,
+                   m.status, m.title, m.summary, m.tenant_id, m.expires_at, m.workspace_id
+            FROM memories_fts f
+            JOIN memories m ON m.rowid = f.rowid
+            WHERE memories_fts MATCH ?
+              AND m.tenant_id = ?
+              AND m.owner_friend_id = ?
+              AND m.scope = ?
+              AND m.scope_ref = ?
+              AND m.kind = ?
+              AND m.tier = ?
+              AND m.status = ?
+              AND (m.expires_at IS NULL OR m.expires_at > ?)
+            ORDER BY m.importance DESC, m.pinned DESC, m.weight DESC, m.created_at DESC
+            LIMIT ?
+            "#
+        );
+        let now = Utc::now().to_rfc3339();
+        let rows: Vec<MemoryRow> = sqlx::query_as::<_, MemoryRow>(&sql)
+            .bind(&q)
+            .bind(self.tenant_id())
+            .bind(assistant_owner_id)
+            .bind(SCOPE_GROUP)
+            .bind(group_id)
+            .bind(MEMORY_KIND_GROUP_PUBLIC)
+            .bind(TIER_CURATED)
+            .bind(STATUS_ACTIVE)
+            .bind(&now)
+            .bind(limit)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.into_iter().map(Memory::from).collect())
+    }
+
+    /// 向量检索群公共记忆（B 层，需 `embedding_enabled` 且记忆已有 embedding）。
+    pub async fn search_group_public_memories_vector(
+        &self,
+        assistant_owner_id: &str,
+        group_id: &str,
+        query: &str,
+        limit: i64,
+        providers: &ProviderRegistry,
+        settings: &AssistantGlobalSettings,
+        assistant_id: &str,
+    ) -> Result<Vec<Memory>> {
+        let q = query.trim();
+        if q.len() < 4 {
+            return Ok(vec![]);
+        }
+        let provider_id = if let Some(p) = settings
+            .embedding_provider_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            p.to_string()
+        } else if let Ok((p, _, _)) =
+            crate::memory_ingest::resolve_assistant_inference(self, assistant_id).await
+        {
+            p
+        } else {
+            "openai".to_string()
+        };
+        let model = settings
+            .embedding_model
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("text-embedding-3-small");
+        let query_vec = providers
+            .embed_text(&provider_id, model, q, None)
+            .await?;
+
+        let candidates = self
+            .list_group_public_memories(assistant_owner_id, group_id, (limit * 8).max(16))
+            .await?;
+        let mut scored: Vec<(f32, Memory)> = Vec::new();
+        for m in candidates {
+            let emb: Option<Vec<u8>> = sqlx::query_scalar(
+                "SELECT embedding FROM memories WHERE id = ? AND tenant_id = ?",
+            )
+            .bind(&m.id)
+            .bind(self.tenant_id())
+            .fetch_optional(self.pool())
+            .await?;
+            let Some(blob) = emb else {
+                continue;
+            };
+            let Some(stored) = decode_embedding(&blob) else {
+                continue;
+            };
+            let sim = cosine_similarity(&query_vec, &stored);
+            if sim > 0.25 {
+                scored.push((sim, m));
+            }
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, m)| m)
+            .collect())
+    }
+
     /// 仅 **整理层 + 活跃** 且作用域匹配的记忆进入提示词。
     pub async fn recall_memories_for_turn(
         &self,
@@ -361,7 +580,12 @@ impl SqliteStore {
         vector: Option<RecallVectorOpts<'_>>,
     ) -> Result<Vec<Memory>> {
         let limit = limit.clamp(1, 32);
-        let pool = self.list_recall_candidates(owner, ctx, limit * 8).await?;
+        let pool = self
+            .list_recall_candidates(owner, ctx, limit * 8)
+            .await?
+            .into_iter()
+            .filter(|m| memory_matches_recall_context(m, ctx))
+            .collect::<Vec<_>>();
         let mut seen = HashSet::new();
         let mut out = Vec::new();
 
@@ -372,6 +596,9 @@ impl SqliteStore {
             .search_memories_curated(owner, query, ctx, limit)
             .await?
         {
+            if !memory_matches_recall_context(&m, ctx) {
+                continue;
+            }
             push_unique(&mut out, &mut seen, m, limit);
         }
         if let Some(vopts) = vector {
@@ -725,6 +952,7 @@ impl SqliteStore {
     }
 
     pub async fn consolidate_memories(&self, owner: &str) -> Result<()> {
+        let _ = self.archive_expired_memories(owner).await?;
         let _ = self.purge_expired_memories(owner).await?;
         let archive_cutoff = (Utc::now() - chrono::Duration::days(3)).to_rfc3339();
         sqlx::query(
@@ -777,6 +1005,28 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// 将已过期的 active 记忆标为 archived（保留审计；召回已过滤过期时间）。
+    pub async fn archive_expired_memories(&self, owner: &str) -> Result<u64> {
+        let now = Utc::now().to_rfc3339();
+        let r = sqlx::query(
+            r#"
+            UPDATE memories
+            SET status = ?
+            WHERE tenant_id = ? AND owner_friend_id = ?
+              AND status = ?
+              AND expires_at IS NOT NULL AND expires_at <= ?
+            "#,
+        )
+        .bind(STATUS_ARCHIVED)
+        .bind(self.tenant_id())
+        .bind(owner)
+        .bind(STATUS_ACTIVE)
+        .bind(&now)
+        .execute(self.pool())
+        .await?;
+        Ok(r.rows_affected())
+    }
+
     pub async fn purge_expired_memories(&self, owner: &str) -> Result<u64> {
         let now = Utc::now().to_rfc3339();
         let r = sqlx::query(
@@ -784,14 +1034,32 @@ impl SqliteStore {
             DELETE FROM memories
             WHERE tenant_id = ? AND owner_friend_id = ?
               AND expires_at IS NOT NULL AND expires_at <= ?
+              AND kind NOT IN (?, ?)
             "#,
         )
         .bind(self.tenant_id())
         .bind(owner)
         .bind(&now)
+        .bind(MEMORY_KIND_GROUP_PUBLIC)
+        .bind(MEMORY_KIND_MEMBER_GROUP_NOTE)
         .execute(self.pool())
         .await?;
         Ok(r.rows_affected())
+    }
+
+    pub async fn set_memory_expires_at(
+        &self,
+        id: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<()> {
+        let expires_at_str = expires_at.map(|t| t.to_rfc3339());
+        sqlx::query("UPDATE memories SET expires_at = ? WHERE id = ? AND tenant_id = ?")
+            .bind(&expires_at_str)
+            .bind(id)
+            .bind(self.tenant_id())
+            .execute(self.pool())
+            .await?;
+        Ok(())
     }
 
     pub async fn list_curated_for_organize(&self, owner: &str, limit: i64) -> Result<Vec<Memory>> {
@@ -997,6 +1265,16 @@ impl SqliteStore {
         }
         Ok(false)
     }
+}
+
+fn memory_matches_recall_context(m: &Memory, ctx: &RecallContext) -> bool {
+    if m.kind != MEMORY_KIND_MEMBER_GROUP_NOTE {
+        return true;
+    }
+    matches!(
+        (ctx.group_id.as_deref(), m.summary.as_deref()),
+        (Some(gid), Some(summary)) if gid == summary
+    )
 }
 
 fn push_unique(out: &mut Vec<Memory>, seen: &mut HashSet<String>, m: Memory, limit: i64) {

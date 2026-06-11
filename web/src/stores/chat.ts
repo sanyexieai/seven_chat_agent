@@ -4,9 +4,11 @@ import { applyCliBlockDelta, cliBlocksToPlain } from "../cliBlocks";
 import {
   emptyTaskFlowRound,
   markPhaseDone,
+  phaseLabel,
   type TaskFlowPhaseKey,
   type TaskFlowRound,
 } from "../taskFlow";
+import { intentClassifierLabel, turnIntentLabel } from "../judgeLabels";
 import type {
   BusEvent,
   Conversation,
@@ -44,6 +46,14 @@ export interface MemberJudgeVerdict {
   reason: string | null;
 }
 
+/** 本轮用户消息意图分类（群聊顶部条） */
+export interface TurnIntentBanner {
+  turnId: string;
+  intent: string;
+  classifier: string;
+  updatedAt: number;
+}
+
 /** 本轮群聊 judge + 调度结果（用于聊天窗顶部条） */
 export interface JudgeRoundBanner {
   turnId: string;
@@ -66,6 +76,22 @@ export interface OwnerNotifyBanner {
   updatedAt: number;
 }
 
+/** 群共识 curator 更新后顶部条（可跳转群设置） */
+export interface GroupPublicBanner {
+  turnId: string;
+  groupId: string;
+  excerpt: string;
+  updatedAt: number;
+}
+
+/** 群聊编排 BusEvent 时间线（调试） */
+export interface OrchestrationEventEntry {
+  turnId: string;
+  at: number;
+  label: string;
+  detail?: string;
+}
+
 interface ChatState {
   ready: boolean;
   friends: Friend[];
@@ -85,8 +111,11 @@ interface ChatState {
   selectSeq: number;
   thinking: Record<string, ThinkingState>;
   judgeBanner: JudgeRoundBanner | null;
+  turnIntentBanner: TurnIntentBanner | null;
   ownerNotify: OwnerNotifyBanner | null;
+  groupPublicBanner: GroupPublicBanner | null;
   taskFlow: TaskFlowRound | null;
+  orchestrationLog: OrchestrationEventEntry[];
   ws: WebSocket | null;
   init: () => Promise<void>;
   reloadFriends: () => Promise<void>;
@@ -115,8 +144,11 @@ export const useChat = create<ChatState>((set, get) => ({
   selectSeq: 0,
   thinking: {},
   judgeBanner: null,
+  turnIntentBanner: null,
   ownerNotify: null,
+  groupPublicBanner: null,
   taskFlow: null,
+  orchestrationLog: [],
   ws: null,
   async init() {
     set({ ready: false });
@@ -186,6 +218,7 @@ export const useChat = create<ChatState>((set, get) => ({
         messages: cachedMessages ?? [],
         thinking: {},
         judgeBanner: null,
+        groupPublicBanner: null,
         taskFlow: null,
       };
     });
@@ -235,6 +268,7 @@ export const useChat = create<ChatState>((set, get) => ({
         messages: cachedMessages ?? [],
         thinking: {},
         judgeBanner: null,
+        groupPublicBanner: null,
         taskFlow: null,
       };
     });
@@ -326,6 +360,22 @@ export function mergeMessages(apiMessages: Message[], cached?: Message[]): Messa
       new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
   );
   return merged;
+}
+
+function pushOrchestration(
+  set: (
+    partial: Partial<ChatState> | ((s: ChatState) => Partial<ChatState>),
+  ) => void,
+  turnId: string,
+  label: string,
+  detail?: string,
+) {
+  set((s) => ({
+    orchestrationLog: [
+      ...s.orchestrationLog,
+      { turnId, at: Date.now(), label, detail },
+    ],
+  }));
 }
 
 function applyBusEvent(
@@ -474,6 +524,14 @@ function applyBusEvent(
       if (sameConv(ev.conversation_id)) {
         const picked = new Set(ev.decisions.map((d) => d.friend_id));
         const pickedNames = ev.decisions.map((d) => d.friend_name).filter(Boolean);
+        if (pickedNames.length > 0) {
+          pushOrchestration(
+            set,
+            ev.turn_id,
+            `调度 ${ev.schedule_mode}`,
+            pickedNames.join("、"),
+          );
+        }
         set((s) => ({
           thinking: Object.fromEntries(
             Object.entries(s.thinking).map(([k, v]) => [
@@ -505,6 +563,12 @@ function applyBusEvent(
     }
     case "task_flow_phase": {
       if (sameConv(ev.conversation_id)) {
+        pushOrchestration(
+          set,
+          ev.turn_id,
+          phaseLabel(ev.phase),
+          ev.detail ?? undefined,
+        );
         set((s) => {
           const base = ensureTaskFlow(s.taskFlow, ev.turn_id);
           const phase = ev.phase as TaskFlowPhaseKey | "appoint";
@@ -600,15 +664,80 @@ function applyBusEvent(
       }
       break;
     }
+    case "coordinator_plan": {
+      if (sameConv(ev.conversation_id)) {
+        pushOrchestration(
+          set,
+          ev.turn_id,
+          `协调分工 · ${ev.planner_name}`,
+          ev.assignee_names.length
+            ? `分配 ${ev.assignee_names.join("、")}`
+            : ev.plan_excerpt.slice(0, 80),
+        );
+        set((s) => {
+          const base = ensureTaskFlow(s.taskFlow, ev.turn_id);
+          return {
+            taskFlow: {
+              ...advanceTaskFlowPhase(base, "coordinator_plan", ev.plan_excerpt),
+              coordinatorPlan: {
+                plannerName: ev.planner_name,
+                assigneeNames: ev.assignee_names,
+                planExcerpt: ev.plan_excerpt,
+              },
+              updatedAt: Date.now(),
+            },
+          };
+        });
+      }
+      break;
+    }
+    case "task_assignments_merged": {
+      if (sameConv(ev.conversation_id)) {
+        pushOrchestration(
+          set,
+          ev.turn_id,
+          `分工合并 · 负责人 ${ev.leader_name}`,
+          ev.assignee_names.join("、"),
+        );
+        set((s) => {
+          const base = ensureTaskFlow(s.taskFlow, ev.turn_id);
+          return {
+            taskFlow: {
+              ...base,
+              mergedAssignees: ev.assignee_names,
+              updatedAt: Date.now(),
+            },
+          };
+        });
+      }
+      break;
+    }
     case "campaign_pitch": {
       if (sameConv(ev.conversation_id)) {
+        pushOrchestration(
+          set,
+          ev.turn_id,
+          `自荐 · ${ev.friend_name}`,
+          ev.pitch_excerpt?.slice(0, 60),
+        );
         set((s) => {
           const base = ensureTaskFlow(s.taskFlow, ev.turn_id);
           const done = base.campaignDone.includes(ev.friend_name)
             ? base.campaignDone
             : [...base.campaignDone, ev.friend_name];
+          const nominations = ev.pitch_excerpt
+            ? [
+                ...base.selfNominations.filter((n) => n.name !== ev.friend_name),
+                { name: ev.friend_name, excerpt: ev.pitch_excerpt },
+              ]
+            : base.selfNominations;
           return {
-            taskFlow: { ...base, campaignDone: done, updatedAt: Date.now() },
+            taskFlow: {
+              ...base,
+              campaignDone: done,
+              selfNominations: nominations,
+              updatedAt: Date.now(),
+            },
             thinking: {
               ...s.thinking,
               [ev.friend_id]: {
@@ -624,6 +753,12 @@ function applyBusEvent(
     }
     case "leader_elected": {
       if (sameConv(ev.conversation_id)) {
+        pushOrchestration(
+          set,
+          ev.turn_id,
+          `负责人 ${ev.friend_name}`,
+          ev.reason.slice(0, 80),
+        );
         set((s) => {
           let base = ensureTaskFlow(s.taskFlow, ev.turn_id);
           base = markPhaseDone(base, "peer_vote");
@@ -646,11 +781,52 @@ function applyBusEvent(
       }
       break;
     }
+    case "group_public_updated": {
+      if (sameConv(ev.conversation_id)) {
+        pushOrchestration(
+          set,
+          ev.turn_id,
+          "群共识已更新",
+          ev.excerpt?.slice(0, 80),
+        );
+        set({
+          groupPublicBanner: {
+            turnId: ev.turn_id,
+            groupId: ev.group_id,
+            excerpt: ev.excerpt ?? "",
+            updatedAt: Date.now(),
+          },
+        });
+      }
+      break;
+    }
+    case "turn_intent_classified": {
+      if (sameConv(ev.conversation_id)) {
+        pushOrchestration(
+          set,
+          ev.turn_id,
+          `意图 ${turnIntentLabel(ev.intent)}`,
+          intentClassifierLabel(ev.classifier),
+        );
+        set({
+          turnIntentBanner: {
+            turnId: ev.turn_id,
+            intent: ev.intent,
+            classifier: ev.classifier,
+            updatedAt: Date.now(),
+          },
+        });
+      }
+      break;
+    }
     case "turn_started": {
       if (sameConv(ev.conversation_id)) {
         set({
           thinking: {},
           judgeBanner: null,
+          turnIntentBanner: null,
+          groupPublicBanner: null,
+          orchestrationLog: [],
           taskFlow: emptyTaskFlowRound(ev.turn_id),
         });
       }
@@ -678,6 +854,7 @@ function applyBusEvent(
 }
 
 const PHASE_ORDER: TaskFlowPhaseKey[] = [
+  "coordinator_plan",
   "campaign",
   "peer_vote",
   "election",

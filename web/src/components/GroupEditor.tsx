@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { providerDisplayName } from "../providerDefaults";
 import { validateGroupTaskFlowReadiness } from "../groupReadiness";
 import { useChat } from "../stores/chat";
+import { GroupPublicMemoryPanel } from "./GroupPublicMemoryPanel";
 import type {
   AssistantPolicyTemplate,
   GroupAssistantSettings,
@@ -16,6 +17,8 @@ import type {
 interface Props {
   groupId: string | null;
   onClose: () => void;
+  /** 打开后滚动到群共识面板（来自聊天窗「查看群共识」） */
+  scrollToConsensus?: boolean;
 }
 
 const defaultJudge: GroupJudgeSettings = {
@@ -75,11 +78,19 @@ function isRelayFriend(f: { backend_config?: Record<string, unknown> }) {
   return f.backend_config?.execution_mode === "relay";
 }
 
+const defaultOrchestration = {
+  intent_classifier: "heuristic" as const,
+  light_task_flow: false,
+  group_memory_enabled: true,
+  group_public_ttl_days: 0,
+};
+
 const defaults: GroupSettings = {
   judge_threshold: defaultJudge.threshold,
   judge: defaultJudge,
   task_flow: defaultTaskFlow,
   assistant: defaultAssistant,
+  orchestration: defaultOrchestration,
   max_replies_per_turn: 8,
   per_agent_max_per_turn: 2,
   cooldown_ms: 4000,
@@ -103,10 +114,15 @@ function normalizeSettings(raw: Partial<GroupSettings>): GroupSettings {
   base.judge_threshold = judge.threshold;
   base.task_flow = { ...defaultTaskFlow, ...raw.task_flow };
   base.assistant = { ...defaultAssistant, ...raw.assistant };
+  base.orchestration = { ...defaultOrchestration, ...raw.orchestration };
   return base;
 }
 
-export function GroupEditor({ groupId, onClose }: Props) {
+export function GroupEditor({
+  groupId,
+  onClose,
+  scrollToConsensus,
+}: Props) {
   const { friends, providers, providerKeys, reloadGroups, selectGroup } =
     useChat();
   const [name, setName] = useState("");
@@ -117,6 +133,12 @@ export function GroupEditor({ groupId, onClose }: Props) {
   /** 本群内各成员的 Judge 覆盖（key=friend_id） */
   const [memberJudges, setMemberJudges] = useState<
     Record<string, MemberJudgeOverride>
+  >({});
+  const [memberProfileOverlays, setMemberProfileOverlays] = useState<
+    Record<string, import("../types/profile").MemberProfileOverlay>
+  >({});
+  const [memberEffectiveProfiles, setMemberEffectiveProfiles] = useState<
+    Record<string, import("../types/profile").MemberProfileSummary>
   >({});
   const [settings, setSettings] = useState<GroupSettings>(defaults);
   const [policyTemplates, setPolicyTemplates] = useState<
@@ -149,6 +171,8 @@ export function GroupEditor({ groupId, onClose }: Props) {
       setName("");
       setMemberIds(new Set());
       setMemberJudges({});
+      setMemberProfileOverlays({});
+      setMemberEffectiveProfiles({});
       setMemberLocalPaths({});
       setGitUrl("");
       setSettings(defaults);
@@ -166,12 +190,26 @@ export function GroupEditor({ groupId, onClose }: Props) {
         bundle.member_ids.filter((id) => id !== aid);
       setMemberIds(new Set(experts));
       const judges: Record<string, MemberJudgeOverride> = {};
+      const overlays: Record<string, import("../types/profile").MemberProfileOverlay> =
+        {};
+      const effProfiles: Record<
+        string,
+        import("../types/profile").MemberProfileSummary
+      > = {};
       for (const m of bundle.members ?? []) {
         if (m.judge_override) {
           judges[m.friend_id] = m.judge_override;
         }
+        if (m.profile_overlay) {
+          overlays[m.friend_id] = m.profile_overlay;
+        }
+        if (m.effective_profile) {
+          effProfiles[m.friend_id] = m.effective_profile;
+        }
       }
       setMemberJudges(judges);
+      setMemberProfileOverlays(overlays);
+      setMemberEffectiveProfiles(effProfiles);
       const paths: Record<string, string> = {};
       for (const b of bundle.member_bindings ?? []) {
         if (b.local_path) paths[b.friend_id] = b.local_path;
@@ -182,12 +220,24 @@ export function GroupEditor({ groupId, onClose }: Props) {
     });
   }, [groupId]);
 
+  useEffect(() => {
+    if (!scrollToConsensus || !groupId) return;
+    const t = window.setTimeout(() => {
+      document
+        .getElementById("group-public-memory")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 200);
+    return () => window.clearTimeout(t);
+  }, [scrollToConsensus, groupId]);
+
   function toggleMember(id: string) {
     const next = new Set(memberIds);
     if (next.has(id)) {
       next.delete(id);
       const { [id]: _, ...rest } = memberJudges;
       setMemberJudges(rest);
+      const { [id]: _o, ...restOv } = memberProfileOverlays;
+      setMemberProfileOverlays(restOv);
     } else {
       next.add(id);
     }
@@ -196,6 +246,39 @@ export function GroupEditor({ groupId, onClose }: Props) {
 
   function setMemberJudge(friendId: string, override: MemberJudgeOverride) {
     setMemberJudges((prev) => ({ ...prev, [friendId]: override }));
+  }
+
+  function setMemberProfileOverlay(
+    friendId: string,
+    patch: {
+      initiative?: "" | "proactive" | "balanced" | "passive";
+      coordination?: "" | "coordinator" | "contributor" | "none";
+    },
+  ) {
+    setMemberProfileOverlays((prev) => {
+      const cur = prev[friendId]?.routing_hints ?? {};
+      const nextInit =
+        patch.initiative !== undefined
+          ? patch.initiative || undefined
+          : cur.initiative;
+      const nextCoord =
+        patch.coordination !== undefined
+          ? patch.coordination || undefined
+          : cur.coordination;
+      if (!nextInit && !nextCoord) {
+        const { [friendId]: _, ...rest } = prev;
+        return rest;
+      }
+      return {
+        ...prev,
+        [friendId]: {
+          routing_hints: {
+            ...(nextInit ? { initiative: nextInit } : {}),
+            ...(nextCoord ? { coordination: nextCoord } : {}),
+          },
+        },
+      };
+    });
   }
 
   async function save() {
@@ -231,6 +314,7 @@ export function GroupEditor({ groupId, onClose }: Props) {
           judge_override: memberJudges[friend_id]?.use_group_default
             ? { use_group_default: true }
             : memberJudges[friend_id] ?? null,
+          profile_overlay: memberProfileOverlays[friend_id] ?? null,
         }),
       );
       if (aid) {
@@ -537,6 +621,34 @@ export function GroupEditor({ groupId, onClose }: Props) {
                 const inGroup = memberIds.has(f.id);
                 const mj =
                   memberJudges[f.id] ?? ({ use_group_default: true } as MemberJudgeOverride);
+                const overlayInit =
+                  memberProfileOverlays[f.id]?.routing_hints?.initiative ?? "";
+                const overlayCoord =
+                  memberProfileOverlays[f.id]?.routing_hints?.coordination ?? "";
+                const eff = memberEffectiveProfiles[f.id];
+                const initiativeZh: Record<string, string> = {
+                  proactive: "主动",
+                  balanced: "均衡",
+                  passive: "被动",
+                };
+                const coordinationZh: Record<string, string> = {
+                  coordinator: "协调者",
+                  contributor: "协作者",
+                  none: "",
+                };
+                const profileBadge = eff
+                  ? `${initiativeZh[eff.initiative] ?? eff.initiative}${
+                      coordinationZh[eff.coordination]
+                        ? `·${coordinationZh[eff.coordination]}`
+                        : ""
+                    }`
+                  : null;
+                const effectiveLabel =
+                  overlayInit || overlayCoord
+                    ? `本群覆盖${overlayInit ? `·${overlayInit}` : ""}${overlayCoord ? `·${overlayCoord}` : ""}`
+                    : f.profile?.frameworks?.length
+                      ? "沿用好友画像"
+                      : "默认均衡";
                 return (
                   <div
                     key={f.id}
@@ -562,6 +674,52 @@ export function GroupEditor({ groupId, onClose }: Props) {
                     </label>
                     {inGroup && f.backend_kind !== "human" && (
                       <div className="mt-2 border-t border-slate-100 pt-2 pl-6">
+                        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                          <span>
+                            协作倾向：{effectiveLabel}
+                            {profileBadge && (
+                              <span className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                                有效·{profileBadge}
+                              </span>
+                            )}
+                          </span>
+                          <select
+                            className="input py-0.5 text-xs"
+                            value={overlayInit}
+                            onChange={(e) =>
+                              setMemberProfileOverlay(f.id, {
+                                initiative: e.target.value as
+                                  | ""
+                                  | "proactive"
+                                  | "balanced"
+                                  | "passive",
+                              })
+                            }
+                          >
+                            <option value="">主动性·不覆盖</option>
+                            <option value="proactive">本群·主动</option>
+                            <option value="balanced">本群·均衡</option>
+                            <option value="passive">本群·被动</option>
+                          </select>
+                          <select
+                            className="input py-0.5 text-xs"
+                            value={overlayCoord}
+                            onChange={(e) =>
+                              setMemberProfileOverlay(f.id, {
+                                coordination: e.target.value as
+                                  | ""
+                                  | "coordinator"
+                                  | "contributor"
+                                  | "none",
+                              })
+                            }
+                          >
+                            <option value="">协调角色·不覆盖</option>
+                            <option value="coordinator">本群·协调者</option>
+                            <option value="contributor">本群·协作者</option>
+                            <option value="none">本群·无协调</option>
+                          </select>
+                        </div>
                         <label className="flex items-center gap-2 text-xs">
                           <input
                             type="checkbox"
@@ -875,12 +1033,106 @@ export function GroupEditor({ groupId, onClose }: Props) {
             )}
           </div>
 
+          <div className="rounded-md border border-slate-200 bg-slate-50/80 p-3">
+            <label className="label">回合意图分类</label>
+            <select
+              className="input"
+              value={settings.orchestration?.intent_classifier ?? "heuristic"}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  orchestration: {
+                    ...defaultOrchestration,
+                    ...settings.orchestration,
+                    intent_classifier: e.target.value as
+                      | "heuristic"
+                      | "auto"
+                      | "llm",
+                  },
+                })
+              }
+            >
+              <option value="heuristic">启发式（快、无 API）</option>
+              <option value="auto">Auto（优先 LLM）</option>
+              <option value="llm">仅 LLM</option>
+            </select>
+            <p className="mt-1 text-xs text-slate-500">
+              决定闲聊/问答/任务等路径；仅 task/decision/status 会进入任务流。
+            </p>
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.orchestration?.light_task_flow ?? false}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    orchestration: {
+                      ...defaultOrchestration,
+                      ...settings.orchestration,
+                      light_task_flow: e.target.checked,
+                    },
+                  })
+                }
+              />
+              轻量编排（跳过互投与计划评议）
+            </label>
+            <p className="mt-1 text-xs text-slate-500">
+              适合工程群快速推进：协调分工 → 主动型自荐 → 负责人执行；执行阶段仅被 @
+              的成员会接话协作。
+            </p>
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.orchestration?.group_memory_enabled !== false}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    orchestration: {
+                      ...defaultOrchestration,
+                      ...settings.orchestration,
+                      group_memory_enabled: e.target.checked,
+                    },
+                  })
+                }
+              />
+              回合末自动整理群共识记忆
+            </label>
+            <p className="mt-1 text-xs text-slate-500">
+              助理在每轮群聊结束后更新「本群共识」，供成员接话与 Judge 参考。
+            </p>
+            <label className="mt-3 block text-xs text-slate-600">
+              群共识过期天数（0 = 不过期）
+              <input
+                type="number"
+                min={0}
+                max={3650}
+                className="input mt-1 w-full text-sm"
+                value={settings.orchestration?.group_public_ttl_days ?? 0}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    orchestration: {
+                      ...defaultOrchestration,
+                      ...settings.orchestration,
+                      group_public_ttl_days: Math.max(
+                        0,
+                        parseInt(e.target.value, 10) || 0,
+                      ),
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+
+          {groupId && <GroupPublicMemoryPanel groupId={groupId} />}
+
           <div className="rounded-md border border-violet-200 bg-violet-50/50 p-3">
             <div className="mb-2 text-xs font-semibold text-violet-900">
-              任务编排（竞选负责人）
+              任务编排（协调 / 自荐 / 执行）
             </div>
             <p className="mb-3 text-xs text-slate-600">
-              开启后，用户每条消息将先经<strong>竞选 → LLM 选举负责人 → 负责人执行</strong>，不再全员「接一句闲聊」。选举需配置上方 Judge LLM Provider。
+              开启后，<strong>任务型</strong>消息走协调者分工 → 主动型自荐 → 负责人执行；寒暄与轻问答仍走普通接话。需配置 Judge LLM Provider。
             </p>
             <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm">
               <input
@@ -917,7 +1169,7 @@ export function GroupEditor({ groupId, onClose }: Props) {
                       })
                     }
                   />
-                  竞选发言（每人陈述优势争取当负责人）
+                  主动型自荐（仅 campaign_eligible 成员发言，非全员竞选）
                 </label>
                 <label className="flex cursor-pointer items-center gap-2 text-sm">
                   <input

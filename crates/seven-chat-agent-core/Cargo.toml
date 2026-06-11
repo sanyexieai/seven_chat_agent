@@ -42,3 +42,7 @@ keyring = { workspace = true, optional = true }
 [features]
 default = []
 keychain = ["keyring/sync-secret-service", "keyring/apple-native", "keyring/windows-native"]
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

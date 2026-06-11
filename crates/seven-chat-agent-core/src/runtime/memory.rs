@@ -32,6 +32,7 @@ impl MemoryService {
         prompt: &str,
         extra_group: Option<&str>,
         recall_ctx: &crate::memory_tier::RecallContext,
+        group_public_baseline: Option<&str>,
     ) -> Result<String> {
         use super::config::InferenceBackend;
         let mut s = friend.system_prompt.clone();
@@ -42,6 +43,40 @@ impl MemoryService {
         if let Some(per) = &friend.personality {
             s.push_str("\n性格：");
             s.push_str(per);
+        }
+        let eff = crate::profile::resolve_effective_profile(
+            friend,
+            friend.profile.as_ref(),
+            None,
+        );
+        if !eff.prompt_persona_block.is_empty() {
+            s.push_str("\n\n[成员画像]\n");
+            s.push_str(&eff.prompt_persona_block);
+        }
+        let baseline = match group_public_baseline.filter(|b| !b.trim().is_empty()) {
+            Some(b) => Some(b.to_string()),
+            None if recall_ctx.group_id.is_some() => {
+                if let Ok(Some(aid)) = self.store.builtin_assistant_id().await {
+                    if let Some(gid) = recall_ctx.group_id.as_deref() {
+                        crate::profile::fetch_group_public_baseline(&self.store, &aid, gid)
+                            .await
+                            .ok()
+                            .filter(|t| !t.is_empty())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        crate::profile::append_group_public_baseline_prompt(&mut s, baseline.as_deref());
+        if recall_ctx.group_id.is_some() {
+            s.push_str(
+                "\n\n你在群聊中：请认真阅读对话历史里其他成员与用户的原话，不要臆测未出现的内容；\
+                 回应时先承接上文再补充观点。",
+            );
         }
         s.push_str(&format!(
             "\n\n你的名字是「{}」。请用第一人称、自然的中文聊天风格回答。",
@@ -140,7 +175,7 @@ impl MemoryService {
             };
             let text = match m.sender_kind {
                 SenderKind::Friend if m.sender_id != friend.id => {
-                    format!("[{}]: {}", m.sender_name, m.content)
+                    crate::message_context::format_peer_message_for_context(m)
                 }
                 _ => m.content.clone(),
             };

@@ -20,6 +20,12 @@ pub const SCOPE_EPHEMERAL: &str = "ephemeral";
 pub const STATUS_ACTIVE: &str = "active";
 pub const STATUS_ARCHIVED: &str = "archived";
 
+/// 助理整理的群级共识记忆（`scope=group`，owner 为内置助理）。
+pub const MEMORY_KIND_GROUP_PUBLIC: &str = "group_public";
+
+/// 成员在某群的自述（owner 为成员本人，`summary` 存群 id）。
+pub const MEMORY_KIND_MEMBER_GROUP_NOTE: &str = "member_group_note";
+
 #[derive(Debug, Clone)]
 pub struct MemoryScopeKey {
     pub scope: String,
@@ -31,13 +37,15 @@ pub struct RecallContext {
     pub conversation_id: Option<String>,
     pub friend_id: Option<String>,
     pub workspace_id: Option<String>,
+    pub group_id: Option<String>,
 }
 
 pub fn recall_context_from_chat(ctx: &crate::agent::ChatContext) -> RecallContext {
     RecallContext {
         conversation_id: Some(ctx.conversation_id.clone()),
-        friend_id: ctx.peers.first().map(|p| p.id.clone()),
+        friend_id: Some(ctx.self_friend.id.clone()),
         workspace_id: ctx.self_friend.active_workspace_id.clone(),
+        group_id: ctx.group_id.clone(),
     }
 }
 
@@ -48,11 +56,13 @@ impl RecallContext {
                 conversation_id: Some(conv.id.clone()),
                 friend_id: Some(conv.target_id.clone()),
                 workspace_id: None,
+                group_id: None,
             },
             ConvKind::Group => Self {
                 conversation_id: Some(conv.id.clone()),
                 friend_id: None,
                 workspace_id: None,
+                group_id: Some(conv.target_id.clone()),
             },
         }
     }

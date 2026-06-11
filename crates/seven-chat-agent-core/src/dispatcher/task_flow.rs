@@ -5,7 +5,13 @@ use crate::domain::{
     BackendKind, Conversation, Friend, GroupSettings, Message, MessageStatus, SenderKind,
 };
 use crate::group_validate::validate_group_task_flow_readiness;
+use crate::profile::{
+    build_member_roster_with_hints, member_recent_capability_hints, merge_task_assignments,
+    pick_coordinator, resolve_effective_profile_with, self_nomination_candidates,
+    EffectiveMemberProfile, MemberProfileOverlay, ProfileFrameworkCatalog,
+};
 use crate::store::message::NewMessage;
+use std::collections::HashMap;
 use seven_chat_agent_judge::format_peer_vote_tally;
 use crate::Result;
 
@@ -43,6 +49,7 @@ struct ResolvedLeader {
     confidence: f32,
     peer_vote_pairs: Vec<(String, String)>,
     pitches: Vec<(String, String, String)>,
+    coordinator_assignees: Vec<(String, String)>,
     reused: bool,
 }
 
@@ -169,6 +176,20 @@ impl MessageDispatcher {
                 .map(|(id, name, _)| (id.clone(), name.clone()))
                 .collect(),
         });
+        let (merged_ids, merged_names) = merge_task_assignments(
+            &leader_id,
+            &leader_name,
+            &resolved.coordinator_assignees,
+            &agents,
+        );
+        self.emit(BusEvent::TaskAssignmentsMerged {
+            conversation_id: conv.id.clone(),
+            turn_id: turn_id.to_string(),
+            leader_id: leader_id.clone(),
+            leader_name: leader_name.clone(),
+            assignee_ids: merged_ids.clone(),
+            assignee_names: merged_names.clone(),
+        });
 
         let leader = agents
             .iter()
@@ -205,7 +226,7 @@ impl MessageDispatcher {
                     &leader,
                     &elect_reason,
                     &campaign_summary,
-                    tf.plan_review_enabled,
+                    settings.effective_plan_review_enabled(),
                 )
                 .await?;
         }
@@ -246,6 +267,7 @@ impl MessageDispatcher {
                 &plan_text,
                 &campaign_summary,
                 &elect_reason,
+                &merged_names,
                 tf,
                 ExecuteLoopParams::default(),
             )
@@ -289,6 +311,7 @@ impl MessageDispatcher {
                     confidence: 1.0,
                     peer_vote_pairs: Vec::new(),
                     pitches: Vec::new(),
+                    coordinator_assignees: Vec::new(),
                     reused: false,
                 });
             }
@@ -321,6 +344,7 @@ impl MessageDispatcher {
                         confidence: 1.0,
                         peer_vote_pairs: Vec::new(),
                         pitches: Vec::new(),
+                        coordinator_assignees: Vec::new(),
                         reused: true,
                     });
                 }
@@ -328,9 +352,10 @@ impl MessageDispatcher {
         }
 
         let mut pitches: Vec<(String, String, String)> = Vec::new();
-        let (leader_id, leader_name, elect_reason, confidence, peer_vote_pairs) = self
-            .run_campaign_and_elect(conv, user_msg, turn_id, settings, agents, tf, &mut pitches)
-            .await?;
+        let (leader_id, leader_name, elect_reason, confidence, peer_vote_pairs, coordinator_assignees) =
+            self
+                .run_campaign_and_elect(conv, user_msg, turn_id, settings, agents, tf, &mut pitches)
+                .await?;
         Ok(ResolvedLeader {
             leader_id,
             leader_name,
@@ -338,6 +363,7 @@ impl MessageDispatcher {
             confidence,
             peer_vote_pairs,
             pitches,
+            coordinator_assignees,
             reused: false,
         })
     }
@@ -369,6 +395,7 @@ impl MessageDispatcher {
             &checkpoint.plan_text,
             &checkpoint.campaign_summary,
             &checkpoint.elect_reason,
+            &[],
             tf,
             ExecuteLoopParams {
                 autonomous_directive: Some(delegate_directive.to_string()),
@@ -390,6 +417,7 @@ impl MessageDispatcher {
         plan_text: &str,
         campaign_summary: &str,
         elect_reason: &str,
+        assigned_names: &[String],
         tf: &crate::domain::GroupTaskFlowSettings,
         mut loop_params: ExecuteLoopParams,
     ) -> Result<TaskFlowExecuteOutcome> {
@@ -398,6 +426,18 @@ impl MessageDispatcher {
         } else {
             format!("已发布计划：\n{plan_text}")
         };
+        let assignment_block = if assigned_names.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n协调分工涉及：{}。执行时请 @ 需要配合的成员，仅被点名者会接话协作。\n",
+                assigned_names.join("、")
+            )
+        };
+
+        let group_public_baseline = self
+            .fetch_group_public_baseline_opt(&conv.target_id, settings)
+            .await;
 
         let agent = self.agents.get(&leader.id).await?;
         let mut last_reply: Option<Message> = None;
@@ -429,7 +469,7 @@ impl MessageDispatcher {
                     )
                 } else {
                     format!(
-                        "你是本轮任务负责人「{}」。选举/任命理由：{}\n\n用户任务：\n{}\n\n竞选摘要：\n{}\n\n{plan_block}\n\n\
+                        "你是本轮任务负责人「{}」。选举/任命理由：{}\n\n用户任务：\n{}\n\n竞选摘要：\n{}\n\n{plan_block}{assignment_block}\n\
                         请进入执行阶段：按已定计划使用工具完成任务（查代码、跑命令等），可多步。\n\
                         **重要**：只有形成对用户的「明确交付」（可验收的产出/结论/变更说明）才能结束；\
                         若信息不足或任务未完成，应继续推进或向用户/成员提出具体问题，不要空泛收尾。",
@@ -437,7 +477,8 @@ impl MessageDispatcher {
                         elect_reason,
                         user_msg.content,
                         campaign_summary,
-                        plan_block = plan_block
+                        plan_block = plan_block,
+                        assignment_block = assignment_block
                     )
                 }
             } else {
@@ -485,6 +526,7 @@ impl MessageDispatcher {
                 peers: agents.iter().filter(|m| m.id != leader.id).cloned().collect(),
                 user_attachments: user_msg.attachments.clone(),
                 member_group_local_path: None,
+                group_public_baseline: group_public_baseline.clone(),
             };
 
             let reply = self
@@ -705,6 +747,166 @@ impl MessageDispatcher {
         Ok(())
     }
 
+    async fn member_profile_overlays(&self, group_id: &str) -> Result<HashMap<String, MemberProfileOverlay>> {
+        let configs = self.dispatch_store().list_group_member_configs(group_id).await?;
+        Ok(configs
+            .into_iter()
+            .filter_map(|c| c.profile_overlay.map(|o| (c.friend_id, o)))
+            .collect())
+    }
+
+    fn effective_profile_for(
+        friend: &Friend,
+        overlays: &HashMap<String, MemberProfileOverlay>,
+        catalogs: &[ProfileFrameworkCatalog],
+    ) -> EffectiveMemberProfile {
+        resolve_effective_profile_with(
+            friend,
+            friend.profile.as_ref(),
+            overlays.get(&friend.id),
+            catalogs,
+        )
+    }
+
+    async fn run_coordinator_plan(
+        &self,
+        conv: &Conversation,
+        user_msg: &Message,
+        turn_id: &str,
+        settings: &GroupSettings,
+        agents: &[Friend],
+        coordinator: &Friend,
+        overlays: &HashMap<String, MemberProfileOverlay>,
+        catalogs: &[ProfileFrameworkCatalog],
+    ) -> Result<Vec<(String, String)>> {
+        let roster_pairs: Vec<_> = agents
+            .iter()
+            .map(|f| (f, Self::effective_profile_for(f, overlays, catalogs)))
+            .collect();
+        let roster_refs: Vec<(&Friend, EffectiveMemberProfile)> = roster_pairs
+            .iter()
+            .map(|(f, eff)| (*f, eff.clone()))
+            .collect();
+        let capability_hints = if let Ok(Some(aid)) =
+            self.dispatch_store().builtin_assistant_id().await
+        {
+            member_recent_capability_hints(
+                &self.dispatch_store(),
+                &aid,
+                &conv.target_id,
+                agents,
+            )
+            .await
+            .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        let roster = build_member_roster_with_hints(&roster_refs, &capability_hints);
+        let group_public_baseline = self
+            .fetch_group_public_baseline_opt(&conv.target_id, settings)
+            .await;
+        self.emit(BusEvent::TaskFlowPhase {
+            conversation_id: conv.id.clone(),
+            turn_id: turn_id.to_string(),
+            phase: "coordinator_plan".into(),
+            detail: Some(format!("{} 协调分工", coordinator.name)),
+        });
+        let agent = self.agents.get(&coordinator.id).await?;
+        let peers: Vec<Friend> = agents
+            .iter()
+            .filter(|m| m.id != coordinator.id)
+            .cloned()
+            .collect();
+        let history = self.dispatch_store().recent_messages(&conv.id, 40).await?;
+        let ctx = ChatContext {
+            conversation_id: conv.id.clone(),
+            group_id: Some(conv.target_id.clone()),
+            group_settings: Some(settings.clone()),
+            history,
+            self_friend: coordinator.clone(),
+            peers,
+            user_attachments: user_msg.attachments.clone(),
+            member_group_local_path: None,
+            group_public_baseline: group_public_baseline.clone(),
+        };
+        let eff = Self::effective_profile_for(coordinator, overlays, catalogs);
+        let persona = if eff.prompt_persona_block.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}\n", eff.prompt_persona_block)
+        };
+        let consensus_block = group_public_baseline
+            .as_ref()
+            .filter(|b| !b.trim().is_empty())
+            .map(|b| format!("\n{b}\n"))
+            .unwrap_or_default();
+        let capability_excerpt = if let Ok(Some(aid)) =
+            self.dispatch_store().builtin_assistant_id().await
+        {
+            crate::profile::format_group_capability_excerpt(
+                &self.dispatch_store(),
+                &aid,
+                &conv.target_id,
+                5,
+            )
+            .await
+            .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let capability_block = if capability_excerpt.is_empty() {
+            String::new()
+        } else {
+            format!("\n{capability_excerpt}\n")
+        };
+        let prompt = format!(
+            "【协调分工】用户任务：\n{}\n\n本群成员能力：\n{}\n{consensus_block}{capability_block}{persona}\
+             你是协调者「{}」。请：\n\
+             1. 用 2–4 句话拆任务与优先级\n\
+             2. 用 @成员名 明确分配（可多人）\n\
+             3. 指定一位负责人主导交付\n\
+             4. 若发现协作流程可改进，用 1 句话给出建议（仅建议，勿改仓库）\n\
+             不要执行工具/写代码，仅规划与分工。",
+            user_msg.content, roster, coordinator.name
+        );
+        let assignees = if let Some(msg) = self
+            .stream_one_reply(conv, user_msg, turn_id, coordinator, agent, ctx, &prompt, 0)
+            .await?
+        {
+            let assignees = parse_at_mention_assignees(&msg.content, agents);
+            let excerpt = excerpt_text(&msg.content, 200);
+            self.emit(BusEvent::CoordinatorPlan {
+                conversation_id: conv.id.clone(),
+                turn_id: turn_id.to_string(),
+                planner_id: coordinator.id.clone(),
+                planner_name: coordinator.name.clone(),
+                assignee_ids: assignees.iter().map(|(id, _)| id.clone()).collect(),
+                assignee_names: assignees.iter().map(|(_, n)| n.clone()).collect(),
+                plan_excerpt: excerpt,
+            });
+            if let Ok(Some(aid)) = self.dispatch_store().builtin_assistant_id().await {
+                if crate::profile::merge_coordinator_plan_into_group_public(
+                    &self.dispatch_store(),
+                    settings,
+                    &aid,
+                    &conv.target_id,
+                    &msg.content,
+                    &assignees,
+                )
+                .await
+                .unwrap_or(false)
+                {
+                    self.emit_group_public_bus_event(&conv.id, &conv.target_id, turn_id)
+                        .await;
+                }
+            }
+            assignees
+        } else {
+            Vec::new()
+        };
+        Ok(assignees)
+    }
+
     async fn run_campaign_and_elect(
         &self,
         conv: &Conversation,
@@ -714,17 +916,61 @@ impl MessageDispatcher {
         agents: &[Friend],
         tf: &crate::domain::GroupTaskFlowSettings,
         pitches: &mut Vec<(String, String, String)>,
-    ) -> Result<(String, String, String, f32, Vec<(String, String)>)> {
+    ) -> Result<(
+        String,
+        String,
+        String,
+        f32,
+        Vec<(String, String)>,
+        Vec<(String, String)>,
+    )> {
+        let overlays = self.member_profile_overlays(&conv.target_id).await?;
+        let catalogs = self.dispatch_store().all_profile_frameworks().await?;
         let peer_names: Vec<String> = agents.iter().map(|m| m.name.clone()).collect();
+        let mut coordinator_assignees: Vec<(String, String)> = Vec::new();
+
+        if let Some(coordinator) = pick_coordinator(agents, &overlays, &catalogs) {
+            match self
+                .run_coordinator_plan(
+                    conv,
+                    user_msg,
+                    turn_id,
+                    settings,
+                    agents,
+                    coordinator,
+                    &overlays,
+                    &catalogs,
+                )
+                .await
+            {
+                Ok(assignees) => coordinator_assignees = assignees,
+                Err(e) => {
+                    tracing::warn!(turn_id = %turn_id, err = %e, "task_flow: coordinator_plan failed");
+                }
+            }
+        }
+
+        let self_nominees = self_nomination_candidates(agents, &overlays, &catalogs);
+        let group_public_baseline = self
+            .fetch_group_public_baseline_opt(&conv.target_id, settings)
+            .await;
 
         if tf.campaign_enabled {
             self.emit(BusEvent::TaskFlowPhase {
                 conversation_id: conv.id.clone(),
                 turn_id: turn_id.to_string(),
                 phase: "campaign".into(),
-                detail: Some("成员竞选负责人：陈述优势并争取认可".into()),
+                detail: Some(format!(
+                    "主动型成员自荐（{} 人，非全员竞选）",
+                    self_nominees.len().max(1)
+                )),
             });
-            for friend in agents {
+            let nominees = if self_nominees.is_empty() {
+                agents.iter().collect::<Vec<_>>()
+            } else {
+                self_nominees
+            };
+            for friend in nominees {
                 let agent = self.agents.get(&friend.id).await?;
                 let peers: Vec<Friend> = agents
                     .iter()
@@ -741,6 +987,7 @@ impl MessageDispatcher {
                     peers,
                     user_attachments: user_msg.attachments.clone(),
                     member_group_local_path: None,
+                    group_public_baseline: group_public_baseline.clone(),
                 };
                 let others = peer_names
                     .iter()
@@ -748,10 +995,16 @@ impl MessageDispatcher {
                     .cloned()
                     .collect::<Vec<_>>()
                     .join("、");
+                let eff = Self::effective_profile_for(friend, &overlays, &catalogs);
+                let persona = if eff.prompt_persona_block.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}\n", eff.prompt_persona_block)
+                };
                 let prompt = format!(
-                    "【竞选负责人】用户任务：\n{}\n\n其他 Agent：{}\n\n你是「{}」。请竞选本轮负责人：\n\
+                    "【自荐负责人】用户任务：\n{}\n\n其他 Agent：{}\n{persona}你是「{}」。若任务与专长匹配，请自荐本轮负责人：\n\
                     1. 你的优势与能交付什么\n2. 说服他人选你\n3. 若负责的 2–4 点执行思路\n\n\
-                    仅竞选发言，不要执行工具/写代码。",
+                    若不匹配可简短说明并放弃。不要执行工具/写代码。",
                     user_msg.content,
                     if others.is_empty() { "（无）".into() } else { others },
                     friend.name,
@@ -760,12 +1013,14 @@ impl MessageDispatcher {
                     .stream_one_reply(conv, user_msg, turn_id, friend, agent, ctx, &prompt, 0)
                     .await?
                 {
+                    let excerpt = excerpt_text(&msg.content, 160);
                     pitches.push((friend.id.clone(), friend.name.clone(), msg.content));
                     self.emit(BusEvent::CampaignPitch {
                         conversation_id: conv.id.clone(),
                         turn_id: turn_id.to_string(),
                         friend_id: friend.id.clone(),
                         friend_name: friend.name.clone(),
+                        pitch_excerpt: Some(excerpt),
                     });
                 }
             }
@@ -784,7 +1039,7 @@ impl MessageDispatcher {
         }
 
         let mut peer_vote_pairs: Vec<(String, String)> = Vec::new();
-        if tf.peer_vote_enabled && agents.len() > 1 {
+        if settings.effective_peer_vote_enabled() && agents.len() > 1 {
             self.emit(BusEvent::TaskFlowPhase {
                 conversation_id: conv.id.clone(),
                 turn_id: turn_id.to_string(),
@@ -875,7 +1130,14 @@ impl MessageDispatcher {
             .await;
 
         Ok(match election {
-            Ok((id, name, reason, conf)) => (id, name, reason, conf, peer_vote_pairs),
+            Ok((id, name, reason, conf)) => (
+                id,
+                name,
+                reason,
+                conf,
+                peer_vote_pairs,
+                coordinator_assignees,
+            ),
             Err(e) => {
                 let err_short = if e.len() > 120 {
                     format!("{}…", &e[..120])
@@ -895,6 +1157,7 @@ impl MessageDispatcher {
                         format!("LLM 选举 API 失败（{err_short}），按互投最高票（{count} 票）"),
                         0.6,
                         peer_vote_pairs,
+                        coordinator_assignees,
                     )
                 } else if let Some((id, name, _)) = pitches.first() {
                     (
@@ -905,6 +1168,7 @@ impl MessageDispatcher {
                         ),
                         0.5,
                         peer_vote_pairs,
+                        coordinator_assignees,
                     )
                 } else {
                     let f = &agents[0];
@@ -914,6 +1178,7 @@ impl MessageDispatcher {
                         format!("选举失败（{err_short}），默认成员列表首位"),
                         0.5,
                         peer_vote_pairs,
+                        coordinator_assignees,
                     )
                 }
             }
@@ -939,6 +1204,9 @@ impl MessageDispatcher {
             detail: Some(format!("负责人 {} 制定计划", leader.name)),
         });
 
+        let group_public_baseline = self
+            .fetch_group_public_baseline_opt(&conv.target_id, settings)
+            .await;
         let agent = self.agents.get(&leader.id).await?;
         let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
         let ctx = ChatContext {
@@ -950,6 +1218,7 @@ impl MessageDispatcher {
             peers: agents.iter().filter(|m| m.id != leader.id).cloned().collect(),
             user_attachments: user_msg.attachments.clone(),
             member_group_local_path: None,
+            group_public_baseline: group_public_baseline.clone(),
         };
         let plan_prompt = format!(
             "你是负责人「{}」。任命/选举理由：{}\n\n用户任务：\n{}\n\n竞选摘要：\n{}\n\n\
@@ -991,6 +1260,7 @@ impl MessageDispatcher {
                     peers: vec![leader.clone()],
                     user_attachments: user_msg.attachments.clone(),
                     member_group_local_path: None,
+                    group_public_baseline: group_public_baseline.clone(),
                 };
                 let prompt = format!(
                     "负责人「{}」发布了计划：\n{}\n\n你是「{}」。请用 1–3 句话评议：是否同意、需补充什么、是否愿意配合（不要抢执行权）。",
@@ -1046,21 +1316,38 @@ impl MessageDispatcher {
     }
 }
 
+fn excerpt_text(content: &str, max: usize) -> String {
+    let t = content.trim();
+    if t.chars().count() <= max {
+        t.to_string()
+    } else {
+        format!("{}…", t.chars().take(max).collect::<String>())
+    }
+}
+
+/// 从正文解析 @成员名 分配（按 agents 名单匹配）。
+fn parse_at_mention_assignees(content: &str, agents: &[Friend]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = agents
+        .iter()
+        .filter(|a| content.contains(&format!("@{}", a.name)))
+        .map(|a| (a.id.clone(), a.name.clone()))
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
 /// 从负责人正文解析 @ 或「请/麻烦 + 名字」式委派，供 judge 识别点名接话。
 fn enrich_leader_delegation_mentions(
     content: &str,
     agents: &[Friend],
     leader_id: &str,
 ) -> Vec<String> {
-    let mut ids: Vec<String> = agents
-        .iter()
-        .filter(|a| a.id != leader_id)
-        .filter(|a| content.contains(&format!("@{}", a.name)))
-        .map(|a| a.id.clone())
-        .collect();
-    ids.sort();
-    ids.dedup();
-    ids
+    parse_at_mention_assignees(content, agents)
+        .into_iter()
+        .filter(|(id, _)| id != leader_id)
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// 从 mentions 或正文 @名字 解析指定负责人。
@@ -1089,4 +1376,86 @@ fn resolve_appointed_leader(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::BackendKind;
+
+    fn agent(id: &str, name: &str) -> Friend {
+        Friend {
+            id: id.into(),
+            name: name.into(),
+            avatar: None,
+            system_prompt: String::new(),
+            personality: None,
+            focus_tags: vec![],
+            backend_kind: BackendKind::Api,
+            backend_config: serde_json::json!({}),
+            judge_provider_ref: None,
+            enabled: true,
+            is_builtin: false,
+            active_workspace_id: None,
+            profile: None,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn user_msg(content: &str, mentions: Vec<String>) -> Message {
+        Message {
+            id: "m1".into(),
+            conversation_id: "c".into(),
+            turn_id: "t".into(),
+            parent_id: None,
+            sender_kind: SenderKind::User,
+            sender_id: "u".into(),
+            sender_name: "你".into(),
+            content: content.into(),
+            content_blocks: None,
+            mentions,
+            status: MessageStatus::Done,
+            seen_by: vec![],
+            model_used: None,
+            tokens_in: None,
+            tokens_out: None,
+            on_behalf_of_user: false,
+            workspace_id: None,
+            attachments: vec![],
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn parse_at_mentions_from_coordinator_plan() {
+        let agents = vec![agent("a", "Alice"), agent("b", "Bob")];
+        let plan = "请 @Alice 写接口，@Bob 做测试";
+        let got = parse_at_mention_assignees(plan, &agents);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].1, "Alice");
+        assert_eq!(got[1].1, "Bob");
+    }
+
+    #[test]
+    fn resolve_appointed_leader_by_at_in_content() {
+        let agents = vec![agent("a", "Alice"), agent("b", "Bob")];
+        let msg = user_msg("这个任务 @Bob 你来负责", vec![]);
+        let got = resolve_appointed_leader(&msg, &agents);
+        assert_eq!(got.map(|(id, _, _)| id), Some("b".into()));
+    }
+
+    #[test]
+    fn resolve_appointed_leader_by_mention_id() {
+        let agents = vec![agent("a", "Alice")];
+        let msg = user_msg("你来", vec!["a".into()]);
+        let got = resolve_appointed_leader(&msg, &agents);
+        assert_eq!(got.map(|(id, name, _)| (id, name)), Some(("a".into(), "Alice".into())));
+    }
+
+    #[test]
+    fn enrich_leader_delegation_skips_leader_self() {
+        let agents = vec![agent("l", "Lead"), agent("b", "Bob")];
+        let ids = enrich_leader_delegation_mentions("@Lead 统筹 @Bob 实现", &agents, "l");
+        assert_eq!(ids, vec!["b"]);
+    }
 }

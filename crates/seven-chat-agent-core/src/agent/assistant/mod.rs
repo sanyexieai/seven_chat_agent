@@ -109,6 +109,11 @@ impl AssistantAgent {
             }
         }
 
+        crate::profile::append_group_public_baseline_prompt(
+            &mut s,
+            ctx.group_public_baseline.as_deref(),
+        );
+
         let lib = self.skills.lock().await;
         let lined_skills = lib.tier1_index(&prompt.to_lowercase());
         if !lined_skills.is_empty() {
@@ -163,7 +168,7 @@ impl AssistantAgent {
             };
             let text = match m.sender_kind {
                 SenderKind::Friend if m.sender_id != self.friend.id => {
-                    format!("[{}]: {}", m.sender_name, m.content)
+                    crate::message_context::format_peer_message_for_context(m)
                 }
                 _ => m.content.clone(),
             };

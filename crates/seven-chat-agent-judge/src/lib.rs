@@ -39,6 +39,6 @@ pub use redundancy::{
 };
 pub use resolve::{resolve_llm_target, LlmJudgeTarget};
 pub use types::{
-    GroupJudgeSettings, HeuristicJudgeSettings, JudgeMode, JudgeSource, Judgment,
-    LlmJudgeSettings, TriggerSenderKind,
+    CoordinationLevel, GroupJudgeSettings, HeuristicJudgeSettings, InitiativeLevel, JudgeMode,
+    JudgeSource, Judgment, LlmJudgeSettings, RoutingHints, TriggerSenderKind,
 };

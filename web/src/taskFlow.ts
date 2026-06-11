@@ -1,6 +1,7 @@
 /** 群任务流一轮状态（WebSocket 事件累积） */
 
 export type TaskFlowPhaseKey =
+  | "coordinator_plan"
   | "campaign"
   | "peer_vote"
   | "election"
@@ -17,6 +18,7 @@ export const TASK_FLOW_PHASES: {
   key: TaskFlowPhaseKey;
   label: string;
 }[] = [
+  { key: "coordinator_plan", label: "⓪ 协调分工" },
   { key: "campaign", label: "① 竞选" },
   { key: "peer_vote", label: "② 互投" },
   { key: "election", label: "③ 选举" },
@@ -37,6 +39,17 @@ export interface TaskFlowVote {
   error?: string;
 }
 
+export interface TaskFlowCoordinatorPlan {
+  plannerName: string;
+  assigneeNames: string[];
+  planExcerpt: string;
+}
+
+export interface TaskFlowSelfNomination {
+  name: string;
+  excerpt: string;
+}
+
 export interface TaskFlowRound {
   turnId: string;
   currentPhase: TaskFlowPhaseKey | "appoint" | null;
@@ -44,6 +57,9 @@ export interface TaskFlowRound {
   /** 已完成阶段 */
   completedPhases: TaskFlowPhaseKey[];
   campaignDone: string[];
+  coordinatorPlan: TaskFlowCoordinatorPlan | null;
+  selfNominations: TaskFlowSelfNomination[];
+  mergedAssignees: string[] | null;
   votes: TaskFlowVote[];
   election: {
     leaderName: string;
@@ -64,6 +80,9 @@ export function emptyTaskFlowRound(turnId: string): TaskFlowRound {
     phaseDetail: null,
     completedPhases: [],
     campaignDone: [],
+    coordinatorPlan: null,
+    selfNominations: [],
+    mergedAssignees: null,
     votes: [],
     election: null,
     planLeader: null,

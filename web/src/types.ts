@@ -1,4 +1,5 @@
 import type { CliBlock, CliBlockDelta } from "./cliBlocks";
+import type { MemberProfile, MemberProfileOverlay, MemberProfileSummary } from "./types/profile";
 
 export type { CliBlock, CliBlockDelta };
 
@@ -66,6 +67,15 @@ export interface CliRelayNode {
   connected_at: string;
 }
 
+export type {
+  MemberProfile,
+  MemberProfileOverlay,
+  MemberProfileSummary,
+  ProfileFrameworkCatalog,
+  InitiativeLevel,
+  CoordinationLevel,
+} from "./types/profile";
+
 export interface Friend {
   id: string;
   name: string;
@@ -79,6 +89,7 @@ export interface Friend {
   enabled: boolean;
   is_builtin: boolean;
   active_workspace_id?: string | null;
+  profile?: MemberProfile | null;
   created_at: string;
 }
 
@@ -342,11 +353,46 @@ export interface GroupTaskFlowSettings {
   stagnation_reply_similarity?: number;
 }
 
+export type IntentClassifier = "heuristic" | "auto" | "llm";
+
+export interface GroupOrchestrationSettings {
+  intent_classifier?: IntentClassifier;
+  /** 轻量编排：跳过互投与计划评议 */
+  light_task_flow?: boolean;
+  /** 回合末自动整理群共识记忆 */
+  group_memory_enabled?: boolean;
+  /** 群共识记忆过期天数；0 表示不过期 */
+  group_public_ttl_days?: number;
+}
+
+export interface GroupPublicMemoryLatest {
+  id?: string;
+  content: string;
+  summary?: string | null;
+  pinned?: boolean;
+  importance?: number;
+  updated_at: string;
+}
+
+export interface GroupPublicMemoryRaw {
+  id: string;
+  title?: string | null;
+  content: string;
+  created_at: string;
+}
+
+export interface GroupPublicMemoriesResponse {
+  latest: GroupPublicMemoryLatest | null;
+  raw_recent: GroupPublicMemoryRaw[];
+  search_hits?: Array<{ id: string; content: string; title?: string | null }>;
+}
+
 export interface GroupSettings {
   judge_threshold: number;
   judge: GroupJudgeSettings;
   task_flow?: GroupTaskFlowSettings;
   assistant?: GroupAssistantSettings;
+  orchestration?: GroupOrchestrationSettings;
   max_replies_per_turn: number;
   per_agent_max_per_turn: number;
   cooldown_ms: number;
@@ -370,6 +416,8 @@ export interface GroupMemberConfig {
   friend_id: string;
   role?: GroupMemberRole;
   judge_override?: MemberJudgeOverride | null;
+  profile_overlay?: MemberProfileOverlay | null;
+  effective_profile?: MemberProfileSummary | null;
 }
 
 export interface GroupWorkspace {
@@ -416,6 +464,7 @@ export interface GroupBundle {
   member_bindings?: GroupMemberBinding[];
   conversation_id?: string;
   task_flow_readiness?: GroupTaskFlowReadiness;
+  profile_frameworks_version?: string;
 }
 
 export interface AssistantMemory {
@@ -567,6 +616,26 @@ export type BusEvent =
       turn_id: string;
       friend_id: string;
       friend_name: string;
+      pitch_excerpt?: string | null;
+    }
+  | {
+      type: "coordinator_plan";
+      conversation_id: string;
+      turn_id: string;
+      planner_id: string;
+      planner_name: string;
+      assignee_ids: string[];
+      assignee_names: string[];
+      plan_excerpt: string;
+    }
+  | {
+      type: "task_assignments_merged";
+      conversation_id: string;
+      turn_id: string;
+      leader_id: string;
+      leader_name: string;
+      assignee_ids: string[];
+      assignee_names: string[];
     }
   | {
       type: "leader_elected";
@@ -622,4 +691,18 @@ export type BusEvent =
       title: string;
       body: string;
       message_id?: string | null;
+    }
+  | {
+      type: "turn_intent_classified";
+      conversation_id: string;
+      turn_id: string;
+      intent: string;
+      classifier: string;
+    }
+  | {
+      type: "group_public_updated";
+      conversation_id: string;
+      turn_id: string;
+      group_id: string;
+      excerpt: string;
     };

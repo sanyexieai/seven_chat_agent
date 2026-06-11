@@ -64,6 +64,13 @@ impl AgentRegistry {
         self.handles.retain(|k, _| !k.ends_with(&suffix));
     }
 
+    /// 集成测试用：注入固定 Agent 实现，跳过真实 Provider/CLI。
+    pub fn inject_handle_for_test(&self, friend_id: &str, handle: AgentHandle) {
+        let tenant_id = crate::tenant_context::active_tenant_or(self.store.tenant_id());
+        let cache_key = format!("{tenant_id}:{friend_id}");
+        self.handles.insert(cache_key, handle);
+    }
+
     fn build(&self, friend: Friend, store: SqliteStore) -> Result<AgentHandle> {
         let store = Arc::new(store);
         match friend.backend_kind {
@@ -105,6 +112,8 @@ impl AgentRegistry {
 pub struct StubAgent {
     friend: Friend,
     note: String,
+    fixed_reply: Option<String>,
+    prompt_rules: Vec<(String, String)>,
 }
 
 impl StubAgent {
@@ -112,7 +121,59 @@ impl StubAgent {
         Self {
             friend,
             note: note.into(),
+            fixed_reply: None,
+            prompt_rules: Vec::new(),
         }
+    }
+
+    /// 每次 `send` 固定返回该文本（用于协调者 @ 分工等 E2E）。
+    pub fn with_fixed_reply(friend: Friend, reply: impl Into<String>) -> Self {
+        Self {
+            friend,
+            note: String::new(),
+            fixed_reply: Some(reply.into()),
+            prompt_rules: Vec::new(),
+        }
+    }
+
+    /// prompt 含某子串时返回对应文本（先匹配先生效）。
+    pub fn with_prompt_rules(
+        friend: Friend,
+        rules: &[(&str, &str)],
+        fallback_note: impl Into<String>,
+    ) -> Self {
+        Self {
+            friend,
+            note: fallback_note.into(),
+            fixed_reply: None,
+            prompt_rules: rules
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    fn reply_for_prompt(&self, prompt: &str) -> String {
+        if let Some(text) = &self.fixed_reply {
+            return text.clone();
+        }
+        for (key, reply) in &self.prompt_rules {
+            if prompt.contains(key) {
+                return reply.clone();
+            }
+        }
+        let name = self.friend.name.clone();
+        let note = &self.note;
+        format!(
+            "（{name}）收到：「{}」。\n[占位回复] {note}",
+            if prompt.chars().count() > 80 {
+                let mut t: String = prompt.chars().take(80).collect();
+                t.push('…');
+                t
+            } else {
+                prompt.to_string()
+            }
+        )
     }
 }
 
@@ -132,20 +193,8 @@ impl Agent for StubAgent {
         _ctx: ChatContext,
         prompt: String,
     ) -> Result<BoxStream<'static, AgentEvent>> {
-        let name = self.friend.name.clone();
-        let note = self.note.clone();
-        let prompt = prompt;
+        let reply = self.reply_for_prompt(&prompt);
         let s = stream! {
-            let reply = format!(
-                "（{name}）收到：「{}」。\n[占位回复] {note}",
-                if prompt.chars().count() > 80 {
-                    let mut t: String = prompt.chars().take(80).collect();
-                    t.push('…');
-                    t
-                } else {
-                    prompt.clone()
-                }
-            );
             for ch in reply.chars() {
                 yield AgentEvent::Token(ch.to_string());
             }

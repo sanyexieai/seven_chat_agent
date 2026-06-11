@@ -12,8 +12,9 @@ use seven_chat_agent_judge::{
 };
 
 use crate::domain::{
-    Friend, GroupSettings, Message, SenderKind, TaskFlowResumeAfterDelegateMode,
+    Friend, GroupSettings, Message, MessageStatus, SenderKind, TaskFlowResumeAfterDelegateMode,
 };
+use crate::profile::EffectiveMemberProfile;
 use crate::provider::ProviderRegistry;
 
 use super::bridge::ProviderLlmJudgePort;
@@ -40,8 +41,18 @@ impl JudgeService {
         member_judge_override: Option<&seven_chat_agent_judge::MemberJudgeOverride>,
         history: &[Message],
         trigger: &Message,
+        effective_profile: Option<&EffectiveMemberProfile>,
+        group_context_excerpt: Option<String>,
     ) -> Judgment {
-        let req = Self::build_request(group, member, member_judge_override, history, trigger);
+        let mut req =
+            Self::build_request(group, member, member_judge_override, history, trigger);
+        if let Some(eff) = effective_profile {
+            req.routing_hints = Some(eff.routing_hints.clone());
+            if !eff.prompt_persona_block.is_empty() {
+                req.persona_block = Some(eff.prompt_persona_block.clone());
+            }
+        }
+        req.group_context_excerpt = group_context_excerpt.filter(|s| !s.trim().is_empty());
         let env_provider = std::env::var("SEVEN_CHAT_AGENT_JUDGE_PROVIDER").ok();
         let registry = Arc::clone(&self.port.providers);
         JudgeEngine::evaluate(
@@ -78,16 +89,30 @@ impl JudgeService {
             },
             trigger_sender_id: trigger.sender_id.clone(),
             trigger_sender_name: trigger.sender_name.clone(),
-            trigger_content: trigger.content.clone(),
+            trigger_content: if trigger.status == MessageStatus::Failed {
+                crate::message_context::format_message_content_for_context(trigger)
+            } else {
+                trigger.content.clone()
+            },
             mentions: trigger.mentions.clone(),
             history: history
                 .iter()
-                .map(|m| HistoryLine {
-                    sender_name: m.sender_name.clone(),
-                    content: m.content.clone(),
+                .map(|m| {
+                    let sender_name = if m.status == MessageStatus::Failed {
+                        format!("{}·发送失败", m.sender_name)
+                    } else {
+                        m.sender_name.clone()
+                    };
+                    HistoryLine {
+                        sender_name,
+                        content: crate::message_context::format_message_content_for_context(m),
+                    }
                 })
                 .collect(),
             extra_group_prompt: group.extra_system_prompt.clone(),
+            routing_hints: None,
+            persona_block: None,
+            group_context_excerpt: None,
         }
     }
 

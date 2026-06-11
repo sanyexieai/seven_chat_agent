@@ -15,6 +15,20 @@ pub struct CandidateInfo {
     pub friend_name: String,
     pub backend_kind: BackendKind,
     pub judgment: Judgment,
+    /// 是否可参与「未达阈值兜底接话」。
+    #[serde(default = "default_fallback_pick")]
+    pub fallback_pick_eligible: bool,
+    /// 主动性排序权重（proactive=2, balanced=1, passive=0）。
+    #[serde(default = "default_initiative_rank")]
+    pub initiative_rank: u8,
+}
+
+fn default_fallback_pick() -> bool {
+    true
+}
+
+fn default_initiative_rank() -> u8 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +191,7 @@ impl SpeakerScheduler {
             .filter(|c| c.friend_id != triggering.sender_id)
             .filter(|c| !strict || c.judgment.should_reply)
             .filter(|c| !strict || c.judgment.confidence >= threshold)
+            .filter(|c| strict || c.fallback_pick_eligible)
             .filter(|c| {
                 track.used_per_agent.get(&c.friend_id).copied().unwrap_or(0)
                     < settings.per_agent_max_per_turn
@@ -210,7 +225,10 @@ impl SpeakerScheduler {
                         .iter()
                         .any(|r| text_similarity(r, &triggering.content) >= 0.78)
             })
-            .map(|c| (c.clone(), c.judgment.confidence))
+            .map(|c| {
+                let score = c.judgment.confidence + (c.initiative_rank as f32) * 0.02;
+                (c.clone(), score)
+            })
             .filter(|(c, _)| {
                 if !strict {
                     return true;
@@ -265,7 +283,68 @@ mod tests {
                 suggested_delay_ms: 0,
                 source: None,
             },
+            fallback_pick_eligible: true,
+            initiative_rank: 1,
         }
+    }
+
+    #[test]
+    fn fallback_skips_passive_ineligible() {
+        let sched = SpeakerScheduler::new();
+        let turn = "t2";
+        let settings = GroupSettings {
+            judge_threshold: 0.55,
+            ..Default::default()
+        };
+        let trigger = Message {
+            id: "m0".into(),
+            conversation_id: "c".into(),
+            turn_id: turn.into(),
+            parent_id: None,
+            sender_kind: crate::domain::SenderKind::User,
+            sender_id: "user".into(),
+            sender_name: "你".into(),
+            content: "topic".into(),
+            content_blocks: None,
+            mentions: vec![],
+            status: crate::domain::MessageStatus::Done,
+            seen_by: vec![],
+            model_used: None,
+            tokens_in: None,
+            tokens_out: None,
+            on_behalf_of_user: false,
+            workspace_id: None,
+            attachments: vec![],
+            created_at: chrono::Utc::now(),
+        };
+        let candidates = vec![
+            CandidateInfo {
+                friend_id: "passive".into(),
+                friend_name: "passive".into(),
+                backend_kind: BackendKind::Pty,
+                judgment: Judgment {
+                    should_reply: false,
+                    confidence: 0.9,
+                    reason: None,
+                    suggested_delay_ms: 0,
+                    source: None,
+                },
+                fallback_pick_eligible: false,
+                initiative_rank: 0,
+            },
+            cand("active", true, 0.4),
+        ];
+        let picked = sched.rank(
+            turn,
+            &settings,
+            &trigger,
+            candidates,
+            &HashMap::new(),
+            false,
+            &[],
+        );
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].friend_id, "active");
     }
 
     #[test]

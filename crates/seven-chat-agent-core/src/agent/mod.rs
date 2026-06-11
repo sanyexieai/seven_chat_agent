@@ -4,7 +4,7 @@ pub mod human;
 pub mod pty;
 pub mod registry;
 
-pub use registry::AgentRegistry;
+pub use registry::{AgentRegistry, StubAgent};
 
 use std::sync::Arc;
 
@@ -58,6 +58,8 @@ pub struct ChatContext {
     pub user_attachments: Vec<MessageAttachment>,
     /// 群成员 binding 上的 local_path（relay/local 执行 cwd）。
     pub member_group_local_path: Option<String>,
+    /// 本群共识底座（同轮 dispatch 内复用，避免重复查询）。
+    pub group_public_baseline: Option<String>,
 }
 
 impl ChatContext {

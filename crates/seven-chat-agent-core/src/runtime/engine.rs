@@ -44,7 +44,14 @@ impl AgentRuntime {
         let recall_ctx = crate::memory_tier::recall_context_from_chat(ctx);
         let mut system = self
             .memory
-            .build_system_prompt(friend, profile, &prompt, extra.as_deref(), &recall_ctx)
+            .build_system_prompt(
+                friend,
+                profile,
+                &prompt,
+                extra.as_deref(),
+                &recall_ctx,
+                ctx.group_public_baseline.as_deref(),
+            )
             .await?;
 
         let delegate_cli = profile.delegate_cli.as_ref().map(|c| c.preset.as_str());

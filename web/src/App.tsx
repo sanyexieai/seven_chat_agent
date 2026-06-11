@@ -36,6 +36,8 @@ export default function App() {
   const [editingGroup, setEditingGroup] = useState<string | null | undefined>(
     undefined,
   );
+  const [groupEditorScrollConsensus, setGroupEditorScrollConsensus] =
+    useState(false);
   const [assistantFriendId, setAssistantFriendId] = useState<string | null>(
     null,
   );
@@ -110,7 +112,12 @@ export default function App() {
           onEditGroup={(id) => setEditingGroup(id)}
           onOpenAssistant={(id) => setAssistantFriendId(id)}
         />
-        <ChatWindow />
+        <ChatWindow
+          onEditGroup={(id, opts) => {
+            setGroupEditorScrollConsensus(opts?.scrollToConsensus ?? false);
+            setEditingGroup(id);
+          }}
+        />
       </div>
       {editingFriend !== undefined && (
         <FriendEditor
@@ -121,7 +128,11 @@ export default function App() {
       {editingGroup !== undefined && (
         <GroupEditor
           groupId={editingGroup ?? null}
-          onClose={() => setEditingGroup(undefined)}
+          scrollToConsensus={groupEditorScrollConsensus}
+          onClose={() => {
+            setEditingGroup(undefined);
+            setGroupEditorScrollConsensus(false);
+          }}
         />
       )}
       <SettingsDrawer

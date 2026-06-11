@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::context::JudgeRequest;
-use crate::heuristic;
+use crate::heuristic::{self, apply_routing_hints};
 use crate::parse;
 use crate::prompt::{build_llm_prompt, LLM_JUDGE_SYSTEM};
 use crate::resolve::resolve_llm_target;
@@ -47,7 +47,7 @@ impl JudgeEngine {
                     .await
                     .map(|mut j| {
                         j.source = Some(JudgeSource::Llm);
-                        j
+                        apply_routing_hints(&j, req)
                     })
                     .unwrap_or_else(|e| Judgment {
                         should_reply: false,
@@ -58,10 +58,11 @@ impl JudgeEngine {
                     })
             }
             JudgeMode::Auto => {
-                if let Ok(mut j) = Self::evaluate_llm(req, port, env_provider, registry_has).await {
+                if let Ok(j) = Self::evaluate_llm(req, port, env_provider, registry_has).await {
                     if j.confidence > 0.0 || j.should_reply {
-                        j.source = Some(JudgeSource::AutoLlm);
-                        return j;
+                        let mut out = apply_routing_hints(&j, req);
+                        out.source = Some(JudgeSource::AutoLlm);
+                        return out;
                     }
                 }
                 let mut j = heuristic::evaluate(req);

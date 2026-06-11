@@ -24,14 +24,35 @@ pub fn build_llm_prompt(req: &JudgeRequest) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     let personality = req.member.personality.as_deref().unwrap_or("");
+    let persona = req.persona_block.as_deref().unwrap_or("");
     let tags = req.member.focus_tags.join("、");
+    let behavior_rule = match req.routing_hints.as_ref().map(|h| h.initiative) {
+        Some(crate::types::InitiativeLevel::Passive) => {
+            "\n**成员画像**：你是被动型——未被 @ 或协调者分配时，should_reply 应为 false。\n"
+        }
+        Some(crate::types::InitiativeLevel::Proactive) => {
+            "\n**成员画像**：你是主动型——用户消息且你能补充价值时，可积极接话。\n"
+        }
+        _ => "",
+    };
     let trigger_kind = match req.trigger_sender {
         TriggerSenderKind::User => "用户",
         TriggerSenderKind::Friend => "其他成员（Agent/真人）",
         TriggerSenderKind::System => "系统",
     };
+    let persona_section = if persona.is_empty() {
+        String::new()
+    } else {
+        format!("\n{persona}")
+    };
+    let group_ctx = req
+        .group_context_excerpt
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!("\n【本群共识摘录】\n{}\n", truncate(s, 200)))
+        .unwrap_or_default();
     format!(
-        "你正在扮演群聊里的「{}」（{}），关注点：{}。\n下面是最近的对话片段：\n{}\n\n新消息来自 [{trigger_kind}]「{}」：\n{}\n\n\
+        "你正在扮演群聊里的「{}」（{}），关注点：{}。{persona_section}{behavior_rule}{group_ctx}\n下面是最近的对话片段：\n{}\n\n新消息来自 [{trigger_kind}]「{}」：\n{}\n\n\
         **接话原则**（should_reply=true 须满足至少一条）：\n\
         1. 你能提供与近期消息**不同**的新信息、新进展或可执行结论\n\
         2. 存在需要**该成员**回答的、尚未解决的**具体**疑问\n\

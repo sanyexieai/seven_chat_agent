@@ -18,7 +18,7 @@ pub use seven_chat_agent_cli_worker_bee::WorkerBeeDriver;
 pub use registry::{
     api_key_env_var, classify_pty_preset, driver_for_preset, ensure_executable, exec_argv,
     parse_session_id, prepare_resume_session, probe_auth, resolve_executable,
-    resume_session_likely_invalid, uses_codex_jsonl_stream,
+    resume_session_likely_invalid, uses_codex_jsonl_stream, uses_cursor_stream_json,
 };
 
 // 向后兼容：与 `worker-bee-cli` 常量一致

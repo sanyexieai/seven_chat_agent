@@ -133,6 +133,89 @@ impl GroupJudgeSettings {
     }
 }
 
+/// 成员协作主动性（群聊调度用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InitiativeLevel {
+    Proactive,
+    #[default]
+    Balanced,
+    Passive,
+}
+
+impl InitiativeLevel {
+    /// 调度排序权重：主动型优先接话。
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Proactive => 2,
+            Self::Balanced => 1,
+            Self::Passive => 0,
+        }
+    }
+}
+
+/// 成员协调倾向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinationLevel {
+    Coordinator,
+    Contributor,
+    #[default]
+    None,
+}
+
+/// 群聊调度行为提示（由成员画像推导或手填）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutingHints {
+    #[serde(default)]
+    pub initiative: InitiativeLevel,
+    #[serde(default)]
+    pub coordination: CoordinationLevel,
+    #[serde(default = "default_true")]
+    pub respond_to_mention: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_nominate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_eligible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_pick_eligible: Option<bool>,
+    #[serde(default = "default_true")]
+    pub peer_vote_eligible: bool,
+}
+
+impl Default for RoutingHints {
+    fn default() -> Self {
+        Self {
+            initiative: InitiativeLevel::Balanced,
+            coordination: CoordinationLevel::None,
+            respond_to_mention: true,
+            self_nominate: None,
+            campaign_eligible: None,
+            fallback_pick_eligible: None,
+            peer_vote_eligible: true,
+        }
+    }
+}
+
+impl RoutingHints {
+    pub fn effective_self_nominate(&self) -> bool {
+        self.self_nominate
+            .unwrap_or(matches!(self.initiative, InitiativeLevel::Proactive))
+    }
+
+    pub fn effective_campaign_eligible(&self) -> bool {
+        self.campaign_eligible
+            .unwrap_or_else(|| self.effective_self_nominate())
+    }
+
+    pub fn effective_fallback_pick_eligible(&self) -> bool {
+        self.fallback_pick_eligible.unwrap_or(!matches!(
+            self.initiative,
+            InitiativeLevel::Passive
+        ))
+    }
+}
+
 /// 触发消息发送方。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

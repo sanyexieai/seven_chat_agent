@@ -47,7 +47,13 @@ fn find_cursor_agent_in_share(versions_dir: &std::path::Path) -> Option<String> 
 
 impl CursorDriver {
     pub fn agent_args(workspace: Option<&str>, session_id: Option<&str>) -> Vec<String> {
-        let mut args = vec!["-p".into(), "--trust".into(), "--output-format".into(), "text".into()];
+        let mut args = vec![
+            "-p".into(),
+            "--trust".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--stream-partial-output".into(),
+        ];
         if let Some(id) = session_id.filter(|s| !s.trim().is_empty()) {
             args.push("--resume".into());
             args.push(id.trim().to_string());

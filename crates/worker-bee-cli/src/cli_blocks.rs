@@ -253,6 +253,24 @@ pub fn apply_cli_block_delta(blocks: &mut Vec<CliBlock>, delta: &CliBlockDelta) 
     }
 }
 
+/// 聊天气泡是否有可见正文（避免 Codex 空回复落成 Done）。
+pub fn cli_reply_has_body(content: &str, blocks: &[CliBlock]) -> bool {
+    if !content.trim().is_empty() {
+        return true;
+    }
+    blocks.iter().any(|b| match b {
+        CliBlock::AgentMessage { text, .. } => !text.trim().is_empty(),
+        CliBlock::CommandExecution {
+            command,
+            output,
+            ..
+        } => !command.trim().is_empty() || !output.trim().is_empty(),
+        CliBlock::Reasoning { text, .. } => !text.trim().is_empty(),
+        CliBlock::Usage { .. } => true,
+        CliBlock::TodoList { items, .. } => !items.is_empty(),
+    })
+}
+
 /// 可搜索 / 降级的纯文本。
 pub fn cli_blocks_to_plain(blocks: &[CliBlock]) -> String {
     let mut out = String::new();
@@ -611,6 +629,19 @@ pub fn parse_codex_thread_id_from_jsonl(buf: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_reply_has_body_detects_empty() {
+        assert!(!cli_reply_has_body("", &[]));
+        assert!(!cli_reply_has_body("  \n", &[]));
+        assert!(cli_reply_has_body(
+            "",
+            &[CliBlock::AgentMessage {
+                item_id: "a".into(),
+                text: "hi".into(),
+            }]
+        ));
+    }
 
     #[test]
     fn stream_split_chunks_large_agent_text() {

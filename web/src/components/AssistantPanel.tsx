@@ -15,6 +15,7 @@ import {
 } from "../memoryLabels";
 import { AssistantEditGuide } from "./AssistantEditGuide";
 import { MemoryRecordEditor } from "./MemoryRecordEditor";
+import { EvolutionPanel } from "./EvolutionPanel";
 import type {
   AssistantGlobalSettings,
   AssistantMemory,
@@ -40,7 +41,8 @@ type Tab =
   | "toolbox"
   | "knowledge"
   | "queue"
-  | "policy";
+  | "policy"
+  | "evolution";
 
 const CLI_PRESET_OPTIONS = [
   "worker-bee-cli",
@@ -722,6 +724,7 @@ export function AssistantPanel({ friendId, onClose, onAssistChat }: Props) {
               "knowledge",
               "queue",
               "policy",
+              "evolution",
             ] as Tab[]
           ).map((t) => (
             <button
@@ -745,7 +748,9 @@ export function AssistantPanel({ friendId, onClose, onAssistChat }: Props) {
                         ? "知识库"
                         : t === "queue"
                           ? "队列"
-                          : "策略"}
+                          : t === "policy"
+                            ? "策略"
+                            : "自我进化"}
             </button>
           ))}
           <button
@@ -1442,6 +1447,8 @@ export function AssistantPanel({ friendId, onClose, onAssistChat }: Props) {
               </section>
             </div>
           )}
+          {tab === "evolution" && <EvolutionPanel />}
+
           {tab === "policy" && (
             <div className="space-y-4">
               <section className="rounded-md border border-violet-200 bg-violet-50/50 p-3">

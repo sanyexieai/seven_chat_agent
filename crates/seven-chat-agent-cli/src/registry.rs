@@ -57,6 +57,10 @@ pub fn uses_codex_jsonl_stream(preset: &str) -> bool {
         .is_some_and(|d| d.uses_codex_jsonl_stream())
 }
 
+pub fn uses_cursor_stream_json(preset: &str) -> bool {
+    preset == PRESET_CURSOR
+}
+
 pub fn parse_session_id(preset: &str, output: &[u8]) -> Option<String> {
     driver_for_preset(preset)
         .and_then(|d| d.parse_session_id(output))

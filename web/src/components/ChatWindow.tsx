@@ -4,20 +4,27 @@ import { api } from "../api/client";
 import type { MessageAttachment } from "../types";
 import {
   configuredJudgeModeLabel,
+  intentClassifierLabel,
   judgeSourceLabel,
   memberVerdictShort,
   scheduleModeLabel,
+  turnIntentLabel,
 } from "../judgeLabels";
 import { mergeMessages, useChat } from "../stores/chat";
 import { MessageBubble } from "./MessageBubble";
 import { MessageTimeDivider } from "./MessageTimeDivider";
 import { shouldShowMessageTime } from "../messageTime";
 import { TaskFlowPanel } from "./TaskFlowPanel";
+import { OrchestrationEventLog } from "./OrchestrationEventLog";
 import { Collapsible } from "./Collapsible";
 import { Avatar } from "./Avatar";
 import { ChatWorkspaceSwitcher } from "./ChatWorkspaceSwitcher";
 
-export function ChatWindow() {
+interface Props {
+  onEditGroup?: (groupId: string, opts?: { scrollToConsensus?: boolean }) => void;
+}
+
+export function ChatWindow({ onEditGroup }: Props) {
   const {
     friends,
     groups,
@@ -27,7 +34,10 @@ export function ChatWindow() {
     sendMessage,
     thinking,
     judgeBanner,
+    turnIntentBanner,
+    orchestrationLog,
     ownerNotify,
+    groupPublicBanner,
     taskFlow,
   } = useChat(
     useShallow((s) => ({
@@ -39,7 +49,10 @@ export function ChatWindow() {
       sendMessage: s.sendMessage,
       thinking: s.thinking,
       judgeBanner: s.judgeBanner,
+      turnIntentBanner: s.turnIntentBanner,
+      orchestrationLog: s.orchestrationLog,
       ownerNotify: s.ownerNotify,
+      groupPublicBanner: s.groupPublicBanner,
       taskFlow: s.taskFlow,
     })),
   );
@@ -71,9 +84,20 @@ export function ChatWindow() {
     } else {
       const gb = groups.find((g) => g.group.id === target.id);
       if (!gb) return null;
+      const orch = gb.group.settings.orchestration;
+      const tf = gb.group.settings.task_flow;
+      const orchParts: string[] = [];
+      if (tf?.enabled) {
+        orchParts.push(orch?.light_task_flow ? "轻量任务流" : "完整任务流");
+      } else {
+        orchParts.push("自由讨论");
+      }
+      orchParts.push(
+        `意图·${intentClassifierLabel(orch?.intent_classifier ?? "heuristic")}`,
+      );
       return {
         title: gb.group.name,
-        subtitle: `${gb.member_ids.length} 位成员 · 群聊`,
+        subtitle: `${gb.member_ids.length} 位成员 · ${orchParts.join(" · ")}`,
         right: `Judge ${gb.group.settings.judge?.mode ?? "heuristic"} · ${(gb.group.settings.judge?.threshold ?? gb.group.settings.judge_threshold).toFixed(2)}`,
         avatarName: gb.group.name,
         avatarKind: undefined,
@@ -167,6 +191,49 @@ export function ChatWindow() {
         </div>
         <div className="text-xs text-slate-400">{header.right}</div>
       </header>
+      {target.kind === "group" &&
+        groupPublicBanner &&
+        target.id === groupPublicBanner.groupId && (
+          <div className="border-b border-teal-200 bg-teal-50/90 px-3 py-1.5 text-xs text-teal-950">
+            <span className="font-medium">群共识已更新</span>
+            {groupPublicBanner.excerpt && (
+              <span className="ml-2 text-teal-800/90">
+                {groupPublicBanner.excerpt.slice(0, 120)}
+                {groupPublicBanner.excerpt.length > 120 ? "…" : ""}
+              </span>
+            )}
+            {onEditGroup && (
+              <button
+                type="button"
+                className="ml-2 font-medium text-teal-700 underline decoration-teal-400/60 underline-offset-2 hover:text-teal-900"
+                onClick={() =>
+                  onEditGroup(target.id, { scrollToConsensus: true })
+                }
+              >
+                查看群共识
+              </button>
+            )}
+          </div>
+        )}
+      {target.kind === "group" && turnIntentBanner && (
+        <div className="border-b border-sky-200 bg-sky-50/80 px-3 py-1.5 text-xs text-sky-950">
+          <span className="font-medium">回合意图</span>
+          <span className="mx-1.5 text-sky-400">·</span>
+          {turnIntentLabel(turnIntentBanner.intent)}
+          <span className="mx-1.5 text-sky-400">·</span>
+          {intentClassifierLabel(turnIntentBanner.classifier)}
+          {(turnIntentBanner.intent === "chitchat" ||
+            turnIntentBanner.intent === "qa") && (
+            <span className="ml-2 text-sky-700/90">（不进入任务流）</span>
+          )}
+        </div>
+      )}
+      {target.kind === "group" && (
+        <OrchestrationEventLog
+          events={orchestrationLog}
+          turnId={turnIntentBanner?.turnId ?? taskFlow?.turnId}
+        />
+      )}
       {target.kind === "group" && taskFlow && <TaskFlowPanel round={taskFlow} />}
       {target.kind === "group" &&
         ownerNotify &&

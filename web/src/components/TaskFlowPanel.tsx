@@ -93,10 +93,47 @@ export function TaskFlowPanel({ round }: Props) {
             </p>
           )}
 
-          {round.campaignDone.length > 0 && (
+          {round.coordinatorPlan && (
+            <div className="rounded-md border border-sky-200/80 bg-sky-50/70 px-2 py-1.5">
+              <div className="font-medium text-sky-900">
+                ⓪ 协调分工 · {round.coordinatorPlan.plannerName}
+              </div>
+              {round.coordinatorPlan.assigneeNames.length > 0 && (
+                <p className="mt-0.5 text-[11px] text-sky-800">
+                  分配：{round.coordinatorPlan.assigneeNames.join("、")}
+                </p>
+              )}
+              <p className="mt-0.5 whitespace-pre-wrap text-[11px] leading-relaxed text-sky-900/90">
+                {round.coordinatorPlan.planExcerpt}
+              </p>
+            </div>
+          )}
+
+          {round.selfNominations.length > 0 && (
+            <div className="rounded-md border border-violet-200/80 bg-white/70 px-2 py-1.5">
+              <div className="mb-1 font-medium text-violet-900">① 主动型自荐</div>
+              <ul className="space-y-1 text-[11px]">
+                {round.selfNominations.map((n) => (
+                  <li key={n.name}>
+                    <span className="font-medium">{n.name}</span>
+                    <span className="text-violet-600"> — {n.excerpt}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {round.campaignDone.length > 0 && round.selfNominations.length === 0 && (
             <p className="text-[11px]">
               <span className="font-medium">① 竞选发言：</span>
               {round.campaignDone.join("、")}
+            </p>
+          )}
+
+          {round.mergedAssignees && round.mergedAssignees.length > 0 && (
+            <p className="text-[11px] text-violet-800">
+              <span className="font-medium">分工合并：</span>
+              {round.mergedAssignees.join("、")}
             </p>
           )}
 

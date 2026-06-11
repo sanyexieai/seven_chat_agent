@@ -3,10 +3,11 @@ use seven_chat_agent_cli::{ensure_executable, exec_argv, uses_codex_jsonl_stream
 use seven_chat_agent_cli_relay_protocol::RelayMessage;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
-use worker_bee_cli::CodexExecJsonlBlockParser;
+use worker_bee_cli::{CodexExecJsonlBlockParser, CursorStreamJsonParser};
 
 use crate::output::{
-    ensure_codex_exec_cd, is_codex_exec_fatal_stderr, push_codex_line, push_plain_text,
+    ensure_codex_exec_cd, is_codex_exec_fatal_stderr, push_codex_line, push_cursor_line,
+    push_plain_text, uses_codex_jsonl, uses_cursor_jsonl,
 };
 use crate::workspace;
 
@@ -108,7 +109,8 @@ async fn run_job_inner(
     child.stdout(std::process::Stdio::piped());
     child.stderr(std::process::Stdio::piped());
 
-    let jsonl = uses_codex_jsonl_stream(preset) && args.iter().any(|a| a == "--json");
+    let codex_jsonl = uses_codex_jsonl(preset, &args);
+    let cursor_jsonl = uses_cursor_jsonl(preset, &args);
 
     let mut child = child
         .spawn()
@@ -119,13 +121,16 @@ async fn run_job_inner(
 
     let mut out = Vec::new();
     let mut codex_parser = CodexExecJsonlBlockParser::default();
+    let mut cursor_parser = CursorStreamJsonParser::default();
 
     while let Some(line) = lines.next_line().await? {
         if line.is_empty() {
             continue;
         }
-        if jsonl {
+        if codex_jsonl {
             push_codex_line(job_id, &mut codex_parser, line.trim(), &mut out)?;
+        } else if cursor_jsonl {
+            push_cursor_line(job_id, &mut cursor_parser, line.trim(), &mut out)?;
         } else {
             push_plain_text(job_id, &format!("{line}\n"), &mut out)?;
         }
@@ -137,12 +142,13 @@ async fn run_job_inner(
         if stderr.read_to_string(&mut buf).await.is_ok() {
             let trimmed = buf.trim();
             if !trimmed.is_empty() {
-                if jsonl {
+                if codex_jsonl || cursor_jsonl {
                     if is_codex_exec_fatal_stderr(trimmed) {
+                        let label = if cursor_jsonl { "Cursor Agent" } else { "Codex CLI" };
                         push_plain_text(
                             job_id,
                             &format!(
-                                "\n（Codex CLI 报错：{}）\n",
+                                "\n（{label} 报错：{}）\n",
                                 trimmed.lines().next().unwrap_or(trimmed)
                             ),
                             &mut out,

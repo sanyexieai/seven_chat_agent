@@ -22,7 +22,7 @@ pub(super) enum ExpertReplyMode {
     GroupChat,
     TaskFlowExecute,
 }
-use worker_bee_cli::{apply_cli_block_delta, cli_blocks_to_plain};
+use worker_bee_cli::{apply_cli_block_delta, cli_blocks_to_plain, cli_reply_has_body};
 use crate::scheduler::{CandidateInfo, ScheduleDecision, SpeakerScheduler};
 use crate::store::memory::NewMemory;
 use crate::attachment::{content_with_attachments, validate_attachments};
@@ -35,6 +35,7 @@ mod assistant_autonomy;
 mod assistant_delegate;
 mod im_writeback;
 mod task_flow;
+mod turn_intent;
 
 pub use im_writeback::ImWritebackEvent;
 
@@ -112,6 +113,28 @@ pub enum BusEvent {
         turn_id: String,
         friend_id: String,
         friend_name: String,
+        /// 自荐稿摘要（前 200 字），便于前端调试面板展示。
+        #[serde(default)]
+        pitch_excerpt: Option<String>,
+    },
+    /// 协调者分工规划完成。
+    CoordinatorPlan {
+        conversation_id: String,
+        turn_id: String,
+        planner_id: String,
+        planner_name: String,
+        assignee_ids: Vec<String>,
+        assignee_names: Vec<String>,
+        plan_excerpt: String,
+    },
+    /// 负责人与协调分工合并结果。
+    TaskAssignmentsMerged {
+        conversation_id: String,
+        turn_id: String,
+        leader_id: String,
+        leader_name: String,
+        assignee_ids: Vec<String>,
+        assignee_names: Vec<String>,
     },
     LeaderElected {
         conversation_id: String,
@@ -154,6 +177,20 @@ pub enum BusEvent {
         friend_id: String,
         friend_name: String,
         content: String,
+    },
+    /// 用户消息回合意图（闲聊/问答/任务等）。
+    TurnIntentClassified {
+        conversation_id: String,
+        turn_id: String,
+        intent: String,
+        classifier: String,
+    },
+    /// 本回合群共识 latest 已更新。
+    GroupPublicUpdated {
+        conversation_id: String,
+        turn_id: String,
+        group_id: String,
+        excerpt: String,
     },
     /// 群代理人将需主人知悉的事项写入备忘录后，推送给前端（不阻断群内 Agent）。
     AssistantOwnerNotify {
@@ -212,6 +249,10 @@ impl MessageDispatcher {
 
     pub fn subscribe(&self) -> broadcast::Receiver<BusEvent> {
         self.tx.subscribe()
+    }
+
+    pub fn agent_registry(&self) -> Arc<AgentRegistry> {
+        Arc::clone(&self.agents)
     }
 
     pub fn emit(&self, event: BusEvent) {
@@ -543,6 +584,7 @@ impl MessageDispatcher {
             peers: vec![],
             user_attachments: user_msg.attachments.clone(),
             member_group_local_path: None,
+            group_public_baseline: None,
         };
         self.stream_one_reply(&conv, &user_msg, &turn_id, &friend, agent, ctx, &user_msg.content, 0)
             .await?;
@@ -562,7 +604,45 @@ impl MessageDispatcher {
             .ok_or_else(|| Error::not_found("group"))?;
         let settings = group.settings.clone();
 
+        let intent = if user_msg.sender_kind == SenderKind::User {
+            let i = turn_intent::classify_turn_intent(
+                &self.dispatch_store(),
+                &self.judge.provider_registry(),
+                &settings,
+                &user_msg,
+            )
+            .await;
+            tracing::info!(
+                turn_id = %turn_id,
+                intent = i.as_str(),
+                classifier = ?settings.orchestration.intent_classifier,
+                "group: turn_intent_classified"
+            );
+            self.emit(BusEvent::TurnIntentClassified {
+                conversation_id: conv.id.clone(),
+                turn_id: turn_id.clone(),
+                intent: i.as_str().to_string(),
+                classifier: format!("{:?}", settings.orchestration.intent_classifier)
+                    .to_lowercase(),
+            });
+            Some(i)
+        } else {
+            None
+        };
+
         if user_msg.sender_kind == SenderKind::User && settings.task_flow.enabled {
+            let intent = intent.unwrap_or(turn_intent::classify_turn_intent_heuristic(&user_msg));
+            if !turn_intent::should_enter_group_task_flow(
+                &settings,
+                user_msg.sender_kind,
+                intent,
+            ) {
+                tracing::info!(
+                    turn_id = %turn_id,
+                    intent = intent.as_str(),
+                    "task_flow: skip non-task intent"
+                );
+            } else {
             let members = expert_friends_for_group(&self.dispatch_store(), &group.id).await?;
             let flow = self
                 .run_task_flow(&conv, &user_msg, &turn_id, &settings, &members)
@@ -617,7 +697,17 @@ impl MessageDispatcher {
                         }
                     }
                 }
+                if user_msg.sender_kind == SenderKind::User {
+                    self.emit_group_public_if_updated(
+                        &conv.id,
+                        &group.id,
+                        &turn_id,
+                        &settings,
+                    )
+                    .await;
+                }
                 return Ok(());
+            }
             }
         }
 
@@ -651,7 +741,89 @@ impl MessageDispatcher {
             )
             .await?;
         }
+
+        if user_msg.sender_kind == SenderKind::User {
+            self.emit_group_public_if_updated(&conv.id, &group.id, &turn_id, &settings)
+                .await;
+        }
         Ok(())
+    }
+
+    pub(super) async fn emit_group_public_bus_event(
+        &self,
+        conversation_id: &str,
+        group_id: &str,
+        turn_id: &str,
+    ) {
+        let excerpt = if let Ok(Some(aid)) = self.dispatch_store().builtin_assistant_id().await {
+            self.dispatch_store()
+                .find_group_public_latest(&aid, group_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| {
+                    crate::assistant_accumulation::truncate_chars(m.content.trim(), 120)
+                })
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        self.emit(BusEvent::GroupPublicUpdated {
+            conversation_id: conversation_id.to_string(),
+            turn_id: turn_id.to_string(),
+            group_id: group_id.to_string(),
+            excerpt,
+        });
+    }
+
+    /// 任务流 / 协调者 prompt 用：群共识 A 层（`group_memory_enabled` 时）。
+    pub(super) async fn fetch_group_public_baseline_opt(
+        &self,
+        group_id: &str,
+        settings: &GroupSettings,
+    ) -> Option<String> {
+        if !settings.orchestration.group_memory_enabled {
+            return None;
+        }
+        let Ok(Some(aid)) = self.dispatch_store().builtin_assistant_id().await else {
+            return None;
+        };
+        let baseline = crate::profile::fetch_group_public_baseline(
+            &self.dispatch_store(),
+            &aid,
+            group_id,
+        )
+        .await
+        .unwrap_or_default();
+        if baseline.trim().is_empty() {
+            None
+        } else {
+            Some(baseline)
+        }
+    }
+
+    async fn emit_group_public_if_updated(
+        &self,
+        conversation_id: &str,
+        group_id: &str,
+        turn_id: &str,
+        settings: &GroupSettings,
+    ) {
+        let updated = crate::profile::finalize_group_turn_memory(
+            &self.dispatch_store(),
+            Some(&self.providers),
+            settings,
+            conversation_id,
+            group_id,
+            turn_id,
+            &[],
+        )
+        .await;
+        if !updated {
+            return;
+        }
+        self.emit_group_public_bus_event(conversation_id, group_id, turn_id)
+            .await;
     }
 
     /// 对一条触发消息调度专家接话（judge → scheduler → 生成回复）。
@@ -672,6 +844,10 @@ impl MessageDispatcher {
             .iter()
             .map(|c| (c.friend_id.clone(), c.judge_override.clone()))
             .collect();
+        let overlay_by_friend: std::collections::HashMap<_, _> = member_configs
+            .iter()
+            .map(|c| (c.friend_id.clone(), c.profile_overlay.clone()))
+            .collect();
         let mut members = Vec::new();
         for c in &member_configs {
             if !c.role.participates_in_expert_scheduling() {
@@ -684,18 +860,34 @@ impl MessageDispatcher {
             }
         }
 
-        let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
+        let dispatch_store = self.dispatch_store();
+        let assistant_id = dispatch_store.builtin_assistant_id().await.ok().flatten();
+        let group_judge_excerpt = if let Some(ref aid) = assistant_id {
+            crate::profile::fetch_group_public_judge_excerpt(&dispatch_store, aid, &group.id)
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
 
-        let candidates = self
-            .judge_members(
+        let history = dispatch_store.recent_messages(&conv.id, 60).await?;
+
+        let candidates = Self::filter_task_execute_candidates(
+            mode,
+            trigger,
+            self.judge_members(
                 conv,
                 settings,
                 &history,
                 &members,
                 &override_by_friend,
+                &overlay_by_friend,
                 trigger,
+                group_judge_excerpt,
             )
-            .await;
+            .await,
+        );
 
         let configured_mode = judge_mode_label(settings.judge.mode);
         for c in &candidates {
@@ -797,7 +989,32 @@ impl MessageDispatcher {
         });
 
         let mut replies = Vec::new();
-        for d in decisions {
+        for (pick_idx, d) in decisions.into_iter().enumerate() {
+            if pick_idx > 0 {
+                if let Some(ref aid) = assistant_id {
+                    let _ = crate::profile::refresh_group_public_mid_turn(
+                        &dispatch_store,
+                        settings,
+                        aid,
+                        &group.id,
+                        &conv.id,
+                        turn_id,
+                    )
+                    .await;
+                }
+            }
+            let group_public_baseline = if let Some(ref aid) = assistant_id {
+                crate::profile::fetch_group_public_baseline(&dispatch_store, aid, &group.id)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let baseline_for_ctx = if group_public_baseline.is_empty() {
+                None
+            } else {
+                Some(group_public_baseline)
+            };
             let friend = match self.dispatch_store().get_friend(&d.friend_id).await? {
                 Some(f) => f,
                 None => continue,
@@ -809,6 +1026,77 @@ impl MessageDispatcher {
                 .cloned()
                 .collect();
             let history = self.dispatch_store().recent_messages(&conv.id, 60).await?;
+            let turn_failure_note = crate::message_context::summarize_same_turn_peer_failures(
+                &history,
+                turn_id,
+                &friend.id,
+            );
+            let dialogue_excerpt = crate::message_context::summarize_recent_dialogue_excerpt(
+                &history,
+                &friend.id,
+                10,
+            );
+            let peer_names: Vec<String> = peers.iter().map(|p| p.name.clone()).collect();
+            let group_public_relevant = if let Some(ref aid) = assistant_id {
+                let global = dispatch_store
+                    .get_assistant_global_settings()
+                    .await
+                    .unwrap_or_default();
+                if global.embedding_enabled {
+                    // 向量检索含 HTTP(h2) 调用；独立 task 避免与 dispatch 主 future 嵌套导致 E0275。
+                    let store = dispatch_store.clone();
+                    let providers = self.providers.clone();
+                    let aid_spawn = aid.clone();
+                    let gid = group.id.clone();
+                    let query = trigger.content.clone();
+                    match tokio::spawn(async move {
+                        crate::profile::fetch_group_public_relevant_with_embedding(
+                            &store,
+                            providers,
+                            global,
+                            &aid_spawn,
+                            &gid,
+                            &query,
+                            5,
+                        )
+                        .await
+                        .unwrap_or_default()
+                    })
+                    .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(err = %e, "group_public vector recall task join failed");
+                            crate::profile::fetch_group_public_relevant(
+                                &dispatch_store,
+                                aid,
+                                &group.id,
+                                &trigger.content,
+                                5,
+                            )
+                            .await
+                            .unwrap_or_default()
+                        }
+                    }
+                } else {
+                    crate::profile::fetch_group_public_relevant(
+                        &dispatch_store,
+                        aid,
+                        &group.id,
+                        &trigger.content,
+                        5,
+                    )
+                    .await
+                    .unwrap_or_default()
+                }
+            } else {
+                String::new()
+            };
+            let relevant_opt = if group_public_relevant.is_empty() {
+                None
+            } else {
+                Some(group_public_relevant)
+            };
             let ctx = ChatContext {
                 conversation_id: conv.id.clone(),
                 group_id: Some(group.id.clone()),
@@ -818,37 +1106,132 @@ impl MessageDispatcher {
                 peers,
                 user_attachments: trigger.attachments.clone(),
                 member_group_local_path: None,
+                group_public_baseline: baseline_for_ctx.clone(),
             };
             if d.delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(d.delay_ms)).await;
             }
-            let prompt = Self::build_expert_reply_prompt(mode, trigger, &friend);
+            let prompt = Self::build_expert_reply_prompt(
+                mode,
+                trigger,
+                &friend,
+                &dialogue_excerpt,
+                &peer_names,
+                turn_failure_note.as_deref(),
+                relevant_opt.as_deref(),
+            );
             let reply = self
                 .stream_one_reply(conv, trigger, turn_id, &friend, agent, ctx, &prompt, 0)
                 .await?;
             if let Some(reply_msg) = reply {
                 self.scheduler.record_reply(turn_id, &reply_msg.content);
+                if matches!(mode, ExpertReplyMode::GroupChat) {
+                    if let Err(e) = crate::profile::record_member_group_note(
+                        &dispatch_store,
+                        &friend.id,
+                        &group.id,
+                        turn_id,
+                        &reply_msg.content,
+                    )
+                    .await
+                    {
+                        tracing::debug!(err = %e, "member_group_note skipped");
+                    }
+                }
                 replies.push(reply_msg);
             }
         }
         Ok(replies)
     }
 
-    fn build_expert_reply_prompt(mode: ExpertReplyMode, trigger: &Message, friend: &Friend) -> String {
+    /// 任务流执行协作：负责人已 @ 点名时，仅保留被分配成员，避免全员接话。
+    fn filter_task_execute_candidates(
+        mode: ExpertReplyMode,
+        trigger: &Message,
+        candidates: Vec<CandidateInfo>,
+    ) -> Vec<CandidateInfo> {
+        if !matches!(mode, ExpertReplyMode::TaskFlowExecute) || trigger.mentions.is_empty() {
+            return candidates;
+        }
+        let allowed: std::collections::HashSet<&str> =
+            trigger.mentions.iter().map(|s| s.as_str()).collect();
+        candidates
+            .into_iter()
+            .filter(|c| {
+                allowed.contains(c.friend_id.as_str()) || allowed.contains(c.friend_name.as_str())
+            })
+            .collect()
+    }
+
+    fn build_expert_reply_prompt(
+        mode: ExpertReplyMode,
+        trigger: &Message,
+        friend: &Friend,
+        dialogue_excerpt: &str,
+        peer_names: &[String],
+        turn_failure_note: Option<&str>,
+        group_public_relevant: Option<&str>,
+    ) -> String {
+        let trigger_line = if trigger.status == MessageStatus::Failed
+            && trigger.sender_kind == SenderKind::Friend
+        {
+            format!(
+                "【失败消息·非有效发言】{}",
+                crate::message_context::format_peer_message_for_context(trigger)
+            )
+        } else {
+            format!("[{}] {}", trigger.sender_name, trigger.content)
+        };
+        let failure_block = turn_failure_note
+            .map(|n| format!("\n\n{n}"))
+            .unwrap_or_default();
+        let relevant_block = group_public_relevant
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| format!("\n\n{s}"))
+            .unwrap_or_default();
+        let roster = if peer_names.is_empty() {
+            String::new()
+        } else {
+            format!("\n本群其他成员：{}。", peer_names.join("、"))
+        };
+        let eff = crate::profile::resolve_effective_profile(
+            friend,
+            friend.profile.as_ref(),
+            None,
+        );
+        let persona = if eff.prompt_persona_block.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n【你的协作人设】\n{}", eff.prompt_persona_block)
+        };
+        let attention_rule = "\n\
+            **接话前必读**：先阅读下方「近期群聊」与对方刚说的话；回复里至少用一句话承接上文\
+            （点名谁说了什么、回应其问题、或说明某成员发送失败）。\n\
+            若上文或历史中有成员**发送失败**，不要假设其已成功表达；应说明失败、尝试接手或提醒用户检查配置。\n\
+            只有当你有**与上文不同的新进展**、**新观点**或**需要你去回答的具体疑问**时才展开；\
+            若他人已问过/说过同样的事，不要重复换说法。没有新内容则不要硬接。";
+
         match mode {
             ExpertReplyMode::GroupChat => format!(
-                "群里 [{}] 刚说：{}\n\n\
-                接话规则：只有当你有**与上文不同的新进展**、**新观点**或**需要你去回答的具体疑问**时才回应；\
-                若他人已问过/说过同样的事，不要重复换说法。没有新内容则不要硬接。\n\
-                请简短回应。",
-                trigger.sender_name, trigger.content
+                "你是群成员「{}」。{roster}{persona}\n\n\
+                【近期群聊（请先阅读）】\n{dialogue_excerpt}{relevant_block}\n\n\
+                当前触发：{trigger_line}{failure_block}\n\
+                {attention_rule}\n\
+                请简短、有针对性地回应。"
+                ,
+                friend.name
             ),
             ExpertReplyMode::TaskFlowExecute => format!(
                 "【任务流·执行协作】负责人「{}」说：\n{}\n\n\
-                你是「{}」。若负责人 @ 你、向你分配任务或提问，请给出**可执行的具体回应**（查代码、跑命令、提供信息等）；\
-                若你有不同于上文的实质进展也可补充。不要重复空泛表态。\n\
+                你是「{}」。{persona}\n\n\
+                【近期群聊】\n{dialogue_excerpt}{relevant_block}\n\n\
+                若负责人 @ 你、向你分配任务或提问，请给出**可执行的具体回应**（查代码、跑命令、提供信息等）；\
+                若你有不同于上文的实质进展也可补充。{attention_rule}{failure_block}\n\
                 请简短回应。",
-                trigger.sender_name, trigger.content, friend.name
+                trigger.sender_name,
+                trigger.content,
+                friend.name,
+                dialogue_excerpt = dialogue_excerpt
             ),
         }
     }
@@ -863,7 +1246,12 @@ impl MessageDispatcher {
             String,
             Option<seven_chat_agent_judge::MemberJudgeOverride>,
         >,
+        overlay_by_friend: &std::collections::HashMap<
+            String,
+            Option<crate::profile::MemberProfileOverlay>,
+        >,
         trigger: &Message,
+        group_context_excerpt: Option<String>,
     ) -> Vec<CandidateInfo> {
         let mut handles = Vec::new();
         for m in members {
@@ -876,6 +1264,16 @@ impl MessageDispatcher {
             let trig = trigger.clone();
             let settings = settings.clone();
             let member_override = override_by_friend.get(&m.id).cloned().flatten();
+            let profile_overlay = overlay_by_friend.get(&m.id).cloned().flatten();
+            let effective = crate::profile::resolve_effective_profile(
+                &m,
+                m.profile.as_ref(),
+                profile_overlay.as_ref(),
+            );
+            let initiative_rank = effective.initiative.rank();
+            let fallback_pick_eligible = effective.routing_hints.effective_fallback_pick_eligible();
+            let eff_for_judge = effective.clone();
+            let group_ctx = group_context_excerpt.clone();
             handles.push(tokio::spawn(async move {
                 let judgment = match m.backend_kind {
                     BackendKind::Human => Judgment {
@@ -893,6 +1291,8 @@ impl MessageDispatcher {
                                 member_override.as_ref(),
                                 &history,
                                 &trig,
+                                Some(&eff_for_judge),
+                                group_ctx,
                             )
                             .await
                     }
@@ -902,6 +1302,8 @@ impl MessageDispatcher {
                     friend_name: m.name,
                     backend_kind: m.backend_kind,
                     judgment,
+                    fallback_pick_eligible,
+                    initiative_rank,
                 }
             }));
         }
@@ -1108,6 +1510,50 @@ impl MessageDispatcher {
                 message_id: placeholder.id.clone(),
                 conversation_id: conv.id.clone(),
                 reason,
+            });
+            return Ok(None);
+        }
+
+        if !cli_reply_has_body(&content, &content_blocks) {
+            let preset = friend
+                .backend_config
+                .get("preset")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(missing)");
+            let timeout_secs = friend
+                .backend_config
+                .get("idle_seconds")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(300)
+                .max(5);
+            let reason = crate::friend_cli::cli_empty_output_user_hint(
+                preset,
+                false,
+                timeout_secs,
+                None,
+            );
+            tracing::warn!(
+                friend_id = %friend.id,
+                friend_name = %friend.name,
+                preset = %preset,
+                "agent stream ended with empty body"
+            );
+            let _ = self
+                .store
+                .finalize_message(
+                    &placeholder.id,
+                    &reason,
+                    MessageStatus::Failed,
+                    model_used.as_deref(),
+                    tokens_in,
+                    tokens_out,
+                    blocks_for_store,
+                )
+                .await;
+            self.emit(BusEvent::MessageFailed {
+                message_id: placeholder.id.clone(),
+                conversation_id: conv.id.clone(),
+                reason: reason.clone(),
             });
             return Ok(None);
         }
@@ -1372,6 +1818,79 @@ fn judge_mode_label(mode: JudgeMode) -> &'static str {
         JudgeMode::Heuristic => "heuristic",
         JudgeMode::Llm => "llm",
         JudgeMode::Auto => "auto",
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use crate::agent::Judgment;
+    use crate::domain::{Message, MessageStatus, SenderKind};
+
+    fn candidate(id: &str, name: &str) -> CandidateInfo {
+        CandidateInfo {
+            friend_id: id.into(),
+            friend_name: name.into(),
+            backend_kind: BackendKind::Api,
+            judgment: Judgment {
+                should_reply: true,
+                confidence: 0.9,
+                reason: None,
+                suggested_delay_ms: 0,
+                source: None,
+            },
+            fallback_pick_eligible: true,
+            initiative_rank: 1,
+        }
+    }
+
+    fn trigger(mentions: Vec<&str>) -> Message {
+        Message {
+            id: "m".into(),
+            conversation_id: "c".into(),
+            turn_id: "t".into(),
+            parent_id: None,
+            sender_kind: SenderKind::Friend,
+            sender_id: "lead".into(),
+            sender_name: "负责人".into(),
+            content: "请配合".into(),
+            content_blocks: None,
+            mentions: mentions.into_iter().map(|s| s.to_string()).collect(),
+            status: MessageStatus::Done,
+            seen_by: vec![],
+            model_used: None,
+            tokens_in: None,
+            tokens_out: None,
+            on_behalf_of_user: false,
+            workspace_id: None,
+            attachments: vec![],
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn task_execute_keeps_only_mentioned_assignees() {
+        let msg = trigger(vec!["b", "Bob"]);
+        let all = vec![candidate("a", "Alice"), candidate("b", "Bob")];
+        let out = MessageDispatcher::filter_task_execute_candidates(
+            ExpertReplyMode::TaskFlowExecute,
+            &msg,
+            all,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].friend_id, "b");
+    }
+
+    #[test]
+    fn group_chat_mode_does_not_filter() {
+        let msg = trigger(vec!["b"]);
+        let all = vec![candidate("a", "Alice"), candidate("b", "Bob")];
+        let out = MessageDispatcher::filter_task_execute_candidates(
+            ExpertReplyMode::GroupChat,
+            &msg,
+            all.clone(),
+        );
+        assert_eq!(out.len(), 2);
     }
 }
 

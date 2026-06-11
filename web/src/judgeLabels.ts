@@ -1,3 +1,35 @@
+/** 回合意图（群聊 orchestration） */
+export function turnIntentLabel(intent: string): string {
+  switch (intent) {
+    case "chitchat":
+      return "闲聊";
+    case "qa":
+      return "问答";
+    case "task":
+      return "任务";
+    case "decision":
+      return "决策";
+    case "status":
+      return "状态同步";
+    default:
+      return intent;
+  }
+}
+
+/** 意图分类器通路 */
+export function intentClassifierLabel(classifier: string): string {
+  switch (classifier) {
+    case "heuristic":
+      return "启发式";
+    case "auto":
+      return "Auto";
+    case "llm":
+      return "LLM";
+    default:
+      return classifier;
+  }
+}
+
 /** 群配置 judge 模式 */
 export function configuredJudgeModeLabel(mode: string): string {
   switch (mode) {

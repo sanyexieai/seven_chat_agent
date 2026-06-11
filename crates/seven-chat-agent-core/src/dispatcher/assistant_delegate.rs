@@ -160,11 +160,17 @@ fn summarize_expert_turn(history: &[Message], assistant_id: &str) -> String {
         if m.on_behalf_of_user {
             continue;
         }
-        let excerpt = truncate_chars(m.content.trim(), 280);
+        let excerpt = crate::message_context::format_message_content_for_context(m);
+        let excerpt = truncate_chars(excerpt.trim(), 280);
         if excerpt.is_empty() {
             continue;
         }
-        lines.push(format!("- {}：{}", m.sender_name, excerpt));
+        let label = if m.status == crate::domain::MessageStatus::Failed {
+            format!("{}（发送失败）", m.sender_name)
+        } else {
+            m.sender_name.clone()
+        };
+        lines.push(format!("- {}：{}", label, excerpt));
     }
     if lines.len() > 8 {
         lines.truncate(8);
@@ -255,6 +261,7 @@ impl MessageDispatcher {
             peers: experts,
             user_attachments: user_msg.attachments.clone(),
             member_group_local_path: None,
+            group_public_baseline: None,
         };
         let prompt = build_delegate_prompt(
             group,

@@ -46,6 +46,9 @@ pub struct Friend {
     /// 当前选中的 CLI / 记忆工作区。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_workspace_id: Option<String>,
+    /// 成员画像（人格 framework + 协作行为）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<crate::profile::MemberProfile>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -1047,6 +1050,51 @@ impl Default for GroupTaskFlowSettings {
     }
 }
 
+/// 群聊回合意图分类方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentClassifier {
+    #[default]
+    Heuristic,
+    /// 优先 LLM，失败回退启发式。
+    Auto,
+    Llm,
+}
+
+fn default_group_memory_enabled() -> bool {
+    true
+}
+
+fn default_group_public_ttl_days() -> u32 {
+    0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupOrchestrationSettings {
+    #[serde(default)]
+    pub intent_classifier: IntentClassifier,
+    /// 轻量编排：跳过互投与计划评议，协调→自荐→负责人执行。
+    #[serde(default)]
+    pub light_task_flow: bool,
+    /// 回合末由助理 Curator 整理 `group_public` latest 共识。
+    #[serde(default = "default_group_memory_enabled")]
+    pub group_memory_enabled: bool,
+    /// `group_public` 记忆过期天数；0 表示不过期。
+    #[serde(default = "default_group_public_ttl_days")]
+    pub group_public_ttl_days: u32,
+}
+
+impl Default for GroupOrchestrationSettings {
+    fn default() -> Self {
+        Self {
+            intent_classifier: IntentClassifier::default(),
+            light_task_flow: false,
+            group_memory_enabled: true,
+            group_public_ttl_days: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupSettings {
     /// 兼容旧数据；与 `judge.threshold` 同步。
@@ -1067,6 +1115,8 @@ pub struct GroupSettings {
     pub cli_workspace: Option<String>,
     #[serde(default)]
     pub assistant: GroupAssistantSettings,
+    #[serde(default)]
+    pub orchestration: GroupOrchestrationSettings,
 }
 
 impl Default for GroupSettings {
@@ -1085,6 +1135,7 @@ impl Default for GroupSettings {
             extra_system_prompt: None,
             cli_workspace: None,
             assistant: GroupAssistantSettings::default(),
+            orchestration: GroupOrchestrationSettings::default(),
         }
     }
 }
@@ -1096,6 +1147,16 @@ impl GroupSettings {
 
     pub fn fallback_pick_top_enabled(&self) -> bool {
         self.judge.fallback_pick_top
+    }
+
+    /// 轻量编排时关闭互投（仍保留竞选/选举）。
+    pub fn effective_peer_vote_enabled(&self) -> bool {
+        self.task_flow.peer_vote_enabled && !self.orchestration.light_task_flow
+    }
+
+    /// 轻量编排时关闭计划评议。
+    pub fn effective_plan_review_enabled(&self) -> bool {
+        self.task_flow.plan_review_enabled && !self.orchestration.light_task_flow
     }
 
     pub fn sync_judge_threshold_fields(&mut self) {
@@ -1114,6 +1175,12 @@ pub struct GroupMemberConfig {
     pub role: GroupMemberRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_override: Option<seven_chat_agent_judge::MemberJudgeOverride>,
+    /// 本群成员画像覆盖（主动性/协调倾向等）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_overlay: Option<crate::profile::MemberProfileOverlay>,
+    /// 运行时合并画像摘要（API 只读）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_profile: Option<crate::profile::MemberProfileSummary>,
 }
 
 /// 群逻辑工作区：Git 仓库或 logical_key，不绑定单一物理 cwd。
@@ -1160,4 +1227,32 @@ pub struct Group {
     pub avatar: Option<String>,
     pub settings: GroupSettings,
     pub created_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod orchestration_tests {
+    use super::*;
+
+    fn settings_with(light: bool, peer_vote: bool, plan_review: bool) -> GroupSettings {
+        let mut s = GroupSettings::default();
+        s.task_flow.enabled = true;
+        s.task_flow.peer_vote_enabled = peer_vote;
+        s.task_flow.plan_review_enabled = plan_review;
+        s.orchestration.light_task_flow = light;
+        s
+    }
+
+    #[test]
+    fn light_task_flow_disables_peer_vote_and_plan_review() {
+        let s = settings_with(true, true, true);
+        assert!(!s.effective_peer_vote_enabled());
+        assert!(!s.effective_plan_review_enabled());
+    }
+
+    #[test]
+    fn full_ceremony_keeps_task_flow_flags() {
+        let s = settings_with(false, true, true);
+        assert!(s.effective_peer_vote_enabled());
+        assert!(s.effective_plan_review_enabled());
+    }
 }

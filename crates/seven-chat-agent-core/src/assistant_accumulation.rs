@@ -81,7 +81,9 @@ mod tests {
 pub fn memory_scope_from_content(content: &str) -> Option<String> {
     let first = content.lines().next()?;
     let start = first.find("[默认观察/")?;
-    let inner = first[start + "[默认观察/".len()..].trim_end_matches(']');
+    let rest = &first[start + "[默认观察/".len()..];
+    let end = rest.find(']')?;
+    let inner = rest[..end].trim();
     if inner.is_empty() {
         None
     } else {

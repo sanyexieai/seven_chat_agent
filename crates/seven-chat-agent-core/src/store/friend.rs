@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::cli_workspace;
 use crate::domain::{BackendKind, Friend, PtyBackendConfig};
+use crate::profile::{normalize_profile_for_save_with, MemberProfile};
 use crate::store::{parse_dt, SqliteStore};
 use crate::{Error, Result};
 
@@ -21,6 +22,7 @@ pub struct FriendRow {
     pub enabled: i64,
     pub is_builtin: i64,
     pub active_workspace_id: Option<String>,
+    pub profile_json: Option<String>,
     pub created_at: String,
 }
 
@@ -32,6 +34,10 @@ impl FriendRow {
             serde_json::from_str(&self.focus_tags).unwrap_or_default();
         let backend_config: Value =
             serde_json::from_str(&self.backend_config).unwrap_or_else(|_| serde_json::json!({}));
+        let profile = self
+            .profile_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
         Ok(Friend {
             id: self.id,
             name: self.name,
@@ -45,12 +51,13 @@ impl FriendRow {
             enabled: self.enabled != 0,
             is_builtin: self.is_builtin != 0,
             active_workspace_id: self.active_workspace_id,
+            profile,
             created_at: parse_dt(&self.created_at),
         })
     }
 }
 
-const FRIEND_SELECT: &str = "id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, judge_provider_ref, enabled, is_builtin, active_workspace_id, created_at";
+const FRIEND_SELECT: &str = "id, name, avatar, system_prompt, personality, focus_tags, backend_kind, backend_config, judge_provider_ref, enabled, is_builtin, active_workspace_id, profile_json, created_at";
 
 #[derive(Debug, serde::Deserialize)]
 pub struct UpsertFriend {
@@ -214,6 +221,27 @@ impl SqliteStore {
         self.get_friend(&id)
             .await?
             .ok_or_else(|| Error::not_found("friend after upsert"))
+    }
+
+    pub async fn upsert_friend_profile(&self, friend_id: &str, profile: MemberProfile) -> Result<Friend> {
+        let _ = self
+            .get_friend(friend_id)
+            .await?
+            .ok_or_else(|| Error::not_found("friend"))?;
+        let catalogs = self.all_profile_frameworks().await?;
+        let mut normalized = profile;
+        crate::profile::validate_profile_extensions(&normalized, &catalogs)?;
+        normalize_profile_for_save_with(&mut normalized, &catalogs);
+        let json = serde_json::to_string(&normalized)?;
+        sqlx::query("UPDATE friends SET profile_json = ? WHERE id = ? AND tenant_id = ?")
+            .bind(&json)
+            .bind(friend_id)
+            .bind(self.tenant_id())
+            .execute(self.pool())
+            .await?;
+        self.get_friend(friend_id)
+            .await?
+            .ok_or_else(|| Error::not_found("friend after profile upsert"))
     }
 
     pub async fn delete_friend(&self, id: &str) -> Result<()> {

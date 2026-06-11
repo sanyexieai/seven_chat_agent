@@ -11,6 +11,7 @@ pub mod group_workspace;
 pub mod human;
 pub mod memory;
 pub mod message;
+pub mod profile_framework;
 pub mod provider;
 pub mod skill;
 pub mod tenant_invite;

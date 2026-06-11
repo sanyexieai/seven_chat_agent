@@ -1,8 +1,8 @@
 //! 转发端 CLI 输出：Codex JSONL → 结构化 cli_delta；其它预设按纯文本。
 
-use seven_chat_agent_cli::uses_codex_jsonl_stream;
+use seven_chat_agent_cli::{uses_codex_jsonl_stream, uses_cursor_stream_json};
 use seven_chat_agent_cli_relay_protocol::RelayMessage;
-use worker_bee_cli::{CliBlockDelta, CodexExecJsonlBlockParser};
+use worker_bee_cli::{CliBlockDelta, CodexExecJsonlBlockParser, CursorStreamJsonParser};
 
 /// codex exec 除进程 `current_dir` 外还支持 `-C` 指定 agent 工作根目录。
 pub fn ensure_codex_exec_cd(args: &mut Vec<String>, cwd: &str) {
@@ -22,16 +22,24 @@ pub fn ensure_codex_exec_cd(args: &mut Vec<String>, cwd: &str) {
 }
 
 pub fn is_codex_exec_fatal_stderr(s: &str) -> bool {
-    s.contains("Not inside a trusted directory")
-        || s.contains("No such file or directory")
-        || s.contains("error:")
-        || s.contains("Error:")
-        || s.contains("failed")
+    worker_bee_cli::is_cli_fatal_stderr(s)
 }
 
 pub fn push_codex_line(
     job_id: &str,
     parser: &mut CodexExecJsonlBlockParser,
+    line: &str,
+    out: &mut Vec<String>,
+) -> Result<(), serde_json::Error> {
+    for delta in parser.push_line(line) {
+        out.push(job_output_cli_delta(job_id, delta)?);
+    }
+    Ok(())
+}
+
+pub fn push_cursor_line(
+    job_id: &str,
+    parser: &mut CursorStreamJsonParser,
     line: &str,
     out: &mut Vec<String>,
 ) -> Result<(), serde_json::Error> {
@@ -71,8 +79,12 @@ pub fn job_output_cli_delta(job_id: &str, delta: CliBlockDelta) -> Result<String
     .to_json()
 }
 
-pub fn uses_jsonl(preset: &str, args: &[String]) -> bool {
+pub fn uses_codex_jsonl(preset: &str, args: &[String]) -> bool {
     uses_codex_jsonl_stream(preset) && args.iter().any(|a| a == "--json")
+}
+
+pub fn uses_cursor_jsonl(preset: &str, args: &[String]) -> bool {
+    uses_cursor_stream_json(preset) && args.iter().any(|a| a == "stream-json")
 }
 
 #[cfg(test)]

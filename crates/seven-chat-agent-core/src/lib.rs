@@ -1,3 +1,6 @@
+//! 群聊 / 助理队列等深层 async 组合较多，提高递归上限避免 E0275。
+#![recursion_limit = "512"]
+
 pub mod attachment;
 pub mod auth;
 pub mod env;
@@ -8,6 +11,7 @@ pub mod memory_ingest;
 pub mod memory_maintenance;
 pub mod memory_record_policy;
 pub mod memory_tier;
+pub mod message_context;
 pub mod assistant_intent;
 pub mod assistant_task_planner;
 pub mod agent;
@@ -23,7 +27,9 @@ pub mod runtime;
 pub mod config;
 pub mod dispatcher;
 pub mod domain;
+pub mod evolution;
 pub mod group_validate;
+pub mod profile;
 pub mod error;
 pub mod judge;
 pub mod provider;
@@ -52,6 +58,7 @@ pub struct SevenChatAgent {
     pub dispatcher: Arc<MessageDispatcher>,
     pub cli_oauth: Arc<CliOAuthManager>,
     pub cli_relay: Arc<RelayHub>,
+    pub evolution: Arc<evolution::EvolutionService>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,9 +98,18 @@ impl SevenChatAgent {
         let dispatcher = Arc::new(MessageDispatcher::new(
             store.clone(),
             agents.clone(),
-            judge,
+            judge.clone(),
             providers.clone(),
         ));
+
+        let data_dir =
+            std::env::var("SEVEN_CHAT_AGENT_DATA").unwrap_or_else(|_| "data".into());
+        let evolution = Arc::new(evolution::EvolutionService::new(
+            &data_dir,
+            store.clone(),
+            providers.clone(),
+            judge.clone(),
+        )?);
 
         let core = Self {
             store,
@@ -102,6 +118,7 @@ impl SevenChatAgent {
             dispatcher,
             cli_oauth: Arc::new(CliOAuthManager::new()),
             cli_relay,
+            evolution,
         };
         core.spawn_assistant_queue_worker();
         Ok(core)
@@ -117,7 +134,7 @@ impl SevenChatAgent {
         let core = self.clone();
         tokio::spawn(async move {
             loop {
-                if let Err(e) = core.process_assistant_queue_once().await {
+                if let Err(e) = Box::pin(core.process_assistant_queue_once()).await {
                     tracing::debug!(err = %e, "assistant queue worker tick failed");
                 }
                 let sleep_for = match core.store.next_due_assistant_job_at().await {

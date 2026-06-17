@@ -231,6 +231,9 @@ export interface GroupAssistantSettings {
   classifier_model?: string | null;
   im_writeback?: AssistantImWriteback;
   notify_owner_proactively?: boolean;
+  /** 代理人拍板后自动衔接专家执行（群聊与任务流统一） */
+  continue_after_delegate_enabled?: boolean;
+  continue_after_delegate_mode?: string;
 }
 
 export interface AssistantGlobalSettings {

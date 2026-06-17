@@ -216,6 +216,10 @@ impl SpeakerScheduler {
                 if triggering.sender_kind != SenderKind::Friend {
                     return true;
                 }
+                // 用户代理人拍板后的执行指派：不因上文相似度拒调度。
+                if triggering.on_behalf_of_user {
+                    return true;
+                }
                 let reason = c.judgment.reason.as_deref().unwrap_or("");
                 if has_open_question(reason) || has_open_question(&triggering.content) {
                     return true;

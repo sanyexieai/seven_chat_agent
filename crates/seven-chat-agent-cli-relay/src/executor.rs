@@ -1,17 +1,17 @@
 use anyhow::{Context, Result};
 use seven_chat_agent_cli::{ensure_executable, exec_argv, uses_codex_jsonl_stream, CliLaunchConfig};
-use seven_chat_agent_cli_relay_protocol::RelayMessage;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use worker_bee_cli::{CodexExecJsonlBlockParser, CursorStreamJsonParser};
 
 use crate::output::{
     ensure_codex_exec_cd, is_codex_exec_fatal_stderr, push_codex_line, push_cursor_line,
-    push_plain_text, uses_codex_jsonl, uses_cursor_jsonl,
+    push_job_done, push_plain_text, uses_codex_jsonl, uses_cursor_jsonl, JobOutputSink,
 };
 use crate::workspace;
 
-pub async fn run_job_collect(
+/// 在本机执行 CLI，将 JobOutput 逐条写入 `out_tx`（真流式）。
+pub async fn run_job(
     job_id: &str,
     preset: &str,
     prompt: &str,
@@ -21,8 +21,9 @@ pub async fn run_job_collect(
     cli_session_mode: Option<&str>,
     cli_session_id: Option<&str>,
     env: &[(String, String)],
-) -> Vec<String> {
-    match run_job_inner(
+    out_tx: JobOutputSink,
+) {
+    if let Err(e) = run_job_inner(
         job_id,
         preset,
         prompt,
@@ -32,22 +33,11 @@ pub async fn run_job_collect(
         cli_session_mode,
         cli_session_id,
         env,
+        &out_tx,
     )
     .await
     {
-        Ok(msgs) => msgs,
-        Err(e) => {
-            vec![RelayMessage::JobOutput {
-                job_id: job_id.to_string(),
-                text_delta: None,
-                cli_delta: None,
-                done: true,
-                exit_code: Some(1),
-                error: Some(e.to_string()),
-            }
-            .to_json()
-            .unwrap_or_default()]
-        }
+        let _ = push_job_done(job_id, Some(1), Some(e.to_string()), &out_tx);
     }
 }
 
@@ -61,7 +51,8 @@ async fn run_job_inner(
     cli_session_mode: Option<&str>,
     cli_session_id: Option<&str>,
     env: &[(String, String)],
-) -> Result<Vec<String>> {
+    sink: &JobOutputSink,
+) -> Result<()> {
     let cwd = if let Some(fid) = friend_id.filter(|s| !s.trim().is_empty()) {
         Some(
             workspace::resolve_job_cwd(fid, group_id, cwd_override)
@@ -119,7 +110,6 @@ async fn run_job_inner(
     let stderr = child.stderr.take();
     let mut lines = BufReader::new(stdout).lines();
 
-    let mut out = Vec::new();
     let mut codex_parser = CodexExecJsonlBlockParser::default();
     let mut cursor_parser = CursorStreamJsonParser::default();
 
@@ -128,11 +118,11 @@ async fn run_job_inner(
             continue;
         }
         if codex_jsonl {
-            push_codex_line(job_id, &mut codex_parser, line.trim(), &mut out)?;
+            push_codex_line(job_id, &mut codex_parser, line.trim(), sink)?;
         } else if cursor_jsonl {
-            push_cursor_line(job_id, &mut cursor_parser, line.trim(), &mut out)?;
+            push_cursor_line(job_id, &mut cursor_parser, line.trim(), sink)?;
         } else {
-            push_plain_text(job_id, &format!("{line}\n"), &mut out)?;
+            push_plain_text(job_id, &format!("{line}\n"), sink)?;
         }
     }
 
@@ -151,11 +141,11 @@ async fn run_job_inner(
                                 "\n（{label} 报错：{}）\n",
                                 trimmed.lines().next().unwrap_or(trimmed)
                             ),
-                            &mut out,
+                            sink,
                         )?;
                     }
                 } else {
-                    push_plain_text(job_id, &format!("\n[stderr] {trimmed}\n"), &mut out)?;
+                    push_plain_text(job_id, &format!("\n[stderr] {trimmed}\n"), sink)?;
                 }
             }
         }
@@ -163,29 +153,9 @@ async fn run_job_inner(
 
     if !status.success() {
         let err_detail = format!("cli exited with {:?}", status.code());
-        out.push(
-            RelayMessage::JobOutput {
-                job_id: job_id.to_string(),
-                text_delta: None,
-                cli_delta: None,
-                done: true,
-                exit_code: status.code(),
-                error: Some(err_detail),
-            }
-            .to_json()?,
-        );
-        return Ok(out);
+        push_job_done(job_id, status.code(), Some(err_detail), sink)?;
+        return Ok(());
     }
-    out.push(
-        RelayMessage::JobOutput {
-            job_id: job_id.to_string(),
-            text_delta: None,
-            cli_delta: None,
-            done: true,
-            exit_code: status.code(),
-            error: None,
-        }
-        .to_json()?,
-    );
-    Ok(out)
+    push_job_done(job_id, status.code(), None, sink)?;
+    Ok(())
 }

@@ -602,6 +602,11 @@ pub struct GroupAssistantSettings {
     /// 超出拍板范围时，向前端/助理私聊/Todo 主动推送主人知悉（不阻断群内 Agent）。
     #[serde(default = "default_true")]
     pub notify_owner_proactively: bool,
+    /// 代理人拍板后是否自动衔接专家执行（群聊与任务流统一策略）。
+    #[serde(default = "default_true")]
+    pub continue_after_delegate_enabled: bool,
+    #[serde(default)]
+    pub continue_after_delegate_mode: TaskFlowResumeAfterDelegateMode,
 }
 
 impl Default for GroupAssistantSettings {
@@ -617,6 +622,8 @@ impl Default for GroupAssistantSettings {
             classifier_model: None,
             im_writeback: AssistantImWriteback::default(),
             notify_owner_proactively: true,
+            continue_after_delegate_enabled: true,
+            continue_after_delegate_mode: TaskFlowResumeAfterDelegateMode::default(),
         }
     }
 }
@@ -877,6 +884,8 @@ impl GroupAssistantSettings {
         base.mode = self.mode;
         base.max_autonomy = self.max_autonomy;
         base.reply_after_experts = self.reply_after_experts;
+        base.continue_after_delegate_enabled = self.continue_after_delegate_enabled;
+        base.continue_after_delegate_mode = self.continue_after_delegate_mode.clone();
         if self.autonomy_classifier != AutonomyClassifier::default() {
             base.autonomy_classifier = self.autonomy_classifier;
         }

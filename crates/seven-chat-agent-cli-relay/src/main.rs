@@ -137,7 +137,20 @@ async fn main() -> Result<()> {
                     } => {
                         let tx = outbound_tx.clone();
                         tokio::spawn(async move {
-                            let outputs = executor::run_job_collect(
+                            let (job_tx, mut job_rx) = mpsc::unbounded_channel();
+                            let tx_forward = tx.clone();
+                            let forward = tokio::spawn(async move {
+                                while let Some(line) = job_rx.recv().await {
+                                    if tx_forward
+                                        .send(WsOutbound::Text(line))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            });
+                            executor::run_job(
                                 &job_id,
                                 &preset,
                                 &prompt,
@@ -147,11 +160,10 @@ async fn main() -> Result<()> {
                                 cli_session_mode.as_deref(),
                                 cli_session_id.as_deref(),
                                 &env,
+                                job_tx,
                             )
                             .await;
-                            for line in outputs {
-                                let _ = tx.send(WsOutbound::Text(line)).await;
-                            }
+                            let _ = forward.await;
                             let _ = tx
                                 .send(WsOutbound::Text(
                                     RelayMessage::AuthReport {

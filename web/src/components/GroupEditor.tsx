@@ -70,7 +70,40 @@ const defaultAssistant: GroupAssistantSettings = {
   template_id: "preset-delegate",
   autonomy_classifier: "auto",
   im_writeback: defaultImWriteback,
+  continue_after_delegate_enabled: true,
+  continue_after_delegate_mode: "not_delivered",
 };
+
+function patchDelegateContinueSettings(
+  settings: GroupSettings,
+  patch: { enabled?: boolean; mode?: string },
+): GroupSettings {
+  const enabled =
+    patch.enabled ??
+    settings.assistant?.continue_after_delegate_enabled ??
+    settings.task_flow?.resume_after_delegate_enabled ??
+    true;
+  const mode =
+    patch.mode ??
+    settings.assistant?.continue_after_delegate_mode ??
+    settings.task_flow?.resume_after_delegate_mode ??
+    "not_delivered";
+  return {
+    ...settings,
+    assistant: {
+      ...defaultAssistant,
+      ...settings.assistant,
+      continue_after_delegate_enabled: enabled,
+      continue_after_delegate_mode: mode,
+    },
+    task_flow: {
+      ...defaultTaskFlow,
+      ...settings.task_flow,
+      resume_after_delegate_enabled: enabled,
+      resume_after_delegate_mode: mode,
+    },
+  };
+}
 
 const PRIMARY_WORKSPACE_KEY = "primary";
 
@@ -516,6 +549,49 @@ export function GroupEditor({
                     <option value="l3">最高 L3</option>
                   </select>
                 </div>
+                <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={
+                      settings.assistant?.continue_after_delegate_enabled ??
+                      settings.task_flow?.resume_after_delegate_enabled ??
+                      true
+                    }
+                    onChange={(e) =>
+                      setSettings(
+                        patchDelegateContinueSettings(settings, {
+                          enabled: e.target.checked,
+                        }),
+                      )
+                    }
+                  />
+                  拍板后自动衔接专家执行
+                </label>
+                <label className="mt-2 flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground text-xs">
+                    衔接策略（群聊与任务流共用）
+                  </span>
+                  <select
+                    className="rounded border border-input bg-background px-2 py-1 text-xs"
+                    value={
+                      settings.assistant?.continue_after_delegate_mode ??
+                      settings.task_flow?.resume_after_delegate_mode ??
+                      "not_delivered"
+                    }
+                    onChange={(e) =>
+                      setSettings(
+                        patchDelegateContinueSettings(settings, {
+                          mode: e.target.value,
+                        }),
+                      )
+                    }
+                  >
+                    <option value="not_delivered">未交付即衔接</option>
+                    <option value="incomplete_only">仅异常退出时衔接</option>
+                    <option value="judge">Judge LLM 判定</option>
+                    <option value="off">不衔接</option>
+                  </select>
+                </label>
                 <div className="mt-3 border-t border-violet-100 pt-3">
                   <label className="flex items-center gap-2 text-sm">
                     <input
@@ -1207,47 +1283,9 @@ export function GroupEditor({
                   />
                   须明确交付才结束（未交付时负责人继续引导；助理监测空转并暂停）
                 </label>
-                <label className="flex cursor-pointer items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={settings.task_flow?.resume_after_delegate_enabled ?? true}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        task_flow: {
-                          ...defaultTaskFlow,
-                          ...settings.task_flow,
-                          enabled: true,
-                          resume_after_delegate_enabled: e.target.checked,
-                        },
-                      })
-                    }
-                  />
-                  代理人发言后自动恢复执行（未交付时）
-                </label>
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-muted-foreground">恢复策略</span>
-                  <select
-                    className="rounded border border-input bg-background px-2 py-1"
-                    value={settings.task_flow?.resume_after_delegate_mode ?? "not_delivered"}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        task_flow: {
-                          ...defaultTaskFlow,
-                          ...settings.task_flow,
-                          enabled: true,
-                          resume_after_delegate_mode: e.target.value,
-                        },
-                      })
-                    }
-                  >
-                    <option value="not_delivered">未交付即恢复</option>
-                    <option value="incomplete_only">仅异常退出时恢复</option>
-                    <option value="judge">Judge LLM 判定</option>
-                    <option value="off">不恢复</option>
-                  </select>
-                </label>
+                <p className="text-xs text-muted-foreground">
+                  「拍板后衔接执行」已移至上方群助理设置，群聊与任务流共用同一策略。
+                </p>
                 <label className="flex cursor-pointer items-center gap-2 text-sm">
                   <input
                     type="checkbox"

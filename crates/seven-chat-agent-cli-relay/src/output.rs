@@ -2,7 +2,10 @@
 
 use seven_chat_agent_cli::{uses_codex_jsonl_stream, uses_cursor_stream_json};
 use seven_chat_agent_cli_relay_protocol::RelayMessage;
+use tokio::sync::mpsc;
 use worker_bee_cli::{CliBlockDelta, CodexExecJsonlBlockParser, CursorStreamJsonParser};
+
+pub type JobOutputSink = mpsc::UnboundedSender<String>;
 
 /// codex exec 除进程 `current_dir` 外还支持 `-C` 指定 agent 工作根目录。
 pub fn ensure_codex_exec_cd(args: &mut Vec<String>, cwd: &str) {
@@ -25,14 +28,21 @@ pub fn is_codex_exec_fatal_stderr(s: &str) -> bool {
     worker_bee_cli::is_cli_fatal_stderr(s)
 }
 
+fn emit(sink: &JobOutputSink, msg: RelayMessage) -> Result<(), serde_json::Error> {
+    if let Ok(json) = msg.to_json() {
+        let _ = sink.send(json);
+    }
+    Ok(())
+}
+
 pub fn push_codex_line(
     job_id: &str,
     parser: &mut CodexExecJsonlBlockParser,
     line: &str,
-    out: &mut Vec<String>,
+    sink: &JobOutputSink,
 ) -> Result<(), serde_json::Error> {
     for delta in parser.push_line(line) {
-        out.push(job_output_cli_delta(job_id, delta)?);
+        emit(sink, job_output_cli_delta(job_id, delta)?)?;
     }
     Ok(())
 }
@@ -41,19 +51,20 @@ pub fn push_cursor_line(
     job_id: &str,
     parser: &mut CursorStreamJsonParser,
     line: &str,
-    out: &mut Vec<String>,
+    sink: &JobOutputSink,
 ) -> Result<(), serde_json::Error> {
     for delta in parser.push_line(line) {
-        out.push(job_output_cli_delta(job_id, delta)?);
+        emit(sink, job_output_cli_delta(job_id, delta)?)?;
     }
     Ok(())
 }
 
-pub fn push_plain_text(job_id: &str, text: &str, out: &mut Vec<String>) -> Result<(), serde_json::Error> {
+pub fn push_plain_text(job_id: &str, text: &str, sink: &JobOutputSink) -> Result<(), serde_json::Error> {
     if text.is_empty() {
         return Ok(());
     }
-    out.push(
+    emit(
+        sink,
         RelayMessage::JobOutput {
             job_id: job_id.to_string(),
             text_delta: Some(text.to_string()),
@@ -61,22 +72,38 @@ pub fn push_plain_text(job_id: &str, text: &str, out: &mut Vec<String>) -> Resul
             done: false,
             exit_code: None,
             error: None,
-        }
-        .to_json()?,
-    );
-    Ok(())
+        },
+    )
 }
 
-pub fn job_output_cli_delta(job_id: &str, delta: CliBlockDelta) -> Result<String, serde_json::Error> {
-    RelayMessage::JobOutput {
+pub fn job_output_cli_delta(job_id: &str, delta: CliBlockDelta) -> Result<RelayMessage, serde_json::Error> {
+    Ok(RelayMessage::JobOutput {
         job_id: job_id.to_string(),
         text_delta: None,
         cli_delta: Some(serde_json::to_value(delta)?),
         done: false,
         exit_code: None,
         error: None,
-    }
-    .to_json()
+    })
+}
+
+pub fn push_job_done(
+    job_id: &str,
+    exit_code: Option<i32>,
+    error: Option<String>,
+    sink: &JobOutputSink,
+) -> Result<(), serde_json::Error> {
+    emit(
+        sink,
+        RelayMessage::JobOutput {
+            job_id: job_id.to_string(),
+            text_delta: None,
+            cli_delta: None,
+            done: true,
+            exit_code,
+            error,
+        },
+    )
 }
 
 pub fn uses_codex_jsonl(preset: &str, args: &[String]) -> bool {

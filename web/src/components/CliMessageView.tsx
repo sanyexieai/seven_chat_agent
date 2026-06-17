@@ -1,20 +1,30 @@
 import type { ReactNode } from "react";
 import type { CliBlock } from "../cliBlocks";
+import {
+  cliDriverBlockLabel,
+  cliDriverBlockTone,
+} from "./cli/drivers";
 import { Collapsible } from "./Collapsible";
 
 interface Props {
   blocks: CliBlock[];
   streaming?: boolean;
+  /** 后端 `model_used`（如 cursor / codex-exec） */
+  modelUsed?: string | null;
 }
 
-export function CliMessageView({ blocks, streaming }: Props) {
+export function CliMessageView({ blocks, streaming, modelUsed }: Props) {
   const lastIdx = blocks.length - 1;
+  const agentLabel = cliDriverBlockLabel(modelUsed ?? null);
+  const agentTone = cliDriverBlockTone(modelUsed ?? null);
   return (
     <div className="flex flex-col gap-2">
       {blocks.map((block, i) => (
         <CliBlockView
           key={`${block.kind}-${i}-${"item_id" in block ? block.item_id : "usage"}`}
           block={block}
+          agentLabel={agentLabel}
+          agentTone={agentTone}
           showCursor={
             streaming &&
             i === lastIdx &&
@@ -33,16 +43,20 @@ export function CliMessageView({ blocks, streaming }: Props) {
 
 function CliBlockView({
   block,
+  agentLabel,
+  agentTone,
   showCursor,
 }: {
   block: CliBlock;
+  agentLabel: string;
+  agentTone: "codex" | "cursor" | "claude" | "exec" | "reasoning" | "muted";
   showCursor?: boolean;
 }) {
   switch (block.kind) {
     case "agent_message":
       return (
         <section className="cli-block">
-          <CliLabel tone="codex">codex</CliLabel>
+          <CliLabel tone={agentTone}>{agentLabel}</CliLabel>
           <pre className="cli-body max-h-[min(24rem,50vh)] overflow-y-auto whitespace-pre-wrap">
             {block.text}
             {showCursor ? <span className="cli-cursor" /> : null}
@@ -176,16 +190,20 @@ function CliLabel({
   tone,
 }: {
   children: ReactNode;
-  tone: "codex" | "exec" | "reasoning" | "muted";
+  tone: "codex" | "cursor" | "claude" | "exec" | "reasoning" | "muted";
 }) {
   const cls =
     tone === "codex"
       ? "text-fuchsia-700"
-      : tone === "exec"
-        ? "text-sky-700"
-        : tone === "reasoning"
-          ? "text-violet-600"
-          : "text-slate-400";
+      : tone === "cursor"
+        ? "text-sky-800"
+        : tone === "claude"
+          ? "text-amber-800"
+          : tone === "exec"
+            ? "text-sky-700"
+            : tone === "reasoning"
+              ? "text-violet-600"
+              : "text-slate-400";
   return (
     <div
       className={`mb-1 font-mono text-[11px] font-semibold uppercase tracking-wide ${cls}`}

@@ -415,7 +415,11 @@ function applyBusEvent(
         withConvMessages(s, ev.conversation_id, (msgs) =>
           msgs.map((m) =>
             m.id === ev.message_id
-              ? { ...m, content: m.content + ev.delta }
+              ? {
+                  ...m,
+                  content: m.content + ev.delta,
+                  status: m.status === "done" ? "done" : "streaming",
+                }
               : m,
           ),
         ),
@@ -435,6 +439,7 @@ function applyBusEvent(
               ...m,
               content_blocks,
               content: cliBlocksToPlain(content_blocks),
+              status: m.status === "done" ? "done" : "streaming",
             };
           }),
         ),
@@ -537,7 +542,7 @@ function applyBusEvent(
             Object.entries(s.thinking).map(([k, v]) => [
               k,
               picked.has(k)
-                ? { ...v, status: "will_reply" as const }
+                ? { ...v, status: "speaking" as const, updatedAt: Date.now() }
                 : v.status === "will_reply" && !picked.has(k)
                   ? { ...v, status: "skip" as const }
                   : v,

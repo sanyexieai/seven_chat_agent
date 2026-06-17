@@ -16,11 +16,13 @@ use crate::domain::{
     MessageStatus, SenderKind,
 };
 
-/// 专家接话 prompt 场景（群聊自由讨论 vs 任务流执行协作）。
+/// 专家接话 prompt 场景（群聊自由讨论 vs 任务流/代理人执行协作）。
 #[derive(Debug, Clone, Copy)]
 pub(super) enum ExpertReplyMode {
     GroupChat,
     TaskFlowExecute,
+    /// 用户代理人拍板后：跳过 LLM Judge 拒接，强制调度被点名/被提及的专家执行。
+    DelegateExecute,
 }
 use worker_bee_cli::{apply_cli_block_delta, cli_blocks_to_plain, cli_reply_has_body};
 use crate::scheduler::{CandidateInfo, ScheduleDecision, SpeakerScheduler};
@@ -33,16 +35,15 @@ use crate::{Error, Result};
 
 mod assistant_autonomy;
 mod assistant_delegate;
+mod delegate_continue;
 mod im_writeback;
 mod task_flow;
 mod turn_intent;
 
 pub use im_writeback::ImWritebackEvent;
 
-use assistant_delegate::{
-    expert_friends_for_group, DelegateTaskHint, GroupAssistantPhase, StreamReplyOptions,
-};
-use task_flow::TaskFlowExecuteOutcome;
+use assistant_delegate::{expert_friends_for_group, StreamReplyOptions};
+use delegate_continue::DelegateContinueContext;
 use crate::provider::ProviderRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -630,6 +631,8 @@ impl MessageDispatcher {
             None
         };
 
+        let mut delegate_ctx = DelegateContinueContext::group_turn();
+
         if user_msg.sender_kind == SenderKind::User && settings.task_flow.enabled {
             let intent = intent.unwrap_or(turn_intent::classify_turn_intent_heuristic(&user_msg));
             if !turn_intent::should_enter_group_task_flow(
@@ -643,71 +646,28 @@ impl MessageDispatcher {
                     "task_flow: skip non-task intent"
                 );
             } else {
-            let members = expert_friends_for_group(&self.dispatch_store(), &group.id).await?;
-            let flow = self
-                .run_task_flow(&conv, &user_msg, &turn_id, &settings, &members)
-                .await?;
-            if flow.handled {
-                if let Some(checkpoint) = flow.checkpoint {
-                    let task_hint = Self::delegate_task_hint(checkpoint.outcome);
-                    let assistant_reply = self
-                        .maybe_dispatch_group_assistant(
-                            &conv.id,
+                let members =
+                    expert_friends_for_group(&self.dispatch_store(), &group.id).await?;
+                let flow = self
+                    .run_task_flow(&conv, &user_msg, &turn_id, &settings, &members)
+                    .await?;
+                if flow.handled {
+                    if let Some(checkpoint) = flow.checkpoint {
+                        delegate_ctx = DelegateContinueContext::from_task_flow(checkpoint);
+                    }
+                    if user_msg.sender_kind == SenderKind::User {
+                        self.finalize_group_user_turn(
+                            &conv,
                             &group,
+                            &settings,
                             &user_msg,
                             &turn_id,
-                            GroupAssistantPhase::AfterExperts,
-                            task_hint,
+                            delegate_ctx,
                         )
                         .await?;
-                    if self
-                        .should_resume_task_flow_after_delegate(
-                            &settings,
-                            checkpoint.outcome,
-                            assistant_reply.as_ref(),
-                            &user_msg.content,
-                        )
-                        .await?
-                    {
-                        let directive = assistant_reply
-                            .as_ref()
-                            .map(|m| m.content.as_str())
-                            .unwrap_or("");
-                        tracing::info!(
-                            turn_id = %turn_id,
-                            prior_outcome = ?checkpoint.outcome,
-                            "task_flow: resuming after delegate autonomous continue"
-                        );
-                        let final_outcome = self
-                            .resume_task_flow_after_delegate(
-                                &conv,
-                                &user_msg,
-                                &turn_id,
-                                &settings,
-                                &checkpoint,
-                                directive,
-                            )
-                            .await?;
-                        if final_outcome != TaskFlowExecuteOutcome::Delivered {
-                            tracing::info!(
-                                turn_id = %turn_id,
-                                final_outcome = ?final_outcome,
-                                "task_flow: resume ended without delivery"
-                            );
-                        }
                     }
+                    return Ok(());
                 }
-                if user_msg.sender_kind == SenderKind::User {
-                    self.emit_group_public_if_updated(
-                        &conv.id,
-                        &group.id,
-                        &turn_id,
-                        &settings,
-                    )
-                    .await;
-                }
-                return Ok(());
-            }
             }
         }
 
@@ -731,20 +691,15 @@ impl MessageDispatcher {
         }
 
         if user_msg.sender_kind == SenderKind::User {
-            self.maybe_dispatch_group_assistant(
-                &conv.id,
+            self.finalize_group_user_turn(
+                &conv,
                 &group,
+                &settings,
                 &user_msg,
                 &turn_id,
-                GroupAssistantPhase::AfterExperts,
-                DelegateTaskHint::Unknown,
+                delegate_ctx,
             )
             .await?;
-        }
-
-        if user_msg.sender_kind == SenderKind::User {
-            self.emit_group_public_if_updated(&conv.id, &group.id, &turn_id, &settings)
-                .await;
         }
         Ok(())
     }
@@ -873,21 +828,25 @@ impl MessageDispatcher {
 
         let history = dispatch_store.recent_messages(&conv.id, 60).await?;
 
-        let candidates = Self::filter_task_execute_candidates(
-            mode,
-            trigger,
-            self.judge_members(
-                conv,
-                settings,
-                &history,
-                &members,
-                &override_by_friend,
-                &overlay_by_friend,
+        let candidates = if matches!(mode, ExpertReplyMode::DelegateExecute) {
+            Self::build_delegate_execute_candidates(trigger, &members, &overlay_by_friend)
+        } else {
+            Self::filter_task_execute_candidates(
+                mode,
                 trigger,
-                group_judge_excerpt,
+                self.judge_members(
+                    conv,
+                    settings,
+                    &history,
+                    &members,
+                    &override_by_friend,
+                    &overlay_by_friend,
+                    trigger,
+                    group_judge_excerpt,
+                )
+                .await,
             )
-            .await,
-        );
+        };
 
         let configured_mode = judge_mode_label(settings.judge.mode);
         for c in &candidates {
@@ -1020,6 +979,13 @@ impl MessageDispatcher {
                 None => continue,
             };
             let agent = self.agents.get(&friend.id).await?;
+            let stream_opts = StreamReplyOptions {
+                on_behalf_of_user: false,
+                final_status: MessageStatus::Done,
+            };
+            let placeholder = self
+                .begin_streaming_reply(conv, trigger, turn_id, &friend, &stream_opts)
+                .await?;
             let peers: Vec<Friend> = members
                 .iter()
                 .filter(|m| m.id != friend.id)
@@ -1121,11 +1087,22 @@ impl MessageDispatcher {
                 relevant_opt.as_deref(),
             );
             let reply = self
-                .stream_one_reply(conv, trigger, turn_id, &friend, agent, ctx, &prompt, 0)
+                .complete_streaming_reply(
+                    conv,
+                    &friend,
+                    agent,
+                    ctx,
+                    &prompt,
+                    placeholder,
+                    stream_opts,
+                )
                 .await?;
             if let Some(reply_msg) = reply {
                 self.scheduler.record_reply(turn_id, &reply_msg.content);
-                if matches!(mode, ExpertReplyMode::GroupChat) {
+                if matches!(
+                    mode,
+                    ExpertReplyMode::GroupChat | ExpertReplyMode::DelegateExecute
+                ) {
                     if let Err(e) = crate::profile::record_member_group_note(
                         &dispatch_store,
                         &friend.id,
@@ -1210,30 +1187,101 @@ impl MessageDispatcher {
             若上文或历史中有成员**发送失败**，不要假设其已成功表达；应说明失败、尝试接手或提醒用户检查配置。\n\
             只有当你有**与上文不同的新进展**、**新观点**或**需要你去回答的具体疑问**时才展开；\
             若他人已问过/说过同样的事，不要重复换说法。没有新内容则不要硬接。";
+        let delegate_block = if trigger.on_behalf_of_user {
+            "\n\n【用户代理人决策】本条为用户代理人代主人拍板，请按指令执行，勿再向主人重复确认。\n"
+        } else {
+            ""
+        };
 
         match mode {
             ExpertReplyMode::GroupChat => format!(
                 "你是群成员「{}」。{roster}{persona}\n\n\
                 【近期群聊（请先阅读）】\n{dialogue_excerpt}{relevant_block}\n\n\
-                当前触发：{trigger_line}{failure_block}\n\
+                当前触发：{trigger_line}{delegate_block}{failure_block}\n\
                 {attention_rule}\n\
                 请简短、有针对性地回应。"
                 ,
                 friend.name
             ),
-            ExpertReplyMode::TaskFlowExecute => format!(
-                "【任务流·执行协作】负责人「{}」说：\n{}\n\n\
-                你是「{}」。{persona}\n\n\
-                【近期群聊】\n{dialogue_excerpt}{relevant_block}\n\n\
-                若负责人 @ 你、向你分配任务或提问，请给出**可执行的具体回应**（查代码、跑命令、提供信息等）；\
-                若你有不同于上文的实质进展也可补充。{attention_rule}{failure_block}\n\
-                请简短回应。",
-                trigger.sender_name,
-                trigger.content,
-                friend.name,
-                dialogue_excerpt = dialogue_excerpt
-            ),
+            ExpertReplyMode::TaskFlowExecute | ExpertReplyMode::DelegateExecute => {
+                let trigger_role = if trigger.on_behalf_of_user {
+                    "用户代理人"
+                } else {
+                    "负责人"
+                };
+                let mandate = if matches!(mode, ExpertReplyMode::DelegateExecute) {
+                    "\n**你必须执行**：本条为用户代理人代主人拍板后的行动指令，不得因「上文已讨论过」而拒接或空泛附和；\
+                     须给出可验收的下一步（查代码、改文件、跑命令、列出具体产出）。\n"
+                } else {
+                    ""
+                };
+                format!(
+                    "【执行协作】{trigger_role}「{}」说：\n{}\n\n\
+                    你是「{}」。{persona}{mandate}\n\n\
+                    【近期群聊】\n{dialogue_excerpt}{relevant_block}{delegate_block}\n\n\
+                    若对方 @ 你、向你分配任务或提问，请给出**可执行的具体回应**（查代码、跑命令、提供信息等）；\
+                    若你有不同于上文的实质进展也可补充。{attention_rule}{failure_block}\n\
+                    请简短回应。",
+                    trigger.sender_name,
+                    trigger.content,
+                    friend.name,
+                    dialogue_excerpt = dialogue_excerpt
+                )
+            }
         }
+    }
+
+    /// 代理人拍板后：不经过 LLM Judge，直接点名正文/@ 中出现的专家（无点名则全员接令）。
+    fn build_delegate_execute_candidates(
+        trigger: &Message,
+        members: &[Friend],
+        overlay_by_friend: &std::collections::HashMap<
+            String,
+            Option<crate::profile::MemberProfileOverlay>,
+        >,
+    ) -> Vec<CandidateInfo> {
+        let targets = delegate_continue::resolve_delegate_targets(&trigger.content, members);
+        let targets: Vec<&Friend> = if targets.is_empty() {
+            members.iter().collect()
+        } else {
+            targets.iter().collect()
+        };
+        targets
+            .into_iter()
+            .filter(|m| m.id != trigger.sender_id)
+            .map(|m| {
+                let assign_score =
+                    delegate_continue::delegate_assignment_score(&trigger.content, m);
+                let confidence = if assign_score > 0 {
+                    (assign_score as f32 / 100.0).clamp(0.55, 1.0)
+                } else {
+                    1.0
+                };
+                let eff = crate::profile::resolve_effective_profile(
+                    m,
+                    m.profile.as_ref(),
+                    overlay_by_friend.get(&m.id).cloned().flatten().as_ref(),
+                );
+                CandidateInfo {
+                    friend_id: m.id.clone(),
+                    friend_name: m.name.clone(),
+                    backend_kind: m.backend_kind,
+                    judgment: Judgment {
+                        should_reply: true,
+                        confidence,
+                        reason: Some(format!(
+                            "用户代理人拍板指派执行（score={assign_score}，跳过自由讨论 Judge）"
+                        )),
+                        suggested_delay_ms: 0,
+                        source: Some(JudgeSource::Heuristic),
+                    },
+                    fallback_pick_eligible: eff
+                        .routing_hints
+                        .effective_fallback_pick_eligible(),
+                    initiative_rank: eff.initiative.rank(),
+                }
+            })
+            .collect()
     }
 
     async fn judge_members(
@@ -1371,17 +1419,15 @@ impl MessageDispatcher {
         .await
     }
 
-    async fn stream_one_reply_with_options(
+    /// 创建流式占位消息并立即推送前端（群聊在 judge/召回准备前调用，避免长时间无气泡）。
+    async fn begin_streaming_reply(
         &self,
         conv: &Conversation,
         parent: &Message,
         turn_id: &str,
         friend: &Friend,
-        agent: AgentHandle,
-        ctx: ChatContext,
-        prompt: &str,
-        opts: StreamReplyOptions,
-    ) -> Result<Option<Message>> {
+        opts: &StreamReplyOptions,
+    ) -> Result<Message> {
         let placeholder = self
             .store
             .insert_message(NewMessage {
@@ -1402,7 +1448,37 @@ impl MessageDispatcher {
         self.emit(BusEvent::MessageCreated {
             message: placeholder.clone(),
         });
+        Ok(placeholder)
+    }
 
+    async fn stream_one_reply_with_options(
+        &self,
+        conv: &Conversation,
+        parent: &Message,
+        turn_id: &str,
+        friend: &Friend,
+        agent: AgentHandle,
+        ctx: ChatContext,
+        prompt: &str,
+        opts: StreamReplyOptions,
+    ) -> Result<Option<Message>> {
+        let placeholder = self
+            .begin_streaming_reply(conv, parent, turn_id, friend, &opts)
+            .await?;
+        self.complete_streaming_reply(conv, friend, agent, ctx, prompt, placeholder, opts)
+            .await
+    }
+
+    async fn complete_streaming_reply(
+        &self,
+        conv: &Conversation,
+        friend: &Friend,
+        agent: AgentHandle,
+        ctx: ChatContext,
+        prompt: &str,
+        placeholder: Message,
+        opts: StreamReplyOptions,
+    ) -> Result<Option<Message>> {
         let mut stream = match agent.send(ctx, prompt.to_string()).await {
             Ok(s) => s,
             Err(e) => {

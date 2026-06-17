@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::agent::{Agent, AgentEvent, AgentKind, ChatContext, Judgment, ProviderUsageInfo};
-use crate::cli_relay::{RelayHub, RelayJobSpec};
+use crate::cli_relay::{RelayHub, RelayJobEvent, RelayJobSpec};
 use crate::domain::{Friend, Message, PtyBackendConfig};
 use crate::friend_cli::{
     apply_cli_auth_env, cli_auth_env_pairs,     cli_empty_output_user_hint, cli_fatal_stderr_message, ensure_cursor_agent_executable,
@@ -388,19 +388,45 @@ impl Agent for PtyAgent {
                 };
                 let timeout = Duration::from_secs(adapter.timeout_seconds);
                 match cli_relay.run_job(&relay_id, spec, timeout).await {
-                    Ok(result) => {
-                        raw_buf.lock().await.extend_from_slice(result.text.as_bytes());
-                        for delta in result.cli_deltas {
-                            yield AgentEvent::CliDelta(delta);
+                    Ok(mut events) => {
+                        let deadline = tokio::time::Instant::now() + timeout;
+                        loop {
+                            let remaining =
+                                deadline.saturating_duration_since(tokio::time::Instant::now());
+                            if remaining.is_zero() {
+                                yield AgentEvent::Error("CLI 转发任务超时".into());
+                                break;
+                            }
+                            let ev = match tokio::time::timeout(remaining, events.recv()).await {
+                                Ok(Some(ev)) => ev,
+                                Ok(None) => break,
+                                Err(_) => {
+                                    yield AgentEvent::Error("CLI 转发任务超时".into());
+                                    break;
+                                }
+                            };
+                            match ev {
+                                RelayJobEvent::TextDelta(t) => {
+                                    if !t.is_empty() {
+                                        raw_buf.lock().await.extend_from_slice(t.as_bytes());
+                                        yield AgentEvent::Token(t);
+                                    }
+                                }
+                                RelayJobEvent::CliDelta(d) => yield AgentEvent::CliDelta(d),
+                                RelayJobEvent::Completed(Ok(_)) => {
+                                    yield AgentEvent::Done(ProviderUsageInfo {
+                                        model: Some(adapter.label.clone()),
+                                        tokens_in: 0,
+                                        tokens_out: 0,
+                                    });
+                                    break;
+                                }
+                                RelayJobEvent::Completed(Err(e)) => {
+                                    yield AgentEvent::Error(e);
+                                    break;
+                                }
+                            }
                         }
-                        if !result.text.is_empty() {
-                            yield AgentEvent::Token(result.text);
-                        }
-                        yield AgentEvent::Done(ProviderUsageInfo {
-                            model: Some(adapter.label.clone()),
-                            tokens_in: 0,
-                            tokens_out: 0,
-                        });
                     }
                     Err(e) => yield AgentEvent::Error(e),
                 }

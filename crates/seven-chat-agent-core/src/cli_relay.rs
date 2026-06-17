@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use seven_chat_agent_cli::CliAuthProbe;
@@ -46,6 +46,14 @@ pub struct RelayJobResult {
     pub exit_code: Option<i32>,
 }
 
+/// 转发任务流式事件（CLI 输出增量 + 结束）。
+#[derive(Debug, Clone)]
+pub enum RelayJobEvent {
+    TextDelta(String),
+    CliDelta(worker_bee_cli::CliBlockDelta),
+    Completed(Result<RelayJobResult, String>),
+}
+
 struct ActiveRelay {
     name: String,
     host_label: Option<String>,
@@ -58,7 +66,7 @@ struct ActiveRelay {
 struct PendingJob {
     accumulated: String,
     cli_deltas: Vec<worker_bee_cli::CliBlockDelta>,
-    result_tx: oneshot::Sender<Result<RelayJobResult, String>>,
+    event_tx: mpsc::UnboundedSender<RelayJobEvent>,
 }
 
 pub struct RelayHub {
@@ -188,24 +196,25 @@ impl RelayHub {
         self.relays.contains_key(relay_id)
     }
 
+    /// 下发 CLI 任务并返回流式事件接收端（增量输出 + Completed）。
     pub async fn run_job(
         self: &Arc<Self>,
         relay_id: &str,
         spec: RelayJobSpec,
-        timeout: Duration,
-    ) -> Result<RelayJobResult, String> {
+        _timeout: Duration,
+    ) -> Result<mpsc::UnboundedReceiver<RelayJobEvent>, String> {
         let relay = self
             .relays
             .get(relay_id)
             .ok_or_else(|| format!("转发节点 {relay_id} 未在线"))?;
         let job_id = format!("job_{}", Uuid::new_v4().simple());
-        let (result_tx, result_rx) = oneshot::channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
         self.jobs.insert(
             job_id.clone(),
             PendingJob {
                 accumulated: String::new(),
                 cli_deltas: Vec::new(),
-                result_tx,
+                event_tx,
             },
         );
 
@@ -226,13 +235,7 @@ impl RelayHub {
             .await
             .map_err(|_| "转发连接已断开".to_string())?;
 
-        let result = tokio::time::timeout(timeout, result_rx)
-            .await
-            .map_err(|_| "CLI 转发任务超时".to_string())?
-            .map_err(|_| "CLI 转发任务被取消".to_string())??;
-
-        self.jobs.remove(&job_id);
-        Ok(result)
+        Ok(event_rx)
     }
 
     pub fn on_job_output(&self, job_id: &str, msg: &RelayMessage) {
@@ -254,10 +257,14 @@ impl RelayHub {
 
         if let Some(delta) = text_delta {
             pending.accumulated.push_str(delta);
+            let _ = pending
+                .event_tx
+                .send(RelayJobEvent::TextDelta(delta.clone()));
         }
         if let Some(v) = cli_delta {
             if let Ok(parsed) = serde_json::from_value::<worker_bee_cli::CliBlockDelta>(v.clone()) {
-                pending.cli_deltas.push(parsed);
+                pending.cli_deltas.push(parsed.clone());
+                let _ = pending.event_tx.send(RelayJobEvent::CliDelta(parsed));
             }
         }
 
@@ -267,21 +274,23 @@ impl RelayHub {
 
         let accumulated = pending.accumulated.clone();
         let cli_deltas = pending.cli_deltas.clone();
+        let event_tx = pending.event_tx.clone();
         drop(pending);
 
         let Some((_, pending)) = self.jobs.remove(job_id) else {
             return;
         };
 
-        if let Some(err) = error {
-            let _ = pending.result_tx.send(Err(err.clone()));
-            return;
-        }
-
-        let _ = pending.result_tx.send(Ok(RelayJobResult {
-            text: accumulated,
-            cli_deltas,
-            exit_code: *exit_code,
-        }));
+        let result = if let Some(err) = error {
+            Err(err.clone())
+        } else {
+            Ok(RelayJobResult {
+                text: accumulated,
+                cli_deltas,
+                exit_code: *exit_code,
+            })
+        };
+        let _ = event_tx.send(RelayJobEvent::Completed(result));
+        drop(pending);
     }
 }

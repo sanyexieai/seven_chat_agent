@@ -12,7 +12,45 @@ export function driverKindFromModelUsed(modelUsed: string | null): CliDriverKind
   if (m === "claude") return "claude";
   if (m === "cursor") return "cursor";
   if (m === "worker-bee-cli" || m === "worker-bee") return "worker-bee-cli";
+  if (m === "codex-exec" || m === "codex") return "unknown";
   return "unknown";
+}
+
+/** 结构化 CLI 块（agent_message 等）左上角引擎标签 */
+export function cliDriverBlockLabel(modelUsed: string | null): string {
+  const kind = driverKindFromModelUsed(modelUsed);
+  switch (kind) {
+    case "cursor":
+      return "cursor";
+    case "claude":
+      return "claude";
+    case "worker-bee-cli":
+      return "worker-bee";
+    default: {
+      const m = (modelUsed ?? "").trim().toLowerCase();
+      if (m.includes("codex")) return "codex";
+      if (m.includes("cursor")) return "cursor";
+      if (m.includes("claude")) return "claude";
+      return m || "agent";
+    }
+  }
+}
+
+export function cliDriverBlockTone(
+  modelUsed: string | null,
+): "codex" | "cursor" | "claude" | "exec" | "reasoning" | "muted" {
+  const kind = driverKindFromModelUsed(modelUsed);
+  switch (kind) {
+    case "cursor":
+      return "cursor";
+    case "claude":
+      return "claude";
+    case "worker-bee-cli":
+      return "exec";
+    default:
+      if ((modelUsed ?? "").toLowerCase().includes("codex")) return "codex";
+      return "muted";
+  }
 }
 
 export function complexDecisionForCliText(

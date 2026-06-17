@@ -1,4 +1,4 @@
-use super::assistant_delegate::DelegateTaskHint;
+use super::delegate_continue::{enrich_delegation_mentions, parse_at_mention_assignees};
 use super::{BusEvent, ExpertReplyMode, MessageDispatcher};
 use crate::agent::ChatContext;
 use crate::domain::{
@@ -22,6 +22,7 @@ pub(super) enum TaskFlowExecuteOutcome {
     Incomplete,
 }
 
+#[derive(Debug, Clone)]
 pub(super) struct TaskFlowCheckpoint {
     pub outcome: TaskFlowExecuteOutcome,
     pub leader: Friend,
@@ -553,10 +554,10 @@ impl MessageDispatcher {
             if agents.len() > 1 {
                 if let Some(group) = self.dispatch_store().get_group(&conv.target_id).await? {
                     let mut peer_trigger = msg.clone();
-                    peer_trigger.mentions = enrich_leader_delegation_mentions(
+                    peer_trigger.mentions = enrich_delegation_mentions(
                         &peer_trigger.content,
                         agents,
-                        &leader.id,
+                        Some(&leader.id),
                     );
                     let peer_replies = self
                         .dispatch_expert_round(
@@ -669,49 +670,6 @@ impl MessageDispatcher {
                     .await?;
                 return Ok(TaskFlowExecuteOutcome::Stalled);
             }
-        }
-    }
-
-    pub(super) async fn should_resume_task_flow_after_delegate(
-        &self,
-        settings: &GroupSettings,
-        outcome: TaskFlowExecuteOutcome,
-        assistant_reply: Option<&Message>,
-        user_task: &str,
-    ) -> Result<bool> {
-        let Some(reply) = assistant_reply else {
-            return Ok(false);
-        };
-        if reply.content.trim().is_empty() || outcome == TaskFlowExecuteOutcome::Delivered {
-            return Ok(false);
-        }
-        let check = self
-            .judge
-            .check_delegate_resume(
-                settings,
-                user_task,
-                Self::task_outcome_label(outcome),
-                &reply.content,
-                settings.task_flow.resume_after_delegate_mode.clone(),
-            )
-            .await;
-        let conf = check.confidence.unwrap_or(0.5);
-        Ok(check.should_resume && conf >= 0.4)
-    }
-
-    fn task_outcome_label(outcome: TaskFlowExecuteOutcome) -> &'static str {
-        match outcome {
-            TaskFlowExecuteOutcome::Delivered => "delivered",
-            TaskFlowExecuteOutcome::Stalled => "stalled",
-            TaskFlowExecuteOutcome::Incomplete => "incomplete",
-        }
-    }
-
-    pub(super) fn delegate_task_hint(outcome: TaskFlowExecuteOutcome) -> DelegateTaskHint {
-        match outcome {
-            TaskFlowExecuteOutcome::Delivered => DelegateTaskHint::Unknown,
-            TaskFlowExecuteOutcome::Stalled => DelegateTaskHint::Stalled,
-            TaskFlowExecuteOutcome::Incomplete => DelegateTaskHint::Incomplete,
         }
     }
 
@@ -1325,31 +1283,6 @@ fn excerpt_text(content: &str, max: usize) -> String {
     }
 }
 
-/// 从正文解析 @成员名 分配（按 agents 名单匹配）。
-fn parse_at_mention_assignees(content: &str, agents: &[Friend]) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = agents
-        .iter()
-        .filter(|a| content.contains(&format!("@{}", a.name)))
-        .map(|a| (a.id.clone(), a.name.clone()))
-        .collect();
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out.dedup_by(|a, b| a.0 == b.0);
-    out
-}
-
-/// 从负责人正文解析 @ 或「请/麻烦 + 名字」式委派，供 judge 识别点名接话。
-fn enrich_leader_delegation_mentions(
-    content: &str,
-    agents: &[Friend],
-    leader_id: &str,
-) -> Vec<String> {
-    parse_at_mention_assignees(content, agents)
-        .into_iter()
-        .filter(|(id, _)| id != leader_id)
-        .map(|(id, _)| id)
-        .collect()
-}
-
 /// 从 mentions 或正文 @名字 解析指定负责人。
 fn resolve_appointed_leader(
     user_msg: &Message,
@@ -1453,9 +1386,9 @@ mod tests {
     }
 
     #[test]
-    fn enrich_leader_delegation_skips_leader_self() {
+    fn enrich_delegation_skips_leader_self() {
         let agents = vec![agent("l", "Lead"), agent("b", "Bob")];
-        let ids = enrich_leader_delegation_mentions("@Lead 统筹 @Bob 实现", &agents, "l");
+        let ids = enrich_delegation_mentions("@Lead 统筹 @Bob 实现", &agents, Some("l"));
         assert_eq!(ids, vec!["b"]);
     }
 }

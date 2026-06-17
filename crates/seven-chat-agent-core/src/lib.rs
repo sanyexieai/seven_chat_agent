@@ -38,7 +38,7 @@ pub mod store;
 pub mod tenant_context;
 
 pub use cli_auth::{CliAuthStatus, CliOAuthManager, CliOAuthPhase, CliOAuthSnapshot};
-pub use cli_relay::{RelayHub, RelayJobSpec, RelayNodeInfo};
+pub use cli_relay::{RelayHub, RelayJobEvent, RelayJobSpec, RelayNodeInfo};
 pub use error::{Error, Result};
 
 use std::sync::Arc;

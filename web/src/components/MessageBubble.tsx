@@ -76,6 +76,7 @@ export function MessageBubble({
             <CliMessageView
               blocks={message.content_blocks}
               streaming={message.status === "streaming"}
+              modelUsed={message.model_used}
             />
           ) : message.content ? (
             <PlainMessageBody

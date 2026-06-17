@@ -84,6 +84,8 @@ impl JudgeService {
             },
             trigger_sender: match trigger.sender_kind {
                 SenderKind::User => TriggerSenderKind::User,
+                // 代理人代主人拍板：按用户消息调度专家，而非「成员互聊」门槛。
+                SenderKind::Friend if trigger.on_behalf_of_user => TriggerSenderKind::User,
                 SenderKind::Friend => TriggerSenderKind::Friend,
                 SenderKind::System => TriggerSenderKind::System,
             },
@@ -364,11 +366,10 @@ impl JudgeService {
         user_task: &str,
         task_outcome_label: &str,
         delegate_reply: &str,
+        continue_enabled: bool,
         mode: TaskFlowResumeAfterDelegateMode,
     ) -> DelegateResumeRaw {
-        if !group.task_flow.resume_after_delegate_enabled
-            || mode == TaskFlowResumeAfterDelegateMode::Off
-        {
+        if !continue_enabled || mode == TaskFlowResumeAfterDelegateMode::Off {
             return DelegateResumeRaw {
                 should_resume: false,
                 reason: Some("群配置未启用代理人后恢复".into()),
